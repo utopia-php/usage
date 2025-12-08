@@ -1,0 +1,23 @@
+{
+    "name": "utopia-php/usage",
+    "description": "Light and Fast Usage library",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Appwrite",
+            "email": "team@appwrite.io"
+        }
+    ],
+    "minimum-stability": "stable",
+    "require": {
+        "utopia-php/fetch": "^0.4.2",
+        "utopia-php/database": "^4.3"
+    },
+    "config": {
+        "allow-plugins": {
+            "php-http/discovery": false,
+            "tbachert/spi": false
+        }
+    }
+}
