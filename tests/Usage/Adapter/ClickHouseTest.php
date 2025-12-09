@@ -29,10 +29,6 @@ class ClickHouseTest extends TestCase
             $adapter->setDatabase($database);
         }
 
-        if ($table = getenv('CLICKHOUSE_TABLE')) {
-            $adapter->setTable($table);
-        }
-
         $this->usage = new Usage($adapter);
         $this->usage->setup();
     }
