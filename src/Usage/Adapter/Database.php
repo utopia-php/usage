@@ -144,7 +144,9 @@ class Database extends Adapter
         }
 
         $now = new \DateTime();
-        $time = $now->format(self::PERIODS[$period]);
+        $time = $period === 'inf'
+            ? '1000-01-01 00:00:00'
+            : $now->format(self::PERIODS[$period]);
 
         $this->db->getAuthorization()->skip(function () use ($metric, $value, $period, $time, $tags) {
             $this->db->createDocument(self::COLLECTION, new Document([
@@ -171,7 +173,9 @@ class Database extends Adapter
                 }
 
                 $now = new \DateTime();
-                $time = $now->format(self::PERIODS[$period]);
+                $time = $period === 'inf'
+                    ? '1000-01-01 00:00:00'
+                    : $now->format(self::PERIODS[$period]);
 
                 return new Document([
                     '$permissions' => [],

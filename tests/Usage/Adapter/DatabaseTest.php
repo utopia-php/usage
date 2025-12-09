@@ -9,6 +9,7 @@ use Utopia\Cache\Cache;
 use Utopia\Database\Adapter\MariaDB;
 use Utopia\Database\Database;
 use Utopia\Database\DateTime;
+use Utopia\Database\Exception\Duplicate;
 use Utopia\Database\Query;
 use Utopia\Tests\Usage\UsageBase;
 use Utopia\Usage\Adapter\Database as AdapterDatabase;
@@ -34,9 +35,17 @@ class DatabaseTest extends TestCase
 
         $this->usage = new Usage(new AdapterDatabase($this->database));
 
-        // Create database and collection if needed
-        $this->database->create();
+        // Create database if missing
+        if (! $this->database->exists($this->database->getDatabase())) {
+            $this->database->create();
+        }
+
         // Always run setup to ensure collection exists
-        $this->usage->setup();
+        try {
+
+            $this->usage->setup();
+        } catch (Duplicate $ex) {
+            // ignore duplicate exception
+        }
     }
 }

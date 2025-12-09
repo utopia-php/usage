@@ -15,11 +15,11 @@ class ClickHouseTest extends TestCase
     {
         $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
         $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: '';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        if ($host === null) {
+        if ($host === null || $host === '') {
             $this->markTestSkipped('CLICKHOUSE_HOST not set; skipping ClickHouse adapter tests.');
         }
 
