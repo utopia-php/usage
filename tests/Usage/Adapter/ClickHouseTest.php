@@ -20,11 +20,9 @@ class ClickHouseTest extends TestCase
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
 
-        if ($host === false || $host === '') {
-            $this->markTestSkipped('ClickHouse tests disabled (set CLICKHOUSE_ENABLE_TESTS=1 and CLICKHOUSE_HOST to run).');
-        }
-
         $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
+        $adapter->setNamespace('utopia_usage');
+        $adapter->setTenant(1);
 
         // Optional customization via env vars
         if ($database = getenv('CLICKHOUSE_DATABASE')) {

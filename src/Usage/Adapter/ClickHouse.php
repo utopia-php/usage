@@ -507,7 +507,7 @@ class ClickHouse extends Adapter
         $timestamp = date('Y-m-d H:i:s', (int) $microtime) . '.' . sprintf('%03d', ($microtime - floor($microtime)) * 1000);
 
         // Build column list and values based on sharedTables setting
-        $columns = ['id', 'metric', 'value', 'period', 'time', 'tags'];
+        $columns = ['_id', 'metric', 'value', 'period', 'time', 'tags'];
         $placeholders = [':id', ':metric', ':value', ':period', ':time', ':tags'];
 
         $params = [
@@ -600,7 +600,7 @@ class ClickHouse extends Adapter
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
 
         // Build column list based on sharedTables setting
-        $columns = 'id, metric, value, period, time, tags';
+        $columns = '_id, metric, value, period, time, tags';
         if ($this->sharedTables) {
             $columns .= ', tenant';
         }
@@ -669,9 +669,9 @@ class ClickHouse extends Adapter
     private function getSelectColumns(): string
     {
         if ($this->sharedTables) {
-            return 'id, metric, value, period, time, tags, tenant';
+            return '_id, metric, value, period, time, tags, tenant';
         }
-        return 'id, metric, value, period, time, tags';
+        return '_id, metric, value, period, time, tags';
     }
 
     /**
