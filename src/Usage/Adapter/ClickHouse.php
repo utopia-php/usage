@@ -49,6 +49,8 @@ class ClickHouse extends Adapter
 
     protected bool $sharedTables = false;
 
+    protected string $namespace = '';
+
     /**
      * @param  string  $host  ClickHouse host
      * @param  string  $username  ClickHouse username (default: 'default')
@@ -232,6 +234,50 @@ class ClickHouse extends Adapter
     }
 
     /**
+     * Set the namespace for multi-project support.
+     * Namespace is used as a prefix for table names.
+     *
+     * @param  string  $namespace
+     * @return self
+     * @throws Exception
+     */
+    public function setNamespace(string $namespace): self
+    {
+        if (!empty($namespace)) {
+            $this->validateIdentifier($namespace, 'Namespace');
+        }
+        $this->namespace = $namespace;
+        return $this;
+    }
+
+    /**
+     * Get the namespace.
+     *
+     * @return string
+     */
+    public function getNamespace(): string
+    {
+        return $this->namespace;
+    }
+
+    /**
+     * Get the table name with namespace prefix.
+     * Namespace is used to isolate tables for different projects/applications.
+     *
+     * @return string
+     */
+    private function getTableName(): string
+    {
+        $tableName = $this->table;
+
+        if (!empty($this->namespace)) {
+            $tableName = $this->namespace . '_' . $tableName;
+        }
+
+        return $tableName;
+    }
+
+    /**
      * Execute a ClickHouse query via HTTP interface.
      *
      * @param  string  $sql  SQL query to execute
@@ -304,10 +350,11 @@ class ClickHouse extends Adapter
      * Setup ClickHouse table structure.
      *
      * Creates the database and table if they don't exist.
+     * Uses the provided column definitions and adds internal fields (_id, _createdAt, _updatedAt, tenant).
      *
      * @param string $table Table name
-     * @param array<int,array<string,mixed>> $columns Column definitions (not used - ClickHouse uses hardcoded schema)
-     * @param array<int,array<string,mixed>> $indexes Index definitions (not used - ClickHouse uses hardcoded indexes)
+     * @param array<int,array<string,mixed>> $columns Column definitions from the application
+     * @param array<int,array<string,mixed>> $indexes Index definitions from the application
      * @throws Exception
      */
     public function setup(string $table, array $columns, array $indexes): void
@@ -319,37 +366,120 @@ class ClickHouse extends Adapter
         $createDbSql = "CREATE DATABASE IF NOT EXISTS {$escapedDatabase}";
         $this->query($createDbSql);
 
-        // Build column definitions
-        $columnDefs = [
-            'id String',
-            'metric String',
-            'value Int64',
-            'period String',
-            'time DateTime64(3)',
-            'tags String',  // JSON string
-        ];
+        // Track which internal fields are already present
+        $hasId = false;
+        $hasCreatedAt = false;
+        $hasUpdatedAt = false;
+        $hasTenant = false;
 
-        // Add tenant column only if tables are shared across tenants
-        if ($this->sharedTables) {
+        // Build column definitions from provided columns
+        $columnDefs = [];
+        foreach ($columns as $column) {
+            $columnId = $column['$id'] ?? '';
+
+            if ($columnId === '_id' || $columnId === '$id') {
+                $hasId = true;
+            } elseif ($columnId === '_createdAt' || $columnId === '$createdAt') {
+                $hasCreatedAt = true;
+            } elseif ($columnId === '_updatedAt' || $columnId === '$updatedAt') {
+                $hasUpdatedAt = true;
+            } elseif ($columnId === 'tenant' || $columnId === '$tenant') {
+                $hasTenant = true;
+            }
+
+            $columnDefs[] = $this->getClickHouseColumnDefinition($column);
+        }
+
+        // Add internal fields if not present
+        if (! $hasId) {
+            array_unshift($columnDefs, '_id String');
+        }
+        if (! $hasCreatedAt) {
+            $columnDefs[] = '_createdAt DateTime64(3) DEFAULT now64(3)';
+        }
+        if (! $hasUpdatedAt) {
+            $columnDefs[] = '_updatedAt DateTime64(3) DEFAULT now64(3)';
+        }
+
+        // Add tenant column only if tables are shared across tenants and not already present
+        if ($this->sharedTables && ! $hasTenant) {
             $columnDefs[] = 'tenant Nullable(UInt64)';
         }
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        // Build indexes from provided index definitions
+        $indexDefs = [];
+        foreach ($indexes as $index) {
+            $indexId = $index['$id'] ?? '';
+            $attributes = $index['attributes'] ?? [];
+
+            if (! empty($indexId) && is_string($indexId) && is_array($attributes) && ! empty($attributes)) {
+                /** @var array<string> $attributes */
+                $attributeList = implode(', ', $attributes);
+                $indexDefs[] = 'INDEX ' . $indexId . ' (' . $attributeList . ') TYPE bloom_filter GRANULARITY 1';
+            }
+        }
+
+        // Add tenant index if tables are shared across tenants
+        if ($this->sharedTables) {
+            $indexDefs[] = 'INDEX idx_tenant tenant TYPE bloom_filter GRANULARITY 1';
+        }
+
+        $tableName = $this->getTableName();
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+
+        // Determine ORDER BY clause - use first index or default
+        $orderBy = '_createdAt';
+        if (! empty($indexes) && isset($indexes[0]['attributes']) && is_array($indexes[0]['attributes'])) {
+            /** @var array<string> $orderAttributes */
+            $orderAttributes = $indexes[0]['attributes'];
+            $orderBy = implode(', ', $orderAttributes);
+        }
 
         // Create table with MergeTree engine for optimal performance
+        $indexClause = ! empty($indexDefs) ? ',\n                ' . implode(",\n                ", $indexDefs) : '';
         $createTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDatabaseAndTable} (
-                " . implode(",\n                ", $columnDefs) . ',
-                INDEX idx_metric metric TYPE bloom_filter GRANULARITY 1,
-                INDEX idx_period period TYPE bloom_filter GRANULARITY 1
+                " . implode(",\n                ", $columnDefs) . $indexClause . "
             )
             ENGINE = MergeTree()
-            ORDER BY (metric, period, time)
-            PARTITION BY toYYYYMM(time)
+            ORDER BY ({$orderBy})
+            PARTITION BY toYYYYMM(_createdAt)
             SETTINGS index_granularity = 8192
-        ';
+        ";
 
         $this->query($createTableSql);
+    }
+
+    /**
+     * Convert a column definition to ClickHouse column syntax.
+     *
+     * @param array<string,mixed> $column Column definition
+     * @return string ClickHouse column definition
+     */
+    private function getClickHouseColumnDefinition(array $column): string
+    {
+        $columnId = $column['$id'] ?? '';
+        $type = $column['type'] ?? 'string';
+        $required = $column['required'] ?? false;
+        $size = $column['size'] ?? 0;
+
+        // Map Utopia Database types to ClickHouse types
+        $clickHouseType = match ($type) {
+            'string' => $size > 0 && $size <= 255 ? 'String' : 'String',
+            'integer' => 'Int64',
+            'float' => 'Float64',
+            'boolean' => 'UInt8',
+            'datetime' => 'DateTime64(3)',
+            'json' => 'String',  // Store JSON as string
+            default => 'String',
+        };
+
+        // Add Nullable wrapper if not required
+        if (! $required && $type !== 'boolean') {
+            $clickHouseType = 'Nullable(' . $clickHouseType . ')';
+        }
+
+        return $columnId . ' ' . $clickHouseType;
     }
 
     /**
@@ -373,8 +503,6 @@ class ClickHouse extends Adapter
         $microtime = microtime(true);
         $timestamp = date('Y-m-d H:i:s', (int) $microtime) . '.' . sprintf('%03d', ($microtime - floor($microtime)) * 1000);
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
-
         // Build column list and values based on sharedTables setting
         $columns = ['id', 'metric', 'value', 'period', 'time', 'tags'];
         $placeholders = [':id', ':metric', ':value', ':period', ':time', ':tags'];
@@ -393,6 +521,9 @@ class ClickHouse extends Adapter
             $placeholders[] = ':tenant';
             $params['tenant'] = $this->tenant;
         }
+
+        $tableName = $this->getTableName();
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
 
         $sql = "
             INSERT INTO {$escapedDatabaseAndTable}
@@ -462,7 +593,8 @@ class ClickHouse extends Adapter
             }
         }
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $tableName = $this->getTableName();
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
 
         // Build column list based on sharedTables setting
         $columns = 'id, metric, value, period, time, tags';
@@ -576,7 +708,8 @@ class ClickHouse extends Adapter
             }
         }
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $tableName = $this->getTableName();
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
         $tenantFilter = $this->getTenantFilter();
 
         $sql = "
@@ -621,7 +754,8 @@ class ClickHouse extends Adapter
             }
         }
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $tableName = $this->getTableName();
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
         $tenantFilter = $this->getTenantFilter();
 
         $sql = "
@@ -653,7 +787,8 @@ class ClickHouse extends Adapter
      */
     public function countByPeriod(string $metric, string $period, array $queries = []): int
     {
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $tableName = $this->getTableName();
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
         $tenantFilter = $this->getTenantFilter();
 
         $sql = "
@@ -680,7 +815,8 @@ class ClickHouse extends Adapter
      */
     public function sumByPeriod(string $metric, string $period, array $queries = []): int
     {
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $tableName = $this->getTableName();
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
         $tenantFilter = $this->getTenantFilter();
 
         $sql = "
@@ -707,7 +843,8 @@ class ClickHouse extends Adapter
      */
     public function purge(string $datetime): bool
     {
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $tableName = $this->getTableName();
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
         $tenantFilter = $this->getTenantFilter();
 
         $sql = "
