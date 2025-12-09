@@ -69,6 +69,9 @@ class ClickHouse extends Adapter
         $this->secure = $secure;
 
         $this->client = new Client();
+        $this->client->addHeader('X-ClickHouse-User', $this->username);
+        $this->client->addHeader('X-ClickHouse-Key', $this->password);
+        $this->client->addHeader('X-ClickHouse-Database', $this->database);
     }
 
     /**
@@ -160,6 +163,7 @@ class ClickHouse extends Adapter
     {
         $this->validateIdentifier($database, 'Database');
         $this->database = $database;
+        $this->client->addHeader('X-ClickHouse-Database', $this->database);
 
         return $this;
     }
@@ -215,11 +219,6 @@ class ClickHouse extends Adapter
             }
             $sql = str_replace(":{$key}", $strValue, $sql);
         }
-
-        // Set authentication headers
-        $this->client->addHeader('X-ClickHouse-User', $this->username);
-        $this->client->addHeader('X-ClickHouse-Key', $this->password);
-        $this->client->addHeader('X-ClickHouse-Database', $this->database);
 
         try {
             $response = $this->client->fetch(
