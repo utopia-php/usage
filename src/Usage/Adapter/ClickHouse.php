@@ -17,16 +17,7 @@ class ClickHouse extends Adapter
 {
     private const DEFAULT_PORT = 8123;
 
-    private const DEFAULT_TABLE = 'usage';
-
     private const DEFAULT_DATABASE = 'default';
-
-    /** @var array<string,string> */
-    public const PERIODS = [
-        '1h' => 'Y-m-d H:00',
-        '1d' => 'Y-m-d 00:00',
-        'inf' => '0000-00-00 00:00',
-    ];
 
     private string $host;
 
@@ -170,19 +161,6 @@ class ClickHouse extends Adapter
         $this->validateIdentifier($database, 'Database');
         $this->database = $database;
         $this->client->addHeader('X-ClickHouse-Database', $this->database);
-
-        return $this;
-    }
-
-    /**
-     * Set the table name for subsequent operations.
-     *
-     * @throws Exception
-     */
-    public function setTable(string $table): self
-    {
-        $this->validateIdentifier($table, 'Table');
-        $this->table = $table;
 
         return $this;
     }
@@ -359,8 +337,6 @@ class ClickHouse extends Adapter
      */
     public function setup(string $table, array $columns, array $indexes): void
     {
-        $this->setTable($table);
-
         // Create database if not exists
         $escapedDatabase = $this->escapeIdentifier($this->database);
         $createDbSql = "CREATE DATABASE IF NOT EXISTS {$escapedDatabase}";

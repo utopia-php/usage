@@ -38,7 +38,7 @@ class Usage
      * @param array<int,array<string,mixed>> $indexes Index definitions
      * @throws \Exception
      */
-    public function setup(string $table = 'usage', array $columns = [], array $indexes = []): void
+    public function setup(string $table = Adapter::DEFAULT_TABLE, array $columns = [], array $indexes = []): void
     {
         // Use legacy constants if no columns/indexes provided (for backward compatibility)
         if (empty($columns)) {
@@ -136,26 +136,19 @@ class Usage
     }
 
     /**
-     * @deprecated Use constructor with adapter instead
+     * @deprecated Use Adapter::DEFAULT_TABLE instead
      *
      * @internal Legacy support - will be removed in future version
      */
-    public const COLLECTION = 'usage';
+    public const COLLECTION = Adapter::DEFAULT_TABLE;
 
     /**
-     * @deprecated Use Adapter\Database::PERIODS instead
+     * @deprecated Use Adapter::PERIODS instead
      *
      * @var array<string,string>
      */
-    public const PERIODS = [
-        '1h' => 'Y-m-d H:00',
-        '1d' => 'Y-m-d 00:00',
-        'inf' => '0000-00-00 00:00',
-    ];
+    public const PERIODS = Adapter::PERIODS;
 
-    /**
-     * @deprecated Use Adapter\Database::ATTRIBUTES instead
-     */
     public const ATTRIBUTES = [
         [
             '$id' => 'metric',
@@ -205,9 +198,6 @@ class Usage
         ],
     ];
 
-    /**
-     * @deprecated Use Adapter\Database::INDEXES instead
-     */
     public const INDEXES = [
         [
             '$id' => 'index-metric',

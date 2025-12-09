@@ -5,6 +5,22 @@ namespace Utopia\Usage;
 abstract class Adapter
 {
     /**
+     * Default table name for usage metrics
+     */
+    public const DEFAULT_TABLE = 'usage';
+
+    /**
+     * Period format mappings
+     *
+     * @var array<string,string>
+     */
+    public const PERIODS = [
+        '1h' => 'Y-m-d H:00',
+        '1d' => 'Y-m-d 00:00',
+        'inf' => '0000-00-00 00:00',
+    ];
+
+    /**
      * Get adapter name
      */
     abstract public function getName(): string;

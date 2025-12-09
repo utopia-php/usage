@@ -12,14 +12,7 @@ use Utopia\Usage\Metric;
 
 class Database extends Adapter
 {
-    protected string $collection = 'usage_metrics';
-
-    /** @var array<string,string> */
-    public const PERIODS = [
-        '1h' => 'Y-m-d H:00',
-        '1d' => 'Y-m-d 00:00',
-        'inf' => '0000-00-00 00:00',
-    ];
+    protected string $collection = self::DEFAULT_TABLE;
 
     private UtopiaDatabase $db;
 
