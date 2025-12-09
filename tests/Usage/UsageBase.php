@@ -83,7 +83,7 @@ trait UsageBase
 
     public function testGetBetweenDates(): void
     {
-        $start = DateTime::addSeconds(new \DateTime, -3600); // 1 hour ago
+        $start = DateTime::addSeconds(new \DateTime(), -3600); // 1 hour ago
         $end = DateTime::now();
 
         $results = $this->usage->getBetweenDates('requests', $start, $end);

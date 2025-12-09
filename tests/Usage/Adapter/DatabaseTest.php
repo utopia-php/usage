@@ -27,7 +27,7 @@ class DatabaseTest extends TestCase
         $dbPass = 'password';
 
         $pdo = new PDO("mysql:host={$dbHost};port={$dbPort};charset=utf8mb4", $dbUser, $dbPass, MariaDB::getPdoAttributes());
-        $cache = new Cache(new NoCache);
+        $cache = new Cache(new NoCache());
         $this->database = new Database(new MariaDB($pdo), $cache);
         $this->database->setDatabase('utopiaTests');
         $this->database->setNamespace('utopia_usage');

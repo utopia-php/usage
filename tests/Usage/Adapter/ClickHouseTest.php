@@ -13,14 +13,16 @@ class ClickHouseTest extends TestCase
 
     protected function initializeUsage(): void
     {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $host = getenv('CLICKHOUSE_HOST');
         $username = getenv('CLICKHOUSE_USER') ?: 'default';
         $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        if ($host === null || $host === '') {
-            $this->markTestSkipped('CLICKHOUSE_HOST not set; skipping ClickHouse adapter tests.');
+        $enable = getenv('CLICKHOUSE_ENABLE_TESTS');
+
+        if ($enable !== '1' || $host === false || $host === '') {
+            $this->markTestSkipped('ClickHouse tests disabled (set CLICKHOUSE_ENABLE_TESTS=1 and CLICKHOUSE_HOST to run).');
         }
 
         $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);

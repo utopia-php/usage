@@ -59,8 +59,8 @@ class Usage
     /**
      * Log multiple usage metrics in batch.
      *
-     * @param  array<int,array<string,mixed>>  $metrics
-     *
+     * @param array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}> $metrics
+     * @return bool
      * @throws \Exception
      */
     public function logBatch(array $metrics): bool
@@ -71,7 +71,7 @@ class Usage
     /**
      * Get usage metrics by period.
      *
-     * @param  array<int,mixed>  $queries
+     * @param  array<\Utopia\Database\Query>  $queries
      * @return array<Document>
      *
      * @throws \Exception
@@ -84,7 +84,7 @@ class Usage
     /**
      * Get usage metrics between dates.
      *
-     * @param  array<int,mixed>  $queries
+     * @param  array<\Utopia\Database\Query>  $queries
      * @return array<Document>
      *
      * @throws \Exception
@@ -97,7 +97,7 @@ class Usage
     /**
      * Count usage metrics by period.
      *
-     * @param  array<int,mixed>  $queries
+     * @param  array<\Utopia\Database\Query>  $queries
      *
      * @throws \Exception
      */
@@ -109,7 +109,7 @@ class Usage
     /**
      * Sum usage metric values by period.
      *
-     * @param  array<int,mixed>  $queries
+     * @param  array<\Utopia\Database\Query>  $queries
      *
      * @throws \Exception
      */

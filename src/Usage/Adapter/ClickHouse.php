@@ -68,7 +68,7 @@ class ClickHouse extends Adapter
         $this->password = $password;
         $this->secure = $secure;
 
-        $this->client = new Client;
+        $this->client = new Client();
     }
 
     /**
@@ -134,7 +134,7 @@ class ClickHouse extends Adapter
      */
     private function escapeIdentifier(string $identifier): string
     {
-        return '`'.str_replace('`', '``', $identifier).'`';
+        return '`' . str_replace('`', '``', $identifier) . '`';
     }
 
     /**
@@ -193,15 +193,27 @@ class ClickHouse extends Adapter
 
         // Replace parameters in SQL
         foreach ($params as $key => $value) {
-            $placeholder = ":{$key}";
-            if (is_string($value)) {
-                $escapedValue = "'".$this->escapeString($value)."'";
+            if (is_int($value) || is_float($value)) {
+                // Numeric values should not be quoted
+                $strValue = (string) $value;
+            } elseif (is_string($value)) {
+                $strValue = "'" . $this->escapeString($value) . "'";
             } elseif (is_null($value)) {
-                $escapedValue = 'NULL';
+                $strValue = 'NULL';
+            } elseif (is_bool($value)) {
+                $strValue = $value ? '1' : '0';
+            } elseif (is_array($value)) {
+                $encoded = json_encode($value);
+                if (is_string($encoded)) {
+                    $strValue = "'" . $this->escapeString($encoded) . "'";
+                } else {
+                    $strValue = 'NULL';
+                }
             } else {
-                $escapedValue = (string) $value;
+                /** @var scalar $value */
+                $strValue = "'" . $this->escapeString((string) $value) . "'";
             }
-            $sql = str_replace($placeholder, $escapedValue, $sql);
+            $sql = str_replace(":{$key}", $strValue, $sql);
         }
 
         // Set authentication headers
@@ -263,12 +275,12 @@ class ClickHouse extends Adapter
             'tags String',  // JSON string
         ];
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
 
         // Create table with MergeTree engine for optimal performance
         $createTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDatabaseAndTable} (
-                ".implode(",\n                ", $columns).',
+                " . implode(",\n                ", $columns) . ',
                 INDEX idx_metric metric TYPE bloom_filter GRANULARITY 1,
                 INDEX idx_period period TYPE bloom_filter GRANULARITY 1
             )
@@ -291,18 +303,18 @@ class ClickHouse extends Adapter
     public function log(string $metric, int $value, string $period = '1h', array $tags = []): bool
     {
         if (! isset(self::PERIODS[$period])) {
-            throw new \InvalidArgumentException('Invalid period. Allowed: '.implode(', ', array_keys(self::PERIODS)));
+            throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(self::PERIODS)));
         }
 
         $id = uniqid('', true);
-        $now = new \DateTime;
+        $now = new \DateTime();
         $time = $now->format(self::PERIODS[$period]);
 
         // Format timestamp for ClickHouse DateTime64(3)
         $microtime = microtime(true);
-        $timestamp = date('Y-m-d H:i:s', (int) $microtime).'.'.sprintf('%03d', ($microtime - floor($microtime)) * 1000);
+        $timestamp = date('Y-m-d H:i:s', (int) $microtime) . '.' . sprintf('%03d', ($microtime - floor($microtime)) * 1000);
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
 
         $sql = "
             INSERT INTO {$escapedDatabaseAndTable}
@@ -347,30 +359,35 @@ class ClickHouse extends Adapter
             $period = $metricData['period'] ?? '1h';
 
             if (! isset(self::PERIODS[$period])) {
-                throw new \InvalidArgumentException('Invalid period. Allowed: '.implode(', ', array_keys(self::PERIODS)));
+                throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(self::PERIODS)));
             }
 
             $id = uniqid('', true);
             $microtime = microtime(true);
-            $timestamp = date('Y-m-d H:i:s', (int) $microtime).'.'.sprintf('%03d', ($microtime - floor($microtime)) * 1000);
+            $timestamp = date('Y-m-d H:i:s', (int) $microtime) . '.' . sprintf('%03d', ($microtime - floor($microtime)) * 1000);
+
+            $metric = $metricData['metric'];
+            $value = $metricData['value'];
+            assert(is_string($metric));
+            assert(is_int($value));
 
             $values[] = sprintf(
                 "('%s', '%s', %d, '%s', '%s', '%s')",
                 $id,
-                $this->escapeString((string) $metricData['metric']),
-                (int) $metricData['value'],
+                $this->escapeString($metric),
+                $value,
                 $this->escapeString($period),
                 $timestamp,
                 $this->escapeString((string) json_encode($metricData['tags'] ?? []))
             );
         }
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
 
         $insertSql = "
             INSERT INTO {$escapedDatabaseAndTable}
             (id, metric, value, period, time, tags)
-            VALUES ".implode(', ', $values);
+            VALUES " . implode(', ', $values);
 
         $this->query($insertSql);
 
@@ -402,12 +419,12 @@ class ClickHouse extends Adapter
             }
 
             $documents[] = new Document([
-                '$id' => $columns[0],
-                'metric' => $columns[1],
+                '$id' => (string) $columns[0],
+                'metric' => (string) $columns[1],
                 'value' => (int) $columns[2],
-                'period' => $columns[3],
-                'time' => $columns[4],
-                'tags' => json_decode($columns[5], true) ?? [],
+                'period' => (string) $columns[3],
+                'time' => (string) $columns[4],
+                'tags' => json_decode((string) $columns[5], true) ?? [],
             ]);
         }
 
@@ -437,7 +454,7 @@ class ClickHouse extends Adapter
             }
         }
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
 
         $sql = "
             SELECT id, metric, value, period, time, tags
@@ -481,7 +498,7 @@ class ClickHouse extends Adapter
             }
         }
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
 
         $sql = "
             SELECT id, metric, value, period, time, tags
@@ -512,7 +529,7 @@ class ClickHouse extends Adapter
      */
     public function countByPeriod(string $metric, string $period, array $queries = []): int
     {
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
 
         $sql = "
             SELECT count() as count
@@ -538,7 +555,7 @@ class ClickHouse extends Adapter
      */
     public function sumByPeriod(string $metric, string $period, array $queries = []): int
     {
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
 
         $sql = "
             SELECT sum(value) as total
@@ -564,7 +581,7 @@ class ClickHouse extends Adapter
      */
     public function purge(string $datetime): bool
     {
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
 
         $sql = "
             DELETE FROM {$escapedDatabaseAndTable}
