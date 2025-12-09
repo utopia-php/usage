@@ -45,6 +45,10 @@ class ClickHouse extends Adapter
 
     private Client $client;
 
+    protected ?int $tenant = null;
+
+    protected bool $sharedTables = false;
+
     /**
      * @param  string  $host  ClickHouse host
      * @param  string  $username  ClickHouse username (default: 'default')
@@ -182,6 +186,52 @@ class ClickHouse extends Adapter
     }
 
     /**
+     * Set the tenant ID for multi-tenant support.
+     * Tenant is used to isolate usage metrics by tenant.
+     *
+     * @param  int|null  $tenant
+     * @return self
+     */
+    public function setTenant(?int $tenant): self
+    {
+        $this->tenant = $tenant;
+        return $this;
+    }
+
+    /**
+     * Get the tenant ID.
+     *
+     * @return int|null
+     */
+    public function getTenant(): ?int
+    {
+        return $this->tenant;
+    }
+
+    /**
+     * Set whether tables are shared across tenants.
+     * When enabled, a tenant column is added to the table for data isolation.
+     *
+     * @param  bool  $sharedTables
+     * @return self
+     */
+    public function setSharedTables(bool $sharedTables): self
+    {
+        $this->sharedTables = $sharedTables;
+        return $this;
+    }
+
+    /**
+     * Get whether tables are shared across tenants.
+     *
+     * @return bool
+     */
+    public function isSharedTables(): bool
+    {
+        return $this->sharedTables;
+    }
+
+    /**
      * Execute a ClickHouse query via HTTP interface.
      *
      * @param  string  $sql  SQL query to execute
@@ -274,6 +324,11 @@ class ClickHouse extends Adapter
             'tags String',  // JSON string
         ];
 
+        // Add tenant column only if tables are shared across tenants
+        if ($this->sharedTables) {
+            $columns[] = 'tenant Nullable(UInt64)';
+        }
+
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
 
         // Create table with MergeTree engine for optimal performance
@@ -315,27 +370,34 @@ class ClickHouse extends Adapter
 
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
 
-        $sql = "
-            INSERT INTO {$escapedDatabaseAndTable}
-            (id, metric, value, period, time, tags)
-            VALUES (
-                :id,
-                :metric,
-                :value,
-                :period,
-                :time,
-                :tags
-            )
-        ";
+        // Build column list and values based on sharedTables setting
+        $columns = ['id', 'metric', 'value', 'period', 'time', 'tags'];
+        $placeholders = [':id', ':metric', ':value', ':period', ':time', ':tags'];
 
-        $this->query($sql, [
+        $params = [
             'id' => $id,
             'metric' => $metric,
             'value' => $value,
             'period' => $period,
             'time' => $timestamp,
             'tags' => json_encode($tags),
-        ]);
+        ];
+
+        if ($this->sharedTables) {
+            $columns[] = 'tenant';
+            $placeholders[] = ':tenant';
+            $params['tenant'] = $this->tenant;
+        }
+
+        $sql = "
+            INSERT INTO {$escapedDatabaseAndTable}
+            (" . implode(', ', $columns) . ")
+            VALUES (
+                " . implode(", ", $placeholders) . "
+            )
+        ";
+
+        $this->query($sql, $params);
 
         return true;
     }
@@ -370,22 +432,42 @@ class ClickHouse extends Adapter
             assert(is_string($metric));
             assert(is_int($value));
 
-            $values[] = sprintf(
-                "('%s', '%s', %d, '%s', '%s', '%s')",
-                $id,
-                $this->escapeString($metric),
-                $value,
-                $this->escapeString($period),
-                $timestamp,
-                $this->escapeString((string) json_encode($metricData['tags'] ?? []))
-            );
+            if ($this->sharedTables) {
+                $tenant = $this->tenant !== null ? (int) $this->tenant : 'NULL';
+                $values[] = sprintf(
+                    "('%s', '%s', %d, '%s', '%s', '%s', %s)",
+                    $id,
+                    $this->escapeString($metric),
+                    $value,
+                    $this->escapeString($period),
+                    $timestamp,
+                    $this->escapeString((string) json_encode($metricData['tags'] ?? [])),
+                    $tenant
+                );
+            } else {
+                $values[] = sprintf(
+                    "('%s', '%s', %d, '%s', '%s', '%s')",
+                    $id,
+                    $this->escapeString($metric),
+                    $value,
+                    $this->escapeString($period),
+                    $timestamp,
+                    $this->escapeString((string) json_encode($metricData['tags'] ?? []))
+                );
+            }
         }
 
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
 
+        // Build column list based on sharedTables setting
+        $columns = 'id, metric, value, period, time, tags';
+        if ($this->sharedTables) {
+            $columns .= ', tenant';
+        }
+
         $insertSql = "
             INSERT INTO {$escapedDatabaseAndTable}
-            (id, metric, value, period, time, tags)
+            ({$columns})
             VALUES " . implode(', ', $values);
 
         $this->query($insertSql);
@@ -413,21 +495,57 @@ class ClickHouse extends Adapter
             }
 
             $columns = explode("\t", $line);
-            if (count($columns) < 6) {
+            $expectedColumns = $this->sharedTables ? 7 : 6;
+            if (count($columns) < $expectedColumns) {
                 continue;
             }
 
-            $documents[] = new Document([
+            $document = [
                 '$id' => (string) $columns[0],
                 'metric' => (string) $columns[1],
                 'value' => (int) $columns[2],
                 'period' => (string) $columns[3],
                 'time' => (string) $columns[4],
                 'tags' => json_decode((string) $columns[5], true) ?? [],
-            ]);
+            ];
+
+            // Add tenant only if sharedTables is enabled
+            if ($this->sharedTables && isset($columns[6])) {
+                $document['tenant'] = $columns[6] === '\\N' ? null : (int) $columns[6];
+            }
+
+            $documents[] = new Document($document);
         }
 
         return $documents;
+    }
+
+    /**
+     * Get the SELECT column list for queries.
+     * Returns 6 columns if not using shared tables, 7 if using shared tables.
+     *
+     * @return string
+     */
+    private function getSelectColumns(): string
+    {
+        if ($this->sharedTables) {
+            return 'id, metric, value, period, time, tags, tenant';
+        }
+        return 'id, metric, value, period, time, tags';
+    }
+
+    /**
+     * Build tenant filter clause based on current tenant context.
+     *
+     * @return string
+     */
+    private function getTenantFilter(): string
+    {
+        if (!$this->sharedTables || $this->tenant === null) {
+            return '';
+        }
+
+        return " AND tenant = {$this->tenant}";
     }
 
     /**
@@ -454,11 +572,12 @@ class ClickHouse extends Adapter
         }
 
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $tenantFilter = $this->getTenantFilter();
 
         $sql = "
-            SELECT id, metric, value, period, time, tags
+            SELECT " . $this->getSelectColumns() . "
             FROM {$escapedDatabaseAndTable}
-            WHERE metric = :metric AND period = :period
+            WHERE metric = :metric AND period = :period{$tenantFilter}
             ORDER BY time DESC
             LIMIT :limit OFFSET :offset
             FORMAT TabSeparated
@@ -498,11 +617,12 @@ class ClickHouse extends Adapter
         }
 
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $tenantFilter = $this->getTenantFilter();
 
         $sql = "
-            SELECT id, metric, value, period, time, tags
+            SELECT " . $this->getSelectColumns() . "
             FROM {$escapedDatabaseAndTable}
-            WHERE metric = :metric AND time >= :startDate AND time <= :endDate
+            WHERE metric = :metric AND time >= :startDate AND time <= :endDate{$tenantFilter}
             ORDER BY time DESC
             LIMIT :limit OFFSET :offset
             FORMAT TabSeparated
@@ -529,11 +649,12 @@ class ClickHouse extends Adapter
     public function countByPeriod(string $metric, string $period, array $queries = []): int
     {
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $tenantFilter = $this->getTenantFilter();
 
         $sql = "
             SELECT count() as count
             FROM {$escapedDatabaseAndTable}
-            WHERE metric = :metric AND period = :period
+            WHERE metric = :metric AND period = :period{$tenantFilter}
             FORMAT TabSeparated
         ";
 
@@ -555,11 +676,12 @@ class ClickHouse extends Adapter
     public function sumByPeriod(string $metric, string $period, array $queries = []): int
     {
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $tenantFilter = $this->getTenantFilter();
 
         $sql = "
             SELECT sum(value) as total
             FROM {$escapedDatabaseAndTable}
-            WHERE metric = :metric AND period = :period
+            WHERE metric = :metric AND period = :period{$tenantFilter}
             FORMAT TabSeparated
         ";
 
@@ -581,10 +703,11 @@ class ClickHouse extends Adapter
     public function purge(string $datetime): bool
     {
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $tenantFilter = $this->getTenantFilter();
 
         $sql = "
             DELETE FROM {$escapedDatabaseAndTable}
-            WHERE time < :datetime
+            WHERE time < :datetime{$tenantFilter}
         ";
 
         $this->query($sql, ['datetime' => $datetime]);
