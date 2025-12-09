@@ -415,7 +415,9 @@ class ClickHouse extends Adapter
             if (! empty($indexId) && is_string($indexId) && is_array($attributes) && ! empty($attributes)) {
                 /** @var array<string> $attributes */
                 $attributeList = implode(', ', $attributes);
-                $indexDefs[] = 'INDEX ' . $indexId . ' (' . $attributeList . ') TYPE bloom_filter GRANULARITY 1';
+                // ClickHouse doesn't allow hyphens in index names, replace with underscores
+                $safeIndexId = str_replace('-', '_', $indexId);
+                $indexDefs[] = 'INDEX ' . $safeIndexId . ' (' . $attributeList . ') TYPE bloom_filter GRANULARITY 1';
             }
         }
 
@@ -436,7 +438,8 @@ class ClickHouse extends Adapter
         }
 
         // Create table with MergeTree engine for optimal performance
-        $indexClause = ! empty($indexDefs) ? ',\n                ' . implode(",\n                ", $indexDefs) : '';
+        // ClickHouse indexes must be defined inside the column list
+        $indexClause = ! empty($indexDefs) ? ",\n                " . implode(",\n                ", $indexDefs) : '';
         $createTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDatabaseAndTable} (
                 " . implode(",\n                ", $columnDefs) . $indexClause . "
