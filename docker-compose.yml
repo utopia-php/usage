@@ -14,6 +14,13 @@ services:
       - MYSQL_DATABASE=utopiaTests
       - MYSQL_USER=user
       - MYSQL_PASSWORD=password
+    healthcheck:
+      test: ["CMD", "sh", "-c", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
   clickhouse:
     image: clickhouse/clickhouse-server:25.11-alpine
     environment:
@@ -44,7 +51,16 @@ services:
       - ./tests:/code/tests
       - ./src:/code/src
     depends_on:
-      - mariadb
+      mariadb:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "php", "--version"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
 networks:
   usage:
