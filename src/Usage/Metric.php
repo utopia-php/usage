@@ -1,0 +1,300 @@
+<?php
+
+namespace Utopia\Usage;
+
+use ArrayObject;
+
+/**
+ * Usage Metric
+ *
+ * Represents a single usage metric data point containing information about
+ * resource usage, performance metrics, or other measurable data points.
+ *
+ * This class extends ArrayObject to provide both array-like access and
+ * type-safe getter methods for common metric attributes.
+ *
+ * Example:
+ * ```php
+ * $metric = new Metric([
+ *     '$id' => 'unique-id',
+ *     'metric' => 'bandwidth',
+ *     'value' => 1024,
+ *     'period' => '1h',
+ *     'time' => '2025-12-09 10:00:00',
+ *     'tags' => ['region' => 'us-east', 'project' => 'my-app']
+ * ]);
+ *
+ * echo $metric->getMetric(); // 'bandwidth'
+ * echo $metric->getValue();  // 1024
+ * ```
+ *
+ * @extends ArrayObject<string, mixed>
+ */
+class Metric extends ArrayObject
+{
+    /**
+     * Construct a new metric object.
+     *
+     * Initializes the metric with the provided data array.
+     * The array can contain any attributes, but common ones include:
+     * - $id: Unique identifier for the metric
+     * - metric: Name/type of the metric being tracked
+     * - value: Numeric value of the metric
+     * - period: Time period (1h, 1d, inf)
+     * - time: Timestamp when the metric was recorded
+     * - tags: Additional metadata as key-value pairs
+     * - tenant: Tenant ID for multi-tenant environments
+     *
+     * @param  array<string, mixed>  $input  Metric data
+     */
+    public function __construct(array $input = [])
+    {
+        parent::__construct($input);
+    }
+
+    /**
+     * Get metric ID.
+     *
+     * Returns the unique identifier for this metric entry.
+     * This is typically a UUID or auto-generated ID from the storage backend.
+     *
+     * @return string The metric ID, or empty string if not set
+     */
+    public function getId(): string
+    {
+        $id = $this->getAttribute('$id', '');
+        return is_string($id) ? $id : '';
+    }
+
+    /**
+     * Get metric name.
+     *
+     * Returns the name or type of metric being tracked.
+     * Examples: 'bandwidth', 'requests', 'storage', 'executions'
+     *
+     * @return string The metric name, or empty string if not set
+     */
+    public function getMetric(): string
+    {
+        $metric = $this->getAttribute('metric', '');
+        return is_string($metric) ? $metric : '';
+    }
+
+    /**
+     * Get metric value.
+     *
+     * Returns the numeric value associated with this metric.
+     * For example, number of requests, bytes transferred, or execution count.
+     *
+     * @param  int|null  $default  Default value to return if not set
+     * @return int|null The metric value, or the default if not set or invalid
+     */
+    public function getValue(?int $default = null): ?int
+    {
+        $value = $this->getAttribute('value', $default ?? 0);
+        return is_int($value) ? $value : $default;
+    }
+
+    /**
+     * Get time period.
+     *
+     * Returns the aggregation period for this metric.
+     * Common values:
+     * - '1h': Hourly aggregation
+     * - '1d': Daily aggregation
+     * - 'inf': Infinite/lifetime aggregation
+     *
+     * @return string The period identifier, defaults to '1h'
+     */
+    public function getPeriod(): string
+    {
+        $period = $this->getAttribute('period', '1h');
+        return is_string($period) ? $period : '1h';
+    }
+
+    /**
+     * Get timestamp.
+     *
+     * Returns the timestamp when this metric was recorded or the
+     * aggregation period start time. Format depends on the storage backend,
+     * typically ISO 8601 or database datetime format.
+     *
+     * @return string|null The timestamp string, or null if not set
+     */
+    public function getTime(): ?string
+    {
+        $time = $this->getAttribute('time', null);
+        return is_string($time) ? $time : null;
+    }
+
+    /**
+     * Get tags.
+     *
+     * Returns additional metadata associated with this metric as key-value pairs.
+     * Tags are useful for filtering, grouping, and contextualizing metrics.
+     *
+     * Common tag examples:
+     * - region: Geographic region (us-east, eu-west)
+     * - project: Project or application identifier
+     * - environment: dev, staging, production
+     * - resource: Specific resource being measured
+     *
+     * @return array<string, mixed> Associative array of tags
+     */
+    public function getTags(): array
+    {
+        $tags = $this->getAttribute('tags', []);
+        return is_array($tags) ? $tags : [];
+    }
+
+    /**
+     * Get tenant ID.
+     *
+     * Returns the tenant identifier when using shared tables in multi-tenant
+     * architectures. This allows data isolation at the application level while
+     * sharing the same database tables.
+     *
+     * @return int|null The tenant ID, or null if not set or not using multi-tenancy
+     */
+    public function getTenant(): ?int
+    {
+        $tenant = $this->getAttribute('tenant');
+
+        if ($tenant === null) {
+            return null;
+        }
+
+        if (is_int($tenant)) {
+            return $tenant;
+        }
+
+        if (is_numeric($tenant)) {
+            return (int) $tenant;
+        }
+
+        return null;
+    }
+
+    /**
+     * Get all attributes.
+     *
+     * Returns all metric data as an associative array.
+     * This includes both standard fields (id, metric, value, etc.) and
+     * any custom attributes that were set on the metric.
+     *
+     * @return array<string, mixed> All metric attributes
+     */
+    public function getAttributes(): array
+    {
+        $attributes = [];
+
+        foreach ($this as $key => $value) {
+            $attributes[$key] = $value;
+        }
+
+        return $attributes;
+    }
+
+    /**
+     * Get a specific attribute.
+     *
+     * Retrieves the value of a named attribute. If the attribute doesn't exist,
+     * returns the provided default value.
+     *
+     * This is a generic accessor - prefer using the type-safe getters
+     * (getId(), getMetric(), etc.) for standard attributes.
+     *
+     * @param  string  $name  The attribute name to retrieve
+     * @param  mixed  $default  Default value if attribute is not set
+     * @return mixed The attribute value or default
+     */
+    public function getAttribute(string $name, mixed $default = null): mixed
+    {
+        if (isset($this[$name])) {
+            return $this[$name];
+        }
+
+        return $default;
+    }
+
+    /**
+     * Set a specific attribute.
+     *
+     * Sets or updates the value of a named attribute.
+     * Returns the metric instance for method chaining.
+     *
+     * Example:
+     * ```php
+     * $metric->setAttribute('custom', 'value')
+     *        ->setAttribute('another', 123);
+     * ```
+     *
+     * @param  string  $key  The attribute name
+     * @param  mixed  $value  The attribute value
+     * @return static This metric instance for chaining
+     */
+    public function setAttribute(string $key, mixed $value): static
+    {
+        $this[$key] = $value;
+
+        return $this;
+    }
+
+    /**
+     * Check if an attribute exists.
+     *
+     * Determines whether a named attribute is set on this metric,
+     * regardless of its value (including null).
+     *
+     * @param  string  $name  The attribute name to check
+     * @return bool True if the attribute exists, false otherwise
+     */
+    public function hasAttribute(string $name): bool
+    {
+        return isset($this[$name]);
+    }
+
+    /**
+     * Remove an attribute.
+     *
+     * Removes a named attribute from the metric.
+     * Returns the metric instance for method chaining.
+     *
+     * @param  string  $name  The attribute name to remove
+     * @return static This metric instance for chaining
+     */
+    public function removeAttribute(string $name): static
+    {
+        unset($this[$name]);
+
+        /** @var static */
+        return $this;
+    }
+
+    /**
+     * Check if the metric is empty.
+     *
+     * A metric is considered empty if it has no ID set.
+     * This is useful for checking if a query returned valid results.
+     *
+     * @return bool True if the metric has no ID, false otherwise
+     */
+    public function isEmpty(): bool
+    {
+        return empty($this->getId());
+    }
+
+    /**
+     * Convert to array.
+     *
+     * Returns a plain PHP array representation of the metric.
+     * This is useful for serialization, JSON encoding, or passing
+     * to functions that expect arrays.
+     *
+     * @return array<string, mixed> Array representation of the metric
+     */
+    public function toArray(): array
+    {
+        return $this->getArrayCopy();
+    }
+}

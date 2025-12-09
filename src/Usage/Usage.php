@@ -2,10 +2,6 @@
 
 namespace Utopia\Usage;
 
-use Utopia\Database\Database;
-use Utopia\Database\Document;
-use Utopia\Usage\Adapter\ClickHouse;
-
 /**
  * Usage Metrics Manager
  *
@@ -37,11 +33,22 @@ class Usage
     /**
      * Setup the usage metrics storage.
      *
+     * @param string $table Table name for storing usage metrics
+     * @param array<int,array<string,mixed>> $columns Column definitions
+     * @param array<int,array<string,mixed>> $indexes Index definitions
      * @throws \Exception
      */
-    public function setup(): void
+    public function setup(string $table = 'usage', array $columns = [], array $indexes = []): void
     {
-        $this->adapter->setup();
+        // Use legacy constants if no columns/indexes provided (for backward compatibility)
+        if (empty($columns)) {
+            $columns = self::ATTRIBUTES;
+        }
+        if (empty($indexes)) {
+            $indexes = self::INDEXES;
+        }
+
+        $this->adapter->setup($table, $columns, $indexes);
     }
 
     /**
@@ -72,7 +79,7 @@ class Usage
      * Get usage metrics by period.
      *
      * @param  array<\Utopia\Database\Query>  $queries
-     * @return array<Document>
+     * @return array<Metric>
      *
      * @throws \Exception
      */
@@ -85,7 +92,7 @@ class Usage
      * Get usage metrics between dates.
      *
      * @param  array<\Utopia\Database\Query>  $queries
-     * @return array<Document>
+     * @return array<Metric>
      *
      * @throws \Exception
      */
@@ -152,7 +159,7 @@ class Usage
     public const ATTRIBUTES = [
         [
             '$id' => 'metric',
-            'type' => \Utopia\Database\Database::VAR_STRING,
+            'type' => 'string',
             'size' => 255,
             'required' => true,
             'signed' => true,
@@ -161,7 +168,7 @@ class Usage
         ],
         [
             '$id' => 'value',
-            'type' => \Utopia\Database\Database::VAR_INTEGER,
+            'type' => 'integer',
             'size' => 0,
             'required' => true,
             'signed' => true,
@@ -170,7 +177,7 @@ class Usage
         ],
         [
             '$id' => 'period',
-            'type' => \Utopia\Database\Database::VAR_STRING,
+            'type' => 'string',
             'size' => 16,
             'required' => true,
             'signed' => true,
@@ -179,7 +186,7 @@ class Usage
         ],
         [
             '$id' => 'time',
-            'type' => \Utopia\Database\Database::VAR_DATETIME,
+            'type' => 'datetime',
             'format' => '',
             'size' => 0,
             'signed' => true,
@@ -189,7 +196,7 @@ class Usage
         ],
         [
             '$id' => 'tags',
-            'type' => \Utopia\Database\Database::VAR_STRING,
+            'type' => 'string',
             'size' => 16777216,
             'required' => false,
             'signed' => true,
@@ -204,31 +211,31 @@ class Usage
     public const INDEXES = [
         [
             '$id' => 'index-metric',
-            'type' => \Utopia\Database\Database::INDEX_KEY,
+            'type' => 'key',
             'attributes' => ['metric'],
             'lengths' => [],
             'orders' => [],
         ],
         [
             '$id' => 'index-period',
-            'type' => \Utopia\Database\Database::INDEX_KEY,
+            'type' => 'key',
             'attributes' => ['period'],
             'lengths' => [],
             'orders' => [],
         ],
         [
             '$id' => 'index-metric-period',
-            'type' => \Utopia\Database\Database::INDEX_KEY,
+            'type' => 'key',
             'attributes' => ['metric', 'period'],
             'lengths' => [],
             'orders' => [],
         ],
         [
             '$id' => 'index-time',
-            'type' => \Utopia\Database\Database::INDEX_KEY,
+            'type' => 'key',
             'attributes' => ['time'],
             'lengths' => [],
-            'orders' => [\Utopia\Database\Database::ORDER_DESC],
+            'orders' => ['desc'],
         ],
     ];
 }

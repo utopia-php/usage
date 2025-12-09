@@ -2,8 +2,6 @@
 
 namespace Utopia\Usage;
 
-use Utopia\Database\Document;
-
 abstract class Adapter
 {
     /**
@@ -13,8 +11,12 @@ abstract class Adapter
 
     /**
      * Setup database structure
+     *
+     * @param  string  $table  Table name
+     * @param  array<int,array<string,mixed>>  $columns  Column definitions
+     * @param  array<int,array<string,mixed>>  $indexes  Index definitions
      */
-    abstract public function setup(): void;
+    abstract public function setup(string $table, array $columns, array $indexes): void;
 
     /**
      * Log usage metric
@@ -34,7 +36,7 @@ abstract class Adapter
      * Get usage metrics by period
      *
      * @param  array<\Utopia\Database\Query>  $queries
-     * @return array<Document>
+     * @return array<Metric>
      */
     abstract public function getByPeriod(string $metric, string $period, array $queries = []): array;
 
@@ -42,7 +44,7 @@ abstract class Adapter
      * Get usage metrics between dates
      *
      * @param  array<\Utopia\Database\Query>  $queries
-     * @return array<Document>
+     * @return array<Metric>
      */
     abstract public function getBetweenDates(string $metric, string $startDate, string $endDate, array $queries = []): array;
 

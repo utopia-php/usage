@@ -8,96 +8,17 @@ use Utopia\Database\Exception\Duplicate as DuplicateException;
 use Utopia\Database\Query;
 use Utopia\Exception;
 use Utopia\Usage\Adapter;
+use Utopia\Usage\Metric;
 
 class Database extends Adapter
 {
-    public const COLLECTION = 'usage';
+    protected string $collection = 'usage_metrics';
 
     /** @var array<string,string> */
     public const PERIODS = [
         '1h' => 'Y-m-d H:00',
         '1d' => 'Y-m-d 00:00',
         'inf' => '0000-00-00 00:00',
-    ];
-
-    public const ATTRIBUTES = [
-        [
-            '$id' => 'metric',
-            'type' => UtopiaDatabase::VAR_STRING,
-            'size' => 255,
-            'required' => true,
-            'signed' => true,
-            'array' => false,
-            'filters' => [],
-        ],
-        [
-            '$id' => 'value',
-            'type' => UtopiaDatabase::VAR_INTEGER,
-            'size' => 0,
-            'required' => true,
-            'signed' => true,
-            'array' => false,
-            'filters' => [],
-        ],
-        [
-            '$id' => 'period',
-            'type' => UtopiaDatabase::VAR_STRING,
-            'size' => 16,
-            'required' => true,
-            'signed' => true,
-            'array' => false,
-            'filters' => [],
-        ],
-        [
-            '$id' => 'time',
-            'type' => UtopiaDatabase::VAR_DATETIME,
-            'format' => '',
-            'size' => 0,
-            'signed' => true,
-            'required' => false,
-            'array' => false,
-            'filters' => ['datetime'],
-        ],
-        [
-            '$id' => 'tags',
-            'type' => UtopiaDatabase::VAR_STRING,
-            'size' => 16777216,
-            'required' => false,
-            'signed' => true,
-            'array' => false,
-            'filters' => ['json'],
-        ],
-    ];
-
-    public const INDEXES = [
-        [
-            '$id' => 'index-metric',
-            'type' => UtopiaDatabase::INDEX_KEY,
-            'attributes' => ['metric'],
-            'lengths' => [],
-            'orders' => [],
-        ],
-        [
-            '$id' => 'index-period',
-            'type' => UtopiaDatabase::INDEX_KEY,
-            'attributes' => ['period'],
-            'lengths' => [],
-            'orders' => [],
-        ],
-        [
-            '$id' => 'index-metric-period',
-            'type' => UtopiaDatabase::INDEX_KEY,
-            'attributes' => ['metric', 'period'],
-            'lengths' => [],
-            'orders' => [],
-        ],
-        [
-            '$id' => 'index-time',
-            'type' => UtopiaDatabase::INDEX_KEY,
-            'attributes' => ['time'],
-            'lengths' => [],
-            'orders' => [UtopiaDatabase::ORDER_DESC],
-        ],
     ];
 
     private UtopiaDatabase $db;
@@ -112,23 +33,24 @@ class Database extends Adapter
         return 'Database';
     }
 
-    public function setup(): void
+    public function setup(string $table, array $columns, array $indexes): void
     {
+        $this->collection = $table;
         if (! $this->db->exists($this->db->getDatabase())) {
             throw new Exception('You need to create the database before running Usage setup');
         }
 
         $attributes = \array_map(function ($attribute) {
             return new Document($attribute);
-        }, self::ATTRIBUTES);
+        }, $columns);
 
         $indexes = \array_map(function ($index) {
             return new Document($index);
-        }, self::INDEXES);
+        }, $indexes);
 
         try {
             $this->db->createCollection(
-                self::COLLECTION,
+                $table,
                 $attributes,
                 $indexes
             );
@@ -140,7 +62,7 @@ class Database extends Adapter
     public function log(string $metric, int $value, string $period = '1h', array $tags = []): bool
     {
         if (! isset(self::PERIODS[$period])) {
-            throw new \InvalidArgumentException('Invalid period. Allowed: '.implode(', ', array_keys(self::PERIODS)));
+            throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(self::PERIODS)));
         }
 
         $now = new \DateTime();
@@ -149,7 +71,7 @@ class Database extends Adapter
             : $now->format(self::PERIODS[$period]);
 
         $this->db->getAuthorization()->skip(function () use ($metric, $value, $period, $time, $tags) {
-            $this->db->createDocument(self::COLLECTION, new Document([
+            $this->db->createDocument($this->collection, new Document([
                 '$permissions' => [],
                 'metric' => $metric,
                 'value' => $value,
@@ -169,7 +91,7 @@ class Database extends Adapter
                 $period = $metric['period'] ?? '1h';
 
                 if (! isset(self::PERIODS[$period])) {
-                    throw new \InvalidArgumentException('Invalid period. Allowed: '.implode(', ', array_keys(self::PERIODS)));
+                    throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(self::PERIODS)));
                 }
 
                 $now = new \DateTime();
@@ -187,7 +109,7 @@ class Database extends Adapter
                 ]);
             }, $metrics);
 
-            $this->db->createDocuments(self::COLLECTION, $documents);
+            $this->db->createDocuments($this->collection, $documents);
         });
 
         return true;
@@ -202,12 +124,12 @@ class Database extends Adapter
             $queries[] = Query::orderDesc();
 
             return $this->db->find(
-                collection: self::COLLECTION,
+                collection: $this->collection,
                 queries: $queries,
             );
         });
 
-        return $result;
+        return \array_map(fn ($doc) => new Metric($doc->getArrayCopy()), $result);
     }
 
     public function getBetweenDates(string $metric, string $startDate, string $endDate, array $queries = []): array
@@ -220,12 +142,12 @@ class Database extends Adapter
             $queries[] = Query::orderDesc();
 
             return $this->db->find(
-                collection: self::COLLECTION,
+                collection: $this->collection,
                 queries: $queries,
             );
         });
 
-        return $result;
+        return \array_map(fn ($doc) => new Metric($doc->getArrayCopy()), $result);
     }
 
     public function countByPeriod(string $metric, string $period, array $queries = []): int
@@ -233,7 +155,7 @@ class Database extends Adapter
         /** @var int $count */
         $count = $this->db->getAuthorization()->skip(function () use ($queries, $metric, $period) {
             return $this->db->count(
-                collection: self::COLLECTION,
+                collection: $this->collection,
                 queries: [
                     Query::equal('metric', [$metric]),
                     Query::equal('period', [$period]),
@@ -263,7 +185,7 @@ class Database extends Adapter
         $this->db->getAuthorization()->skip(function () use ($datetime) {
             do {
                 $documents = $this->db->find(
-                    collection: self::COLLECTION,
+                    collection: $this->collection,
                     queries: [
                         Query::lessThan('time', $datetime),
                         Query::limit(100),
@@ -271,7 +193,7 @@ class Database extends Adapter
                 );
 
                 foreach ($documents as $document) {
-                    $this->db->deleteDocument(self::COLLECTION, $document->getId());
+                    $this->db->deleteDocument($this->collection, $document->getId());
                 }
             } while (! empty($documents));
         });

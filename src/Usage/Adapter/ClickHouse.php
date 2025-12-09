@@ -3,9 +3,9 @@
 namespace Utopia\Usage\Adapter;
 
 use Exception;
-use Utopia\Database\Document;
 use Utopia\Fetch\Client;
 use Utopia\Usage\Adapter;
+use Utopia\Usage\Metric;
 
 /**
  * ClickHouse Adapter for Usage
@@ -305,17 +305,22 @@ class ClickHouse extends Adapter
      *
      * Creates the database and table if they don't exist.
      *
+     * @param string $table Table name
+     * @param array<int,array<string,mixed>> $columns Column definitions (not used - ClickHouse uses hardcoded schema)
+     * @param array<int,array<string,mixed>> $indexes Index definitions (not used - ClickHouse uses hardcoded indexes)
      * @throws Exception
      */
-    public function setup(): void
+    public function setup(string $table, array $columns, array $indexes): void
     {
+        $this->setTable($table);
+
         // Create database if not exists
         $escapedDatabase = $this->escapeIdentifier($this->database);
         $createDbSql = "CREATE DATABASE IF NOT EXISTS {$escapedDatabase}";
         $this->query($createDbSql);
 
         // Build column definitions
-        $columns = [
+        $columnDefs = [
             'id String',
             'metric String',
             'value Int64',
@@ -326,7 +331,7 @@ class ClickHouse extends Adapter
 
         // Add tenant column only if tables are shared across tenants
         if ($this->sharedTables) {
-            $columns[] = 'tenant Nullable(UInt64)';
+            $columnDefs[] = 'tenant Nullable(UInt64)';
         }
 
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
@@ -334,7 +339,7 @@ class ClickHouse extends Adapter
         // Create table with MergeTree engine for optimal performance
         $createTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDatabaseAndTable} (
-                " . implode(",\n                ", $columns) . ',
+                " . implode(",\n                ", $columnDefs) . ',
                 INDEX idx_metric metric TYPE bloom_filter GRANULARITY 1,
                 INDEX idx_period period TYPE bloom_filter GRANULARITY 1
             )
@@ -476,9 +481,9 @@ class ClickHouse extends Adapter
     }
 
     /**
-     * Parse ClickHouse TabSeparated results into Document array.
+     * Parse ClickHouse TabSeparated results into Metric array.
      *
-     * @return array<Document>
+     * @return array<Metric>
      */
     private function parseResults(string $result): array
     {
@@ -487,7 +492,7 @@ class ClickHouse extends Adapter
         }
 
         $lines = explode("\n", trim($result));
-        $documents = [];
+        $metrics = [];
 
         foreach ($lines as $line) {
             if (empty(trim($line))) {
@@ -500,7 +505,7 @@ class ClickHouse extends Adapter
                 continue;
             }
 
-            $document = [
+            $data = [
                 '$id' => (string) $columns[0],
                 'metric' => (string) $columns[1],
                 'value' => (int) $columns[2],
@@ -511,13 +516,13 @@ class ClickHouse extends Adapter
 
             // Add tenant only if sharedTables is enabled
             if ($this->sharedTables && isset($columns[6])) {
-                $document['tenant'] = $columns[6] === '\\N' ? null : (int) $columns[6];
+                $data['tenant'] = $columns[6] === '\\\\N' ? null : (int) $columns[6];
             }
 
-            $documents[] = new Document($document);
+            $metrics[] = new Metric($data);
         }
 
-        return $documents;
+        return $metrics;
     }
 
     /**
@@ -552,7 +557,7 @@ class ClickHouse extends Adapter
      * Get usage metrics by period.
      *
      * @param  array<int,mixed>  $queries
-     * @return array<Document>
+     * @return array<Metric>
      *
      * @throws Exception
      */
@@ -597,7 +602,7 @@ class ClickHouse extends Adapter
      * Get usage metrics between dates.
      *
      * @param  array<int,mixed>  $queries
-     * @return array<Document>
+     * @return array<Metric>
      *
      * @throws Exception
      */
