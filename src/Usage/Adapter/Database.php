@@ -12,7 +12,7 @@ use Utopia\Usage\Metric;
 
 class Database extends Adapter
 {
-    protected string $collection = self::DEFAULT_TABLE;
+    protected string $collection;
 
     private UtopiaDatabase $db;
 

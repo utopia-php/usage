@@ -5,11 +5,6 @@ namespace Utopia\Usage;
 abstract class Adapter
 {
     /**
-     * Default table name for usage metrics
-     */
-    public const DEFAULT_TABLE = 'usage';
-
-    /**
      * Period format mappings
      *
      * @var array<string,string>

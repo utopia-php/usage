@@ -10,6 +10,95 @@ namespace Utopia\Usage;
  */
 class Usage
 {
+    public const COLLECTION = 'usage';
+
+    /**
+     * @deprecated Use Adapter::PERIODS instead
+     *
+     * @var array<string,string>
+     */
+    public const PERIODS = Adapter::PERIODS;
+
+    public const ATTRIBUTES = [
+        [
+            '$id' => 'metric',
+            'type' => 'string',
+            'size' => 255,
+            'required' => true,
+            'signed' => true,
+            'array' => false,
+            'filters' => [],
+        ],
+        [
+            '$id' => 'value',
+            'type' => 'integer',
+            'size' => 0,
+            'required' => true,
+            'signed' => true,
+            'array' => false,
+            'filters' => [],
+        ],
+        [
+            '$id' => 'period',
+            'type' => 'string',
+            'size' => 16,
+            'required' => true,
+            'signed' => true,
+            'array' => false,
+            'filters' => [],
+        ],
+        [
+            '$id' => 'time',
+            'type' => 'datetime',
+            'format' => '',
+            'size' => 0,
+            'signed' => true,
+            'required' => false,
+            'array' => false,
+            'filters' => ['datetime'],
+        ],
+        [
+            '$id' => 'tags',
+            'type' => 'string',
+            'size' => 16777216,
+            'required' => false,
+            'signed' => true,
+            'array' => false,
+            'filters' => ['json'],
+        ],
+    ];
+
+    public const INDEXES = [
+        [
+            '$id' => 'index-metric',
+            'type' => 'key',
+            'attributes' => ['metric'],
+            'lengths' => [],
+            'orders' => [],
+        ],
+        [
+            '$id' => 'index-period',
+            'type' => 'key',
+            'attributes' => ['period'],
+            'lengths' => [],
+            'orders' => [],
+        ],
+        [
+            '$id' => 'index-metric-period',
+            'type' => 'key',
+            'attributes' => ['metric', 'period'],
+            'lengths' => [],
+            'orders' => [],
+        ],
+        [
+            '$id' => 'index-time',
+            'type' => 'key',
+            'attributes' => ['time'],
+            'lengths' => [],
+            'orders' => ['desc'],
+        ],
+    ];
+
     private Adapter $adapter;
 
     /**
@@ -38,7 +127,7 @@ class Usage
      * @param array<int,array<string,mixed>> $indexes Index definitions
      * @throws \Exception
      */
-    public function setup(string $table = Adapter::DEFAULT_TABLE, array $columns = [], array $indexes = []): void
+    public function setup(string $table = self::COLLECTION, array $columns = [], array $indexes = []): void
     {
         // Use legacy constants if no columns/indexes provided (for backward compatibility)
         if (empty($columns)) {
@@ -134,98 +223,4 @@ class Usage
     {
         return $this->adapter->purge($datetime);
     }
-
-    /**
-     * @deprecated Use Adapter::DEFAULT_TABLE instead
-     *
-     * @internal Legacy support - will be removed in future version
-     */
-    public const COLLECTION = Adapter::DEFAULT_TABLE;
-
-    /**
-     * @deprecated Use Adapter::PERIODS instead
-     *
-     * @var array<string,string>
-     */
-    public const PERIODS = Adapter::PERIODS;
-
-    public const ATTRIBUTES = [
-        [
-            '$id' => 'metric',
-            'type' => 'string',
-            'size' => 255,
-            'required' => true,
-            'signed' => true,
-            'array' => false,
-            'filters' => [],
-        ],
-        [
-            '$id' => 'value',
-            'type' => 'integer',
-            'size' => 0,
-            'required' => true,
-            'signed' => true,
-            'array' => false,
-            'filters' => [],
-        ],
-        [
-            '$id' => 'period',
-            'type' => 'string',
-            'size' => 16,
-            'required' => true,
-            'signed' => true,
-            'array' => false,
-            'filters' => [],
-        ],
-        [
-            '$id' => 'time',
-            'type' => 'datetime',
-            'format' => '',
-            'size' => 0,
-            'signed' => true,
-            'required' => false,
-            'array' => false,
-            'filters' => ['datetime'],
-        ],
-        [
-            '$id' => 'tags',
-            'type' => 'string',
-            'size' => 16777216,
-            'required' => false,
-            'signed' => true,
-            'array' => false,
-            'filters' => ['json'],
-        ],
-    ];
-
-    public const INDEXES = [
-        [
-            '$id' => 'index-metric',
-            'type' => 'key',
-            'attributes' => ['metric'],
-            'lengths' => [],
-            'orders' => [],
-        ],
-        [
-            '$id' => 'index-period',
-            'type' => 'key',
-            'attributes' => ['period'],
-            'lengths' => [],
-            'orders' => [],
-        ],
-        [
-            '$id' => 'index-metric-period',
-            'type' => 'key',
-            'attributes' => ['metric', 'period'],
-            'lengths' => [],
-            'orders' => [],
-        ],
-        [
-            '$id' => 'index-time',
-            'type' => 'key',
-            'attributes' => ['time'],
-            'lengths' => [],
-            'orders' => ['desc'],
-        ],
-    ];
 }

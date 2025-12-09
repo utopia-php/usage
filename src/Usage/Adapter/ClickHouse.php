@@ -6,6 +6,7 @@ use Exception;
 use Utopia\Fetch\Client;
 use Utopia\Usage\Adapter;
 use Utopia\Usage\Metric;
+use Utopia\Usage\Usage;
 
 /**
  * ClickHouse Adapter for Usage
@@ -25,7 +26,7 @@ class ClickHouse extends Adapter
 
     private string $database = self::DEFAULT_DATABASE;
 
-    private string $table = self::DEFAULT_TABLE;
+    private string $table;
 
     private string $username;
 
@@ -337,6 +338,7 @@ class ClickHouse extends Adapter
      */
     public function setup(string $table, array $columns, array $indexes): void
     {
+        $this->table = $table;
         // Create database if not exists
         $escapedDatabase = $this->escapeIdentifier($this->database);
         $createDbSql = "CREATE DATABASE IF NOT EXISTS {$escapedDatabase}";
