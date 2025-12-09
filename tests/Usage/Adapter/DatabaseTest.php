@@ -35,7 +35,11 @@ class DatabaseTest extends TestCase
         $this->usage = new Usage(new AdapterDatabase($this->database));
 
         // Create database if missing
-        $this->database->create();
+        try {
+            $this->database->create();
+        } catch (Duplicate $ex) {
+            // ignore duplicate exception
+        }
 
         // Always run setup to ensure collection exists
         try {
