@@ -1,0 +1,36 @@
+name: "Tests"
+
+on: [pull_request, push]
+
+jobs:
+  tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        php-versions: ['8.0', '8.1', '8.2', '8.3']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-versions }}
+          extensions: pdo, pdo_mysql, mysqli
+          coverage: xdebug
+
+      - name: Install dependencies
+        run: composer install
+
+      - name: Start MariaDB
+        run: |
+          docker compose up -d mariadb
+          sleep 10
+
+      - name: Run PHPUnit
+        run: docker compose run --rm usage vendor/bin/phpunit --configuration phpunit.xml tests

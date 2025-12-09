@@ -1,0 +1,37 @@
+version: '3'
+
+services:
+  mariadb:
+    image: mariadb:10.7
+    container_name: utopia-usage-mariadb
+    restart: unless-stopped
+    networks:
+      - usage
+    ports:
+      - "3307:3306"
+    volumes:
+      - mariadb:/var/lib/mysql:rw
+    environment:
+      - MYSQL_ROOT_PASSWORD=password
+      - MYSQL_DATABASE=utopiaTests
+      - MYSQL_USER=user
+      - MYSQL_PASSWORD=password
+
+  usage:
+    container_name: utopia-usage
+    build:
+      context: .
+      dockerfile: Dockerfile
+    networks:
+      - usage
+    volumes:
+      - ./tests:/code/tests
+      - ./src:/code/src
+    depends_on:
+      - mariadb
+
+networks:
+  usage:
+
+volumes:
+  mariadb:
