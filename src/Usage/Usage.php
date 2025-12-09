@@ -19,7 +19,7 @@ class Usage
     /**
      * Constructor.
      *
-     * @param Adapter $adapter The adapter to use for storing usage metrics
+     * @param  Adapter  $adapter  The adapter to use for storing usage metrics
      */
     public function __construct(Adapter $adapter)
     {
@@ -28,8 +28,6 @@ class Usage
 
     /**
      * Get the current adapter.
-     *
-     * @return Adapter
      */
     public function getAdapter(): Adapter
     {
@@ -39,7 +37,6 @@ class Usage
     /**
      * Setup the usage metrics storage.
      *
-     * @return void
      * @throws \Exception
      */
     public function setup(): void
@@ -50,11 +47,8 @@ class Usage
     /**
      * Log a usage metric.
      *
-     * @param string $metric
-     * @param int $value
-     * @param string $period
-     * @param array<string,mixed> $tags
-     * @return bool
+     * @param  array<string,mixed>  $tags
+     *
      * @throws \Exception
      */
     public function log(string $metric, int $value, string $period = '1h', array $tags = []): bool
@@ -65,8 +59,8 @@ class Usage
     /**
      * Log multiple usage metrics in batch.
      *
-     * @param array<int,array<string,mixed>> $metrics
-     * @return bool
+     * @param  array<int,array<string,mixed>>  $metrics
+     *
      * @throws \Exception
      */
     public function logBatch(array $metrics): bool
@@ -77,10 +71,9 @@ class Usage
     /**
      * Get usage metrics by period.
      *
-     * @param string $metric
-     * @param string $period
-     * @param array<int,mixed> $queries
+     * @param  array<int,mixed>  $queries
      * @return array<Document>
+     *
      * @throws \Exception
      */
     public function getByPeriod(string $metric, string $period, array $queries = []): array
@@ -91,11 +84,9 @@ class Usage
     /**
      * Get usage metrics between dates.
      *
-     * @param string $metric
-     * @param string $startDate
-     * @param string $endDate
-     * @param array<int,mixed> $queries
+     * @param  array<int,mixed>  $queries
      * @return array<Document>
+     *
      * @throws \Exception
      */
     public function getBetweenDates(string $metric, string $startDate, string $endDate, array $queries = []): array
@@ -106,10 +97,8 @@ class Usage
     /**
      * Count usage metrics by period.
      *
-     * @param string $metric
-     * @param string $period
-     * @param array<int,mixed> $queries
-     * @return int
+     * @param  array<int,mixed>  $queries
+     *
      * @throws \Exception
      */
     public function countByPeriod(string $metric, string $period, array $queries = []): int
@@ -120,10 +109,8 @@ class Usage
     /**
      * Sum usage metric values by period.
      *
-     * @param string $metric
-     * @param string $period
-     * @param array<int,mixed> $queries
-     * @return int
+     * @param  array<int,mixed>  $queries
+     *
      * @throws \Exception
      */
     public function sumByPeriod(string $metric, string $period, array $queries = []): int
@@ -134,8 +121,6 @@ class Usage
     /**
      * Purge usage metrics older than the specified datetime.
      *
-     * @param string $datetime
-     * @return bool
      * @throws \Exception
      */
     public function purge(string $datetime): bool
@@ -145,13 +130,15 @@ class Usage
 
     /**
      * @deprecated Use constructor with adapter instead
+     *
      * @internal Legacy support - will be removed in future version
      */
     public const COLLECTION = 'usage';
 
-    /** 
+    /**
      * @deprecated Use Adapter\Database::PERIODS instead
-     * @var array<string,string> 
+     *
+     * @var array<string,string>
      */
     public const PERIODS = [
         '1h' => 'Y-m-d H:00',

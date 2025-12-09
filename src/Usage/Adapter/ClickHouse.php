@@ -16,7 +16,9 @@ use Utopia\Usage\Adapter;
 class ClickHouse extends Adapter
 {
     private const DEFAULT_PORT = 8123;
+
     private const DEFAULT_TABLE = 'usage';
+
     private const DEFAULT_DATABASE = 'default';
 
     /** @var array<string,string> */
@@ -27,10 +29,15 @@ class ClickHouse extends Adapter
     ];
 
     private string $host;
+
     private int $port;
+
     private string $database = self::DEFAULT_DATABASE;
+
     private string $table = self::DEFAULT_TABLE;
+
     private string $username;
+
     private string $password;
 
     /** @var bool Whether to use HTTPS for ClickHouse HTTP interface */
@@ -39,11 +46,11 @@ class ClickHouse extends Adapter
     private Client $client;
 
     /**
-     * @param string $host ClickHouse host
-     * @param string $username ClickHouse username (default: 'default')
-     * @param string $password ClickHouse password (default: '')
-     * @param int $port ClickHouse HTTP port (default: 8123)
-     * @param bool $secure Whether to use HTTPS (default: false)
+     * @param  string  $host  ClickHouse host
+     * @param  string  $username  ClickHouse username (default: 'default')
+     * @param  string  $password  ClickHouse password (default: '')
+     * @param  int  $port  ClickHouse HTTP port (default: 8123)
+     * @param  bool  $secure  Whether to use HTTPS (default: false)
      */
     public function __construct(
         string $host,
@@ -61,13 +68,12 @@ class ClickHouse extends Adapter
         $this->password = $password;
         $this->secure = $secure;
 
-        $this->client = new Client();
+        $this->client = new Client;
     }
 
     /**
      * Validate host parameter.
      *
-     * @param string $host
      * @throws Exception
      */
     private function validateHost(string $host): void
@@ -85,7 +91,6 @@ class ClickHouse extends Adapter
     /**
      * Validate port parameter.
      *
-     * @param int $port
      * @throws Exception
      */
     private function validatePort(int $port): void
@@ -98,8 +103,8 @@ class ClickHouse extends Adapter
     /**
      * Validate identifier (database, table).
      *
-     * @param string $identifier
-     * @param string $type Name of the identifier type for error messages
+     * @param  string  $type  Name of the identifier type for error messages
+     *
      * @throws Exception
      */
     private function validateIdentifier(string $identifier, string $type = 'Identifier'): void
@@ -126,26 +131,22 @@ class ClickHouse extends Adapter
 
     /**
      * Escape an identifier for safe use in SQL.
-     *
-     * @param string $identifier
-     * @return string
      */
     private function escapeIdentifier(string $identifier): string
     {
-        return '`' . str_replace('`', '``', $identifier) . '`';
+        return '`'.str_replace('`', '``', $identifier).'`';
     }
 
     /**
      * Escape a string value for safe use in ClickHouse SQL queries.
      *
-     * @param string $value
      * @return string The escaped value without surrounding quotes
      */
     private function escapeString(string $value): string
     {
         return str_replace(
-            ["\\", "'"],
-            ["\\\\", "''"],
+            ['\\', "'"],
+            ['\\\\', "''"],
             $value
         );
     }
@@ -153,8 +154,6 @@ class ClickHouse extends Adapter
     /**
      * Set the database name for subsequent operations.
      *
-     * @param string $database
-     * @return self
      * @throws Exception
      */
     public function setDatabase(string $database): self
@@ -168,8 +167,6 @@ class ClickHouse extends Adapter
     /**
      * Set the table name for subsequent operations.
      *
-     * @param string $table
-     * @return self
      * @throws Exception
      */
     public function setTable(string $table): self
@@ -183,9 +180,10 @@ class ClickHouse extends Adapter
     /**
      * Execute a ClickHouse query via HTTP interface.
      *
-     * @param string $sql SQL query to execute
-     * @param array<string,mixed> $params Query parameters for prepared statements
+     * @param  string  $sql  SQL query to execute
+     * @param  array<string,mixed>  $params  Query parameters for prepared statements
      * @return string Query result as string
+     *
      * @throws Exception
      */
     private function query(string $sql, array $params = []): string
@@ -197,7 +195,7 @@ class ClickHouse extends Adapter
         foreach ($params as $key => $value) {
             $placeholder = ":{$key}";
             if (is_string($value)) {
-                $escapedValue = "'" . $this->escapeString($value) . "'";
+                $escapedValue = "'".$this->escapeString($value)."'";
             } elseif (is_null($value)) {
                 $escapedValue = 'NULL';
             } else {
@@ -265,12 +263,12 @@ class ClickHouse extends Adapter
             'tags String',  // JSON string
         ];
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
 
         // Create table with MergeTree engine for optimal performance
         $createTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDatabaseAndTable} (
-                " . implode(",\n                ", $columns) . ",
+                ".implode(",\n                ", $columns).',
                 INDEX idx_metric metric TYPE bloom_filter GRANULARITY 1,
                 INDEX idx_period period TYPE bloom_filter GRANULARITY 1
             )
@@ -278,7 +276,7 @@ class ClickHouse extends Adapter
             ORDER BY (metric, period, time)
             PARTITION BY toYYYYMM(time)
             SETTINGS index_granularity = 8192
-        ";
+        ';
 
         $this->query($createTableSql);
     }
@@ -286,28 +284,25 @@ class ClickHouse extends Adapter
     /**
      * Log a usage metric.
      *
-     * @param string $metric
-     * @param int $value
-     * @param string $period
-     * @param array<string,mixed> $tags
-     * @return bool
+     * @param  array<string,mixed>  $tags
+     *
      * @throws Exception
      */
     public function log(string $metric, int $value, string $period = '1h', array $tags = []): bool
     {
         if (! isset(self::PERIODS[$period])) {
-            throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(self::PERIODS)));
+            throw new \InvalidArgumentException('Invalid period. Allowed: '.implode(', ', array_keys(self::PERIODS)));
         }
 
         $id = uniqid('', true);
-        $now = new \DateTime();
+        $now = new \DateTime;
         $time = $now->format(self::PERIODS[$period]);
 
         // Format timestamp for ClickHouse DateTime64(3)
         $microtime = microtime(true);
-        $timestamp = date('Y-m-d H:i:s', (int) $microtime) . '.' . sprintf('%03d', ($microtime - floor($microtime)) * 1000);
+        $timestamp = date('Y-m-d H:i:s', (int) $microtime).'.'.sprintf('%03d', ($microtime - floor($microtime)) * 1000);
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
 
         $sql = "
             INSERT INTO {$escapedDatabaseAndTable}
@@ -337,8 +332,8 @@ class ClickHouse extends Adapter
     /**
      * Log multiple usage metrics in batch.
      *
-     * @param array<int,array<string,mixed>> $metrics
-     * @return bool
+     * @param  array<int,array<string,mixed>>  $metrics
+     *
      * @throws Exception
      */
     public function logBatch(array $metrics): bool
@@ -352,12 +347,12 @@ class ClickHouse extends Adapter
             $period = $metricData['period'] ?? '1h';
 
             if (! isset(self::PERIODS[$period])) {
-                throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(self::PERIODS)));
+                throw new \InvalidArgumentException('Invalid period. Allowed: '.implode(', ', array_keys(self::PERIODS)));
             }
 
             $id = uniqid('', true);
             $microtime = microtime(true);
-            $timestamp = date('Y-m-d H:i:s', (int) $microtime) . '.' . sprintf('%03d', ($microtime - floor($microtime)) * 1000);
+            $timestamp = date('Y-m-d H:i:s', (int) $microtime).'.'.sprintf('%03d', ($microtime - floor($microtime)) * 1000);
 
             $values[] = sprintf(
                 "('%s', '%s', %d, '%s', '%s', '%s')",
@@ -370,12 +365,12 @@ class ClickHouse extends Adapter
             );
         }
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
 
         $insertSql = "
             INSERT INTO {$escapedDatabaseAndTable}
             (id, metric, value, period, time, tags)
-            VALUES " . implode(', ', $values);
+            VALUES ".implode(', ', $values);
 
         $this->query($insertSql);
 
@@ -385,7 +380,6 @@ class ClickHouse extends Adapter
     /**
      * Parse ClickHouse TabSeparated results into Document array.
      *
-     * @param string $result
      * @return array<Document>
      */
     private function parseResults(string $result): array
@@ -423,10 +417,9 @@ class ClickHouse extends Adapter
     /**
      * Get usage metrics by period.
      *
-     * @param string $metric
-     * @param string $period
-     * @param array<int,mixed> $queries
+     * @param  array<int,mixed>  $queries
      * @return array<Document>
+     *
      * @throws Exception
      */
     public function getByPeriod(string $metric, string $period, array $queries = []): array
@@ -444,7 +437,7 @@ class ClickHouse extends Adapter
             }
         }
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
 
         $sql = "
             SELECT id, metric, value, period, time, tags
@@ -468,11 +461,9 @@ class ClickHouse extends Adapter
     /**
      * Get usage metrics between dates.
      *
-     * @param string $metric
-     * @param string $startDate
-     * @param string $endDate
-     * @param array<int,mixed> $queries
+     * @param  array<int,mixed>  $queries
      * @return array<Document>
+     *
      * @throws Exception
      */
     public function getBetweenDates(string $metric, string $startDate, string $endDate, array $queries = []): array
@@ -490,7 +481,7 @@ class ClickHouse extends Adapter
             }
         }
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
 
         $sql = "
             SELECT id, metric, value, period, time, tags
@@ -515,15 +506,13 @@ class ClickHouse extends Adapter
     /**
      * Count usage metrics by period.
      *
-     * @param string $metric
-     * @param string $period
-     * @param array<int,mixed> $queries
-     * @return int
+     * @param  array<int,mixed>  $queries
+     *
      * @throws Exception
      */
     public function countByPeriod(string $metric, string $period, array $queries = []): int
     {
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
 
         $sql = "
             SELECT count() as count
@@ -543,15 +532,13 @@ class ClickHouse extends Adapter
     /**
      * Sum usage metric values by period.
      *
-     * @param string $metric
-     * @param string $period
-     * @param array<int,mixed> $queries
-     * @return int
+     * @param  array<int,mixed>  $queries
+     *
      * @throws Exception
      */
     public function sumByPeriod(string $metric, string $period, array $queries = []): int
     {
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
 
         $sql = "
             SELECT sum(value) as total
@@ -573,13 +560,11 @@ class ClickHouse extends Adapter
     /**
      * Purge usage metrics older than the specified datetime.
      *
-     * @param string $datetime
-     * @return bool
      * @throws Exception
      */
     public function purge(string $datetime): bool
     {
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->table);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($this->table);
 
         $sql = "
             DELETE FROM {$escapedDatabaseAndTable}

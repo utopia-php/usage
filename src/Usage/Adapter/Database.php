@@ -140,10 +140,10 @@ class Database extends Adapter
     public function log(string $metric, int $value, string $period = '1h', array $tags = []): bool
     {
         if (! isset(self::PERIODS[$period])) {
-            throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(self::PERIODS)));
+            throw new \InvalidArgumentException('Invalid period. Allowed: '.implode(', ', array_keys(self::PERIODS)));
         }
 
-        $now = new \DateTime();
+        $now = new \DateTime;
         $time = $period === 'inf'
             ? '1000-01-01 00:00:00'
             : $now->format(self::PERIODS[$period]);
@@ -169,10 +169,10 @@ class Database extends Adapter
                 $period = $metric['period'] ?? '1h';
 
                 if (! isset(self::PERIODS[$period])) {
-                    throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(self::PERIODS)));
+                    throw new \InvalidArgumentException('Invalid period. Allowed: '.implode(', ', array_keys(self::PERIODS)));
                 }
 
-                $now = new \DateTime();
+                $now = new \DateTime;
                 $time = $period === 'inf'
                     ? '1000-01-01 00:00:00'
                     : $now->format(self::PERIODS[$period]);

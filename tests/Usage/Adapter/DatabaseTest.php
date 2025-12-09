@@ -8,9 +8,7 @@ use Utopia\Cache\Adapter\None as NoCache;
 use Utopia\Cache\Cache;
 use Utopia\Database\Adapter\MariaDB;
 use Utopia\Database\Database;
-use Utopia\Database\DateTime;
 use Utopia\Database\Exception\Duplicate;
-use Utopia\Database\Query;
 use Utopia\Tests\Usage\UsageBase;
 use Utopia\Usage\Adapter\Database as AdapterDatabase;
 use Utopia\Usage\Usage;
@@ -18,6 +16,7 @@ use Utopia\Usage\Usage;
 class DatabaseTest extends TestCase
 {
     use UsageBase;
+
     protected Database $database;
 
     protected function initializeUsage(): void
@@ -28,7 +27,7 @@ class DatabaseTest extends TestCase
         $dbPass = 'password';
 
         $pdo = new PDO("mysql:host={$dbHost};port={$dbPort};charset=utf8mb4", $dbUser, $dbPass, MariaDB::getPdoAttributes());
-        $cache = new Cache(new NoCache());
+        $cache = new Cache(new NoCache);
         $this->database = new Database(new MariaDB($pdo), $cache);
         $this->database->setDatabase('utopiaTests');
         $this->database->setNamespace('utopia_usage');
