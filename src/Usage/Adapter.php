@@ -5,17 +5,6 @@ namespace Utopia\Usage;
 abstract class Adapter
 {
     /**
-     * Period format mappings
-     *
-     * @var array<string,string>
-     */
-    public const PERIODS = [
-        '1h' => 'Y-m-d H:00',
-        '1d' => 'Y-m-d 00:00',
-        'inf' => '0000-00-00 00:00',
-    ];
-
-    /**
      * Get adapter name
      */
     abstract public function getName(): string;
@@ -27,14 +16,14 @@ abstract class Adapter
      * @param  array<int,array<string,mixed>>  $columns  Column definitions
      * @param  array<int,array<string,mixed>>  $indexes  Index definitions
      */
-    abstract public function setup(string $table, array $columns, array $indexes): void;
+    abstract public function setup(): void;
 
     /**
      * Log usage metric
      *
      * @param  array<string,mixed>  $tags
      */
-    abstract public function log(string $metric, int $value, string $period = '1h', array $tags = []): bool;
+    abstract public function log(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool;
 
     /**
      * Log multiple metrics in batch

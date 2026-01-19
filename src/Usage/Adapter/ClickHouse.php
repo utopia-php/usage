@@ -3,22 +3,37 @@
 namespace Utopia\Usage\Adapter;
 
 use Exception;
+use Utopia\Database\Database;
+use Utopia\Database\Query;
 use Utopia\Fetch\Client;
 use Utopia\Usage\Adapter;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
+use Utopia\Validator\Hostname;
 
 /**
  * ClickHouse Adapter for Usage
  *
  * This adapter stores usage metrics in ClickHouse using HTTP interface.
  * ClickHouse is optimized for analytical queries and can handle massive amounts of metrics data.
+ *
+ * Features:
+ * - Dynamic schema based on SQL adapter attributes (no hardcoded columns)
+ * - Safe SQL injection prevention using ClickHouse parameter binding
+ * - Support for find() and count() operations with Query objects
+ * - Multi-tenant support with optional shared tables
+ * - Namespace support for table name prefixes
+ * - Proper index creation for optimized analytical queries
+ * - Bloom filter indexes for efficient filtering
+ * - MergeTree engine with monthly partitioning by time
  */
-class ClickHouse extends Adapter
+class ClickHouse extends SQL
 {
     private const DEFAULT_PORT = 8123;
 
     private const DEFAULT_DATABASE = 'default';
+
+    private const DEFAULT_TABLE = self::COLLECTION;
 
     private string $host;
 
@@ -26,7 +41,7 @@ class ClickHouse extends Adapter
 
     private string $database = self::DEFAULT_DATABASE;
 
-    private string $table;
+    private string $table = self::DEFAULT_TABLE;
 
     private string $username;
 
@@ -66,32 +81,39 @@ class ClickHouse extends Adapter
         $this->password = $password;
         $this->secure = $secure;
 
+        // Initialize the HTTP client for connection reuse
         $this->client = new Client();
         $this->client->addHeader('X-ClickHouse-User', $this->username);
         $this->client->addHeader('X-ClickHouse-Key', $this->password);
-        $this->client->addHeader('X-ClickHouse-Database', $this->database);
+        $this->client->setTimeout(30_000); // 30 seconds
+    }
+
+    /**
+     * Get adapter name.
+     */
+    public function getName(): string
+    {
+        return 'ClickHouse';
     }
 
     /**
      * Validate host parameter.
      *
+     * @param string $host
      * @throws Exception
      */
     private function validateHost(string $host): void
     {
-        if (empty($host)) {
-            throw new Exception('ClickHouse host cannot be empty');
-        }
-
-        // Allow hostnames, IP addresses, and localhost
-        if (! preg_match('/^[a-zA-Z0-9._\-]+$/', $host)) {
-            throw new Exception('ClickHouse host must be a valid hostname or IP address');
+        $validator = new Hostname();
+        if (!$validator->isValid($host)) {
+            throw new Exception('ClickHouse host is not a valid hostname or IP address');
         }
     }
 
     /**
      * Validate port parameter.
      *
+     * @param int $port
      * @throws Exception
      */
     private function validatePort(int $port): void
@@ -102,10 +124,11 @@ class ClickHouse extends Adapter
     }
 
     /**
-     * Validate identifier (database, table).
+     * Validate identifier (database, table, namespace).
+     * ClickHouse identifiers follow SQL standard rules.
      *
-     * @param  string  $type  Name of the identifier type for error messages
-     *
+     * @param string $identifier
+     * @param string $type Name of the identifier type for error messages
      * @throws Exception
      */
     private function validateIdentifier(string $identifier, string $type = 'Identifier'): void
@@ -119,11 +142,11 @@ class ClickHouse extends Adapter
         }
 
         // ClickHouse identifiers: alphanumeric, underscores, cannot start with number
-        if (! preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $identifier)) {
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $identifier)) {
             throw new Exception("{$type} must start with a letter or underscore and contain only alphanumeric characters and underscores");
         }
 
-        // Check against SQL keywords
+        // Check against SQL keywords (common ones)
         $keywords = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 'ALTER', 'TABLE', 'DATABASE'];
         if (in_array(strtoupper($identifier), $keywords, true)) {
             throw new Exception("{$type} cannot be a reserved SQL keyword");
@@ -131,46 +154,73 @@ class ClickHouse extends Adapter
     }
 
     /**
-     * Escape an identifier for safe use in SQL.
+     * Escape an identifier (database name, table name, column name) for safe use in SQL.
+     * Uses backticks as per SQL standard for identifier quoting.
+     *
+     * @param string $identifier
+     * @return string
      */
     private function escapeIdentifier(string $identifier): string
     {
+        // Backtick escaping: replace any backticks in the identifier with double backticks
         return '`' . str_replace('`', '``', $identifier) . '`';
     }
 
     /**
-     * Escape a string value for safe use in ClickHouse SQL queries.
+     * Set the namespace for multi-project support.
+     * Namespace is used as a prefix for table names.
      *
-     * @return string The escaped value without surrounding quotes
+     * @param string $namespace
+     * @return self
+     * @throws Exception
      */
-    private function escapeString(string $value): string
+    public function setNamespace(string $namespace): self
     {
-        return str_replace(
-            ['\\', "'"],
-            ['\\\\', "''"],
-            $value
-        );
+        if (!empty($namespace)) {
+            $this->validateIdentifier($namespace, 'Namespace');
+        }
+        $this->namespace = $namespace;
+        return $this;
     }
 
     /**
      * Set the database name for subsequent operations.
      *
+     * @param string $database
+     * @return self
      * @throws Exception
      */
     public function setDatabase(string $database): self
     {
         $this->validateIdentifier($database, 'Database');
         $this->database = $database;
-        $this->client->addHeader('X-ClickHouse-Database', $this->database);
-
         return $this;
     }
 
     /**
-     * Set the tenant ID for multi-tenant support.
-     * Tenant is used to isolate usage metrics by tenant.
+     * Enable or disable HTTPS for ClickHouse HTTP interface.
+     */
+    public function setSecure(bool $secure): self
+    {
+        $this->secure = $secure;
+        return $this;
+    }
+
+    /**
+     * Get the namespace.
      *
-     * @param  int|null  $tenant
+     * @return string
+     */
+    public function getNamespace(): string
+    {
+        return $this->namespace;
+    }
+
+    /**
+     * Set the tenant ID for multi-tenant support.
+     * Tenant is used to isolate metrics by tenant.
+     *
+     * @param int|null $tenant
      * @return self
      */
     public function setTenant(?int $tenant): self
@@ -193,7 +243,7 @@ class ClickHouse extends Adapter
      * Set whether tables are shared across tenants.
      * When enabled, a tenant column is added to the table for data isolation.
      *
-     * @param  bool  $sharedTables
+     * @param bool $sharedTables
      * @return self
      */
     public function setSharedTables(bool $sharedTables): self
@@ -210,33 +260,6 @@ class ClickHouse extends Adapter
     public function isSharedTables(): bool
     {
         return $this->sharedTables;
-    }
-
-    /**
-     * Set the namespace for multi-project support.
-     * Namespace is used as a prefix for table names.
-     *
-     * @param  string  $namespace
-     * @return self
-     * @throws Exception
-     */
-    public function setNamespace(string $namespace): self
-    {
-        if (!empty($namespace)) {
-            $this->validateIdentifier($namespace, 'Namespace');
-        }
-        $this->namespace = $namespace;
-        return $this;
-    }
-
-    /**
-     * Get the namespace.
-     *
-     * @return string
-     */
-    public function getNamespace(): string
-    {
-        return $this->namespace;
     }
 
     /**
@@ -257,61 +280,56 @@ class ClickHouse extends Adapter
     }
 
     /**
-     * Execute a ClickHouse query via HTTP interface.
+     * Execute a ClickHouse query via HTTP interface using Fetch Client.
      *
-     * @param  string  $sql  SQL query to execute
-     * @param  array<string,mixed>  $params  Query parameters for prepared statements
-     * @return string Query result as string
+     * Uses ClickHouse query parameters (sent as POST multipart form data) to prevent SQL injection.
+     * This is ClickHouse's native parameter mechanism - parameters are safely
+     * transmitted separately from the query structure.
      *
+     * Parameters are referenced in the SQL using the syntax: {paramName:Type}.
+     * For example: SELECT * WHERE id = {id:String}
+     *
+     * ClickHouse handles all parameter escaping and type conversion internally,
+     * making this approach fully injection-safe without needing manual escaping.
+     *
+     * Using POST body avoids URL length limits for batch operations with many parameters.
+     * Equivalent to: curl -X POST -F 'query=...' -F 'param_key=value' http://host/
+     *
+     * @param array<string, mixed> $params Key-value pairs for query parameters
      * @throws Exception
      */
     private function query(string $sql, array $params = []): string
     {
-        $protocol = $this->secure ? 'https' : 'http';
-        $url = "{$protocol}://{$this->host}:{$this->port}/";
+        $scheme = $this->secure ? 'https' : 'http';
+        $url = "{$scheme}://{$this->host}:{$this->port}/";
 
-        // Replace parameters in SQL
+        // Update the database header for each query (in case setDatabase was called)
+        $this->client->addHeader('X-ClickHouse-Database', $this->database);
+
+        // Build multipart form data body with query and parameters
+        // The Fetch client will automatically encode arrays as multipart/form-data
+        $body = ['query' => $sql];
         foreach ($params as $key => $value) {
-            if (is_int($value) || is_float($value)) {
-                // Numeric values should not be quoted
-                $strValue = (string) $value;
-            } elseif (is_string($value)) {
-                $strValue = "'" . $this->escapeString($value) . "'";
-            } elseif (is_null($value)) {
-                $strValue = 'NULL';
-            } elseif (is_bool($value)) {
-                $strValue = $value ? '1' : '0';
-            } elseif (is_array($value)) {
-                $encoded = json_encode($value);
-                if (is_string($encoded)) {
-                    $strValue = "'" . $this->escapeString($encoded) . "'";
-                } else {
-                    $strValue = 'NULL';
-                }
-            } else {
-                /** @var scalar $value */
-                $strValue = "'" . $this->escapeString((string) $value) . "'";
-            }
-            $sql = str_replace(":{$key}", $strValue, $sql);
+            $body['param_' . $key] = $this->formatParamValue($value);
         }
 
         try {
             $response = $this->client->fetch(
                 url: $url,
                 method: Client::METHOD_POST,
-                body: ['query' => $sql]
+                body: $body
             );
-
             if ($response->getStatusCode() !== 200) {
-                $body = $response->getBody();
-                $bodyStr = is_string($body) ? $body : '';
+                $bodyStr = $response->getBody();
+                $bodyStr = is_string($bodyStr) ? $bodyStr : '';
                 throw new Exception("ClickHouse query failed with HTTP {$response->getStatusCode()}: {$bodyStr}");
             }
 
             $body = $response->getBody();
-
             return is_string($body) ? $body : '';
         } catch (Exception $e) {
+            // Preserve the original exception context for better debugging
+            // Re-throw with additional context while maintaining the original exception chain
             throw new Exception(
                 "ClickHouse query execution failed: {$e->getMessage()}",
                 0,
@@ -320,111 +338,112 @@ class ClickHouse extends Adapter
         }
     }
 
-    public function getName(): string
+    /**
+     * Format a parameter value for safe transmission to ClickHouse.
+     *
+     * Converts PHP values to their string representation without SQL quoting.
+     * ClickHouse's query parameter mechanism handles type conversion and escaping.
+     *
+     * @param mixed $value
+     * @return string
+     */
+    private function formatParamValue(mixed $value): string
     {
-        return 'ClickHouse';
+        if (is_int($value) || is_float($value)) {
+            return (string) $value;
+        }
+
+        if ($value === null) {
+            return '';
+        }
+
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+
+        if (is_array($value)) {
+            $encoded = json_encode($value);
+            return is_string($encoded) ? $encoded : '';
+        }
+
+        if (is_string($value)) {
+            return $value;
+        }
+
+        // For objects or other types, attempt to convert to string
+        if (is_object($value) && method_exists($value, '__toString')) {
+            return (string) $value;
+        }
+
+        return '';
     }
 
     /**
      * Setup ClickHouse table structure.
      *
      * Creates the database and table if they don't exist.
-     * Uses the provided column definitions and adds internal fields (_id, _createdAt, _updatedAt, tenant).
+     * Uses schema definitions from the base SQL adapter.
      *
-     * @param string $table Table name
-     * @param array<int,array<string,mixed>> $columns Column definitions from the application
-     * @param array<int,array<string,mixed>> $indexes Index definitions from the application
      * @throws Exception
      */
-    public function setup(string $table, array $columns, array $indexes): void
+    public function setup(): void
     {
-        $this->table = $table;
         // Create database if not exists
         $escapedDatabase = $this->escapeIdentifier($this->database);
         $createDbSql = "CREATE DATABASE IF NOT EXISTS {$escapedDatabase}";
         $this->query($createDbSql);
 
-        // Track which internal fields are already present
-        $hasId = false;
-        $hasCreatedAt = false;
-        $hasUpdatedAt = false;
-        $hasTenant = false;
+        // Build column definitions from base adapter schema
+        $columns = [
+            'id String',
+        ];
 
-        // Build column definitions from provided columns
-        $columnDefs = [];
-        foreach ($columns as $column) {
-            $columnId = $column['$id'] ?? '';
+        foreach ($this->getAttributes() as $attribute) {
+            /** @var string $id */
+            $id = $attribute['$id'];
 
-            if ($columnId === '_id' || $columnId === '$id') {
-                $hasId = true;
-            } elseif ($columnId === '_createdAt' || $columnId === '$createdAt') {
-                $hasCreatedAt = true;
-            } elseif ($columnId === '_updatedAt' || $columnId === '$updatedAt') {
-                $hasUpdatedAt = true;
-            } elseif ($columnId === 'tenant' || $columnId === '$tenant') {
-                $hasTenant = true;
-            }
-
-            $columnDefs[] = $this->getClickHouseColumnDefinition($column);
-        }
-
-        // Add internal fields if not present
-        if (! $hasId) {
-            array_unshift($columnDefs, '_id String');
-        }
-        if (! $hasCreatedAt) {
-            $columnDefs[] = '_createdAt DateTime64(3) DEFAULT now64(3)';
-        }
-        if (! $hasUpdatedAt) {
-            $columnDefs[] = '_updatedAt DateTime64(3) DEFAULT now64(3)';
-        }
-
-        // Add tenant column only if tables are shared across tenants and not already present
-        if ($this->sharedTables && ! $hasTenant) {
-            $columnDefs[] = 'tenant Nullable(UInt64)';
-        }
-
-        // Build indexes from provided index definitions
-        $indexDefs = [];
-        foreach ($indexes as $index) {
-            $indexId = $index['$id'] ?? '';
-            $attributes = $index['attributes'] ?? [];
-
-            if (! empty($indexId) && is_string($indexId) && is_array($attributes) && ! empty($attributes)) {
-                /** @var array<string> $attributes */
-                $attributeList = implode(', ', $attributes);
-                // ClickHouse doesn't allow hyphens in index names, replace with underscores
-                $safeIndexId = str_replace('-', '_', $indexId);
-                $indexDefs[] = 'INDEX ' . $safeIndexId . ' (' . $attributeList . ') TYPE bloom_filter GRANULARITY 1';
+            // Special handling for time column - must be NOT NULL for partition key
+            if ($id === 'time') {
+                // Use DateTime64(3) without Nullable wrapper for time since it's used as partition key
+                $columns[] = 'time DateTime64(3)';
+            } else {
+                $columns[] = $this->getColumnDefinition($id);
             }
         }
 
-        // Add tenant index if tables are shared across tenants
+        // Add tenant column only if tables are shared across tenants
         if ($this->sharedTables) {
-            $indexDefs[] = 'INDEX idx_tenant tenant TYPE bloom_filter GRANULARITY 1';
+            $columns[] = 'tenant Nullable(UInt64)';  // Supports 11-digit MySQL auto-increment IDs
+        }
+
+        // Build indexes from base adapter schema
+        $indexes = [];
+        foreach ($this->getIndexes() as $index) {
+            /** @var string $indexName */
+            $indexName = $index['$id'];
+            /** @var array<string> $attributes */
+            $attributes = $index['attributes'];
+            // Escape index name and attribute names to prevent SQL injection
+            $escapedIndexName = $this->escapeIdentifier($indexName);
+            $escapedAttributes = array_map(fn ($attr) => $this->escapeIdentifier($attr), $attributes);
+            $attributeList = implode(', ', $escapedAttributes);
+            $indexes[] = "INDEX {$escapedIndexName} ({$attributeList}) TYPE bloom_filter GRANULARITY 1";
         }
 
         $tableName = $this->getTableName();
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
 
-        // Determine ORDER BY clause - use first index or default
-        $orderBy = '_createdAt';
-        if (! empty($indexes) && isset($indexes[0]['attributes']) && is_array($indexes[0]['attributes'])) {
-            /** @var array<string> $orderAttributes */
-            $orderAttributes = $indexes[0]['attributes'];
-            $orderBy = implode(', ', $orderAttributes);
-        }
-
         // Create table with MergeTree engine for optimal performance
-        // ClickHouse indexes must be defined inside the column list
-        $indexClause = ! empty($indexDefs) ? ",\n                " . implode(",\n                ", $indexDefs) : '';
+        $columnDefs = implode(",\n                ", $columns);
+        $indexDefs = !empty($indexes) ? ",\n                " . implode(",\n                ", $indexes) : '';
+
         $createTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDatabaseAndTable} (
-                " . implode(",\n                ", $columnDefs) . $indexClause . "
+                {$columnDefs}{$indexDefs}
             )
             ENGINE = MergeTree()
-            ORDER BY ({$orderBy})
-            PARTITION BY toYYYYMM(_createdAt)
+            ORDER BY (time, id)
+            PARTITION BY toYYYYMM(time)
             SETTINGS index_granularity = 8192
         ";
 
@@ -432,35 +451,116 @@ class ClickHouse extends Adapter
     }
 
     /**
-     * Convert a column definition to ClickHouse column syntax.
+     * Validate that an attribute name exists in the schema.
+     * Prevents SQL injection by ensuring only valid column names are used.
      *
-     * @param array<string,mixed> $column Column definition
-     * @return string ClickHouse column definition
+     * @param string $attributeName The attribute name to validate
+     * @return bool True if valid
+     * @throws Exception If attribute name is invalid
      */
-    private function getClickHouseColumnDefinition(array $column): string
+    private function validateAttributeName(string $attributeName): bool
     {
-        $columnId = $column['$id'] ?? '';
-        $type = $column['type'] ?? 'string';
-        $required = $column['required'] ?? false;
-        $size = $column['size'] ?? 0;
 
-        // Map Utopia Database types to ClickHouse types
-        $clickHouseType = match ($type) {
-            'string' => $size > 0 && $size <= 255 ? 'String' : 'String',
+        // Special case: 'id' is always valid
+        if ($attributeName === 'id') {
+            return true;
+        }
+
+        // Check if tenant is valid (only when sharedTables is enabled)
+        if ($attributeName === 'tenant' && $this->sharedTables) {
+            return true;
+        }
+
+        // Check against defined attributes
+        foreach ($this->getAttributes() as $attribute) {
+            if ($attribute['$id'] === $attributeName) {
+                return true;
+            }
+        }
+
+        throw new Exception("Invalid attribute name: {$attributeName}");
+    }
+
+    /**
+     * Format datetime for ClickHouse compatibility.
+     * Converts datetime to 'YYYY-MM-DD HH:MM:SS.mmm' format without timezone suffix.
+     * ClickHouse DateTime64(3) type expects this format as timezone is handled by column metadata.
+     * Works with DateTime objects, strings, and other datetime representations.
+     *
+     * @param \DateTime|string|null $dateTime The datetime value to format
+     * @return string The formatted datetime string in ClickHouse compatible format
+     * @throws Exception If the datetime string cannot be parsed
+     */
+    private function formatDateTime($dateTime): string
+    {
+        if ($dateTime === null) {
+            return (new \DateTime())->format('Y-m-d H:i:s.v');
+        }
+
+        if ($dateTime instanceof \DateTime) {
+            return $dateTime->format('Y-m-d H:i:s.v');
+        }
+
+        if (is_string($dateTime)) {
+            try {
+                // Parse the datetime string, handling ISO 8601 format with timezone
+                $dt = new \DateTime($dateTime);
+                return $dt->format('Y-m-d H:i:s.v');
+            } catch (\Exception $e) {
+                throw new Exception("Invalid datetime string: {$dateTime}");
+            }
+        }
+
+        // This is unreachable code but kept for completeness - all valid types are handled above
+        // @phpstan-ignore-next-line
+        throw new Exception('DateTime must be a DateTime object or string');
+    }
+
+    /**
+     * Get ClickHouse-specific SQL column definition for a given attribute ID.
+     *
+     * Dynamically determines the ClickHouse type based on attribute metadata and nullability
+     *
+     * @param string $id The attribute ID
+     * @return string ClickHouse column definition
+     * @throws Exception
+     */
+    /**
+     * Get ClickHouse type for an attribute.
+     *
+     * Maps PHP attribute types to ClickHouse types and applies Nullable wrapper.
+     *
+     * @param string $id Attribute identifier
+     * @return string ClickHouse type (e.g., "String", "Nullable(Int64)", "DateTime64(3)")
+     * @throws Exception
+     */
+    private function getColumnType(string $id): string
+    {
+        $attribute = $this->getAttribute($id);
+        if (!$attribute) {
+            throw new Exception("Attribute {$id} not found");
+        }
+
+        // Map attribute type to ClickHouse type
+        $attributeType = $attribute['type'] ?? 'string';
+        $baseType = match ($attributeType) {
             'integer' => 'Int64',
             'float' => 'Float64',
             'boolean' => 'UInt8',
             'datetime' => 'DateTime64(3)',
-            'json' => 'String',  // Store JSON as string
+            Database::VAR_DATETIME => 'DateTime64(3)',
             default => 'String',
         };
 
         // Add Nullable wrapper if not required
-        if (! $required && $type !== 'boolean') {
-            $clickHouseType = 'Nullable(' . $clickHouseType . ')';
-        }
+        return !$attribute['required'] ? 'Nullable(' . $baseType . ')' : $baseType;
+    }
 
-        return $columnId . ' ' . $clickHouseType;
+    protected function getColumnDefinition(string $id): string
+    {
+        $type = $this->getColumnType($id);
+        $escapedId = $this->escapeIdentifier($id);
+        return "{$escapedId} {$type}";
     }
 
     /**
@@ -470,26 +570,23 @@ class ClickHouse extends Adapter
      *
      * @throws Exception
      */
-    public function log(string $metric, int $value, string $period = '1h', array $tags = []): bool
+    public function log(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool
     {
-        if (! isset(self::PERIODS[$period])) {
-            throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(self::PERIODS)));
+        if (!isset(Usage::PERIODS[$period])) {
+            throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
         }
 
         $id = uniqid('', true);
         $now = new \DateTime();
-        $time = $now->format(self::PERIODS[$period]);
+        $timestamp = $this->formatDateTime($now);
 
-        // Format timestamp for ClickHouse DateTime64(3)
-        $microtime = microtime(true);
-        $timestamp = date('Y-m-d H:i:s', (int) $microtime) . '.' . sprintf('%03d', ($microtime - floor($microtime)) * 1000);
+        // Build insert columns dynamically from attributes
+        $insertColumns = ['id'];
+        $queryParams = ['id' => $id];
+        $valuePlaceholders = ['{id:String}'];
 
-        // Build column list and values based on sharedTables setting
-        $columns = ['_id', 'metric', 'value', 'period', 'time', 'tags'];
-        $placeholders = [':id', ':metric', ':value', ':period', ':time', ':tags'];
-
-        $params = [
-            'id' => $id,
+        // Map attribute values to their positions
+        $attributeMap = [
             'metric' => $metric,
             'value' => $value,
             'period' => $period,
@@ -497,10 +594,26 @@ class ClickHouse extends Adapter
             'tags' => json_encode($tags),
         ];
 
+        // Add columns from attributes in order
+        foreach ($this->getAttributes() as $attribute) {
+            $attrId = $attribute['$id'];
+            if (!isset($attributeMap[$attrId])) {
+                continue; // Skip attributes not in our data
+            }
+
+            $insertColumns[] = $attrId;
+            $queryParams[$attrId] = $attributeMap[$attrId];
+
+            // Determine ClickHouse type hint
+            $type = $this->getColumnType($attrId);
+            $valuePlaceholders[] = '{' . $attrId . ':' . $type . '}';
+        }
+
+        // Add tenant column if using shared tables
         if ($this->sharedTables) {
-            $columns[] = 'tenant';
-            $placeholders[] = ':tenant';
-            $params['tenant'] = $this->tenant;
+            $insertColumns[] = 'tenant';
+            $valuePlaceholders[] = '{tenant:Nullable(UInt64)}';
+            $queryParams['tenant'] = $this->tenant;
         }
 
         $tableName = $this->getTableName();
@@ -508,13 +621,13 @@ class ClickHouse extends Adapter
 
         $sql = "
             INSERT INTO {$escapedDatabaseAndTable}
-            (" . implode(', ', $columns) . ")
+            (" . implode(', ', $insertColumns) . ")
             VALUES (
-                " . implode(", ", $placeholders) . "
+                " . implode(", ", $valuePlaceholders) . "
             )
         ";
 
-        $this->query($sql, $params);
+        $this->query($sql, $queryParams);
 
         return true;
     }
@@ -532,65 +645,348 @@ class ClickHouse extends Adapter
             return true;
         }
 
-        $values = [];
-        foreach ($metrics as $metricData) {
-            $period = $metricData['period'] ?? '1h';
+        $tableName = $this->getTableName();
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
 
-            if (! isset(self::PERIODS[$period])) {
-                throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(self::PERIODS)));
+        // Build column list dynamically from attributes
+        $insertColumns = ['id'];
+        foreach ($this->getAttributes() as $attribute) {
+            $insertColumns[] = $attribute['$id'];
+        }
+        if ($this->sharedTables) {
+            $insertColumns[] = 'tenant';
+        }
+
+        $paramCounter = 0;
+        $queryParams = [];
+        $valueClauses = [];
+
+        foreach ($metrics as $metricData) {
+            $period = $metricData['period'] ?? Usage::PERIOD_1H;
+
+            if (!isset(Usage::PERIODS[$period])) {
+                throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
             }
 
             $id = uniqid('', true);
-            $microtime = microtime(true);
-            $timestamp = date('Y-m-d H:i:s', (int) $microtime) . '.' . sprintf('%03d', ($microtime - floor($microtime)) * 1000);
+            $now = new \DateTime();
+            $timestamp = $this->formatDateTime($now);
 
             $metric = $metricData['metric'];
             $value = $metricData['value'];
             assert(is_string($metric));
             assert(is_int($value));
 
-            if ($this->sharedTables) {
-                $tenant = $this->tenant !== null ? (int) $this->tenant : 'NULL';
-                $values[] = sprintf(
-                    "('%s', '%s', %d, '%s', '%s', '%s', %s)",
-                    $id,
-                    $this->escapeString($metric),
-                    $value,
-                    $this->escapeString($period),
-                    $timestamp,
-                    $this->escapeString((string) json_encode($metricData['tags'] ?? [])),
-                    $tenant
-                );
-            } else {
-                $values[] = sprintf(
-                    "('%s', '%s', %d, '%s', '%s', '%s')",
-                    $id,
-                    $this->escapeString($metric),
-                    $value,
-                    $this->escapeString($period),
-                    $timestamp,
-                    $this->escapeString((string) json_encode($metricData['tags'] ?? []))
-                );
+            $valuePlaceholders = [];
+
+            // Add id
+            $idKey = 'id_' . $paramCounter;
+            $queryParams[$idKey] = $id;
+            $valuePlaceholders[] = '{' . $idKey . ':String}';
+
+            // Add attributes dynamically
+            $attributeMap = [
+                'metric' => $metric,
+                'value' => $value,
+                'period' => $period,
+                'time' => $timestamp,
+                'tags' => json_encode($metricData['tags'] ?? []),
+            ];
+
+            foreach ($this->getAttributes() as $attribute) {
+                $attrId = $attribute['$id'];
+                if (!isset($attributeMap[$attrId])) {
+                    continue;
+                }
+
+                $attrKey = $attrId . '_' . $paramCounter;
+                $queryParams[$attrKey] = $attributeMap[$attrId];
+
+                // Determine ClickHouse type hint
+                $type = $this->getColumnType($attrId);
+                $valuePlaceholders[] = '{' . $attrKey . ':' . $type . '}';
             }
-        }
 
-        $tableName = $this->getTableName();
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+            if ($this->sharedTables) {
+                $tenantKey = 'tenant_' . $paramCounter;
+                $queryParams[$tenantKey] = $this->tenant;
+                $valuePlaceholders[] = '{' . $tenantKey . ':Nullable(UInt64)}';
+            }
 
-        // Build column list based on sharedTables setting
-        $columns = '_id, metric, value, period, time, tags';
-        if ($this->sharedTables) {
-            $columns .= ', tenant';
+            $valueClauses[] = '(' . implode(', ', $valuePlaceholders) . ')';
+            $paramCounter++;
         }
 
         $insertSql = "
             INSERT INTO {$escapedDatabaseAndTable}
-            ({$columns})
-            VALUES " . implode(', ', $values);
+            (" . implode(', ', $insertColumns) . ")
+            VALUES " . implode(', ', $valueClauses);
 
-        $this->query($insertSql);
+        $this->query($insertSql, $queryParams);
 
         return true;
+    }
+
+    /**
+     * Find metrics using Query objects.
+     *
+     * @param array<Query> $queries
+     * @return array<Metric>
+     * @throws Exception
+     */
+    public function find(array $queries = []): array
+    {
+        $tableName = $this->getTableName();
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+
+        // Parse queries
+        $parsed = $this->parseQueries($queries);
+
+        // Build SELECT clause
+        $selectColumns = $this->getSelectColumns();
+
+        // Build WHERE clause
+        $whereClause = '';
+        $tenantFilter = $this->getTenantFilter();
+        if (!empty($parsed['filters']) || $tenantFilter) {
+            $conditions = $parsed['filters'];
+            if ($tenantFilter) {
+                $conditions[] = ltrim($tenantFilter, ' AND');
+            }
+            $whereClause = ' WHERE ' . implode(' AND ', $conditions);
+        }
+
+        // Build ORDER BY clause
+        $orderClause = '';
+        if (!empty($parsed['orderBy'])) {
+            $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
+        }
+
+        // Build LIMIT and OFFSET
+        $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
+        $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
+
+        $sql = "
+            SELECT {$selectColumns}
+            FROM {$escapedTable}{$whereClause}{$orderClause}{$limitClause}{$offsetClause}
+            FORMAT TabSeparated
+        ";
+
+        $result = $this->query($sql, $parsed['params']);
+        return $this->parseResults($result);
+    }
+
+    /**
+     * Count metrics using Query objects.
+     *
+     * @param array<Query> $queries
+     * @return int
+     * @throws Exception
+     */
+    public function count(array $queries = []): int
+    {
+        $tableName = $this->getTableName();
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+
+        // Parse queries - we only need filters and params
+        $parsed = $this->parseQueries($queries);
+
+        // Build WHERE clause
+        $whereClause = '';
+        $tenantFilter = $this->getTenantFilter();
+        if (!empty($parsed['filters']) || $tenantFilter) {
+            $conditions = $parsed['filters'];
+            if ($tenantFilter) {
+                $conditions[] = ltrim($tenantFilter, ' AND');
+            }
+            $whereClause = ' WHERE ' . implode(' AND ', $conditions);
+        }
+
+        // Remove limit and offset from params
+        $params = $parsed['params'];
+        unset($params['limit'], $params['offset']);
+
+        $sql = "
+            SELECT COUNT(*) as count
+            FROM {$escapedTable}{$whereClause}
+            FORMAT TabSeparated
+        ";
+
+        $result = $this->query($sql, $params);
+        $trimmed = trim($result);
+        return $trimmed !== '' ? (int) $trimmed : 0;
+    }
+
+    /**
+     * Parse Query objects into SQL clauses.
+     *
+     * @param array<Query> $queries
+     * @return array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int}
+     * @throws Exception
+     */
+    private function parseQueries(array $queries): array
+    {
+        $filters = [];
+        $params = [];
+        $orderBy = [];
+        $limit = null;
+        $offset = null;
+        $paramCounter = 0;
+
+        foreach ($queries as $query) {
+            if (!$query instanceof Query) {
+                /** @phpstan-ignore-next-line ternary.alwaysTrue - runtime validation despite type hint */
+                $type = is_object($query) ? get_class($query) : gettype($query);
+                throw new \InvalidArgumentException("Invalid query item: expected instance of Query, got {$type}");
+            }
+
+            $method = $query->getMethod();
+            $attribute = $query->getAttribute();
+            $values = $query->getValues();
+
+            switch ($method) {
+                case Query::TYPE_EQUAL:
+                    $this->validateAttributeName($attribute);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $paramName = 'param_' . $paramCounter++;
+                    // Query values are arrays, use first element
+                    $value = is_array($values) && !empty($values) ? $values[0] : $values;
+                    $filters[] = "{$escapedAttr} = {{$paramName}:String}";
+                    $params[$paramName] = $this->formatParamValue($value);
+                    break;
+
+                case Query::TYPE_LESSER:
+                    $this->validateAttributeName($attribute);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $paramName = 'param_' . $paramCounter++;
+                    $value = is_array($values) && !empty($values) ? $values[0] : $values;
+                    if ($attribute === 'time') {
+                        $filters[] = "{$escapedAttr} < {{$paramName}:DateTime64(3)}";
+                        $params[$paramName] = $this->formatDateTime($value);
+                    } else {
+                        $filters[] = "{$escapedAttr} < {{$paramName}:String}";
+                        $params[$paramName] = $this->formatParamValue($value);
+                    }
+                    break;
+
+                case Query::TYPE_GREATER:
+                    $this->validateAttributeName($attribute);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $paramName = 'param_' . $paramCounter++;
+                    $value = is_array($values) && !empty($values) ? $values[0] : $values;
+                    if ($attribute === 'time') {
+                        $filters[] = "{$escapedAttr} > {{$paramName}:DateTime64(3)}";
+                        $params[$paramName] = $this->formatDateTime($value);
+                    } else {
+                        $filters[] = "{$escapedAttr} > {{$paramName}:String}";
+                        $params[$paramName] = $this->formatParamValue($value);
+                    }
+                    break;
+
+                case Query::TYPE_BETWEEN:
+                    $this->validateAttributeName($attribute);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $paramName1 = 'param_' . $paramCounter++;
+                    $paramName2 = 'param_' . $paramCounter++;
+                    // Between has two values
+                    $value1 = is_array($values) && isset($values[0]) ? $values[0] : $values;
+                    $value2 = is_array($values) && isset($values[1]) ? $values[1] : $values;
+                    if ($attribute === 'time') {
+                        $paramType = 'DateTime64(3)';
+                        $filters[] = "{$escapedAttr} BETWEEN {{$paramName1}:{$paramType}} AND {{$paramName2}:{$paramType}}";
+                        $params[$paramName1] = $this->formatDateTime($value1);
+                        $params[$paramName2] = $this->formatDateTime($value2);
+                    } else {
+                        $filters[] = "{$escapedAttr} BETWEEN {{$paramName1}:String} AND {{$paramName2}:String}";
+                        $params[$paramName1] = $this->formatParamValue($value1);
+                        $params[$paramName2] = $this->formatParamValue($value2);
+                    }
+                    break;
+
+                case Query::TYPE_SEARCH:
+                    // SEARCH is like LIKE
+                    $this->validateAttributeName($attribute);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $paramName = 'param_' . $paramCounter++;
+                    $value = is_array($values) && !empty($values) ? $values[0] : $values;
+                    $filters[] = "{$escapedAttr} LIKE {{$paramName}:String}";
+                    $params[$paramName] = $this->formatParamValue($value);
+                    break;
+
+                case Query::TYPE_SELECT:
+                    // SELECT allows selecting multiple columns/values
+                    $this->validateAttributeName($attribute);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $inParams = [];
+                    $valuesToUse = is_array($values) ? $values : [$values];
+                    foreach ($valuesToUse as $value) {
+                        $paramName = 'param_' . $paramCounter++;
+                        $inParams[] = "{{$paramName}:String}";
+                        $params[$paramName] = $this->formatParamValue($value);
+                    }
+                    if (!empty($inParams)) {
+                        $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
+                    }
+                    break;
+
+                case Query::TYPE_ORDER_DESC:
+                    // Skip special Query attributes (like $sequence) that aren't real columns
+                    if (str_starts_with($attribute, '$')) {
+                        break;
+                    }
+                    $this->validateAttributeName($attribute);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $orderBy[] = "{$escapedAttr} DESC";
+                    break;
+
+                case Query::TYPE_ORDER_ASC:
+                    // Skip special Query attributes (like $sequence) that aren't real columns
+                    if (str_starts_with($attribute, '$')) {
+                        break;
+                    }
+                    $this->validateAttributeName($attribute);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $orderBy[] = "{$escapedAttr} ASC";
+                    break;
+
+                case Query::TYPE_LIMIT:
+                    $limitVal = is_array($values) && !empty($values) ? $values[0] : $values;
+                    if (!\is_int($limitVal)) {
+                        throw new \Exception('Invalid limit value. Expected int');
+                    }
+                    $limit = $limitVal;
+                    $params['limit'] = $limit;
+                    break;
+
+                case Query::TYPE_OFFSET:
+                    $offsetVal = is_array($values) && !empty($values) ? $values[0] : $values;
+                    if (!\is_int($offsetVal)) {
+                        throw new \Exception('Invalid offset value. Expected int');
+                    }
+                    $offset = $offsetVal;
+                    $params['offset'] = $offset;
+                    break;
+            }
+        }
+
+        $result = [
+            'filters' => $filters,
+            'params' => $params,
+        ];
+
+        if (!empty($orderBy)) {
+            $result['orderBy'] = $orderBy;
+        }
+
+        if ($limit !== null) {
+            $result['limit'] = $limit;
+        }
+
+        if ($offset !== null) {
+            $result['offset'] = $offset;
+        }
+
+        return $result;
     }
 
     /**
@@ -607,32 +1003,79 @@ class ClickHouse extends Adapter
         $lines = explode("\n", trim($result));
         $metrics = [];
 
+        // Build select columns list matching getSelectColumns()
+        $selectColumns = ['id'];
+        foreach ($this->getAttributes() as $attribute) {
+            $selectColumns[] = $attribute['$id'];
+        }
+
+        if ($this->sharedTables) {
+            $selectColumns[] = 'tenant';
+        }
+
+        $expectedColumns = count($selectColumns);
+
         foreach ($lines as $line) {
             if (empty(trim($line))) {
                 continue;
             }
 
             $columns = explode("\t", $line);
-            $expectedColumns = $this->sharedTables ? 7 : 6;
+
             if (count($columns) < $expectedColumns) {
                 continue;
             }
 
-            $data = [
-                '$id' => (string) $columns[0],
-                'metric' => (string) $columns[1],
-                'value' => (int) $columns[2],
-                'period' => (string) $columns[3],
-                'time' => (string) $columns[4],
-                'tags' => json_decode((string) $columns[5], true) ?? [],
-            ];
+            // Helper function to parse nullable string fields
+            $parseNullableString = static function ($value): ?string {
+                if ($value === '\\N' || $value === '') {
+                    return null;
+                }
+                return $value;
+            };
 
-            // Add tenant only if sharedTables is enabled
-            if ($this->sharedTables && isset($columns[6])) {
-                $data['tenant'] = $columns[6] === '\\\\N' ? null : (int) $columns[6];
+            // Build document dynamically by mapping columns to values
+            $document = [];
+            foreach ($selectColumns as $index => $columnName) {
+                if (!isset($columns[$index])) {
+                    continue;
+                }
+
+                $value = $columns[$index];
+
+                if ($columnName === 'tenant') {
+                    // Parse tenant as integer or null
+                    $document[$columnName] = ($value === '\\N' || $value === '') ? null : (int) $value;
+                } elseif ($columnName === 'time') {
+                    // Convert ClickHouse timestamp format back to ISO 8601
+                    $parsedTime = $value;
+                    if (strpos($parsedTime, 'T') === false) {
+                        $parsedTime = str_replace(' ', 'T', $parsedTime) . '+00:00';
+                    }
+                    $document[$columnName] = $parsedTime;
+                } elseif ($columnName === 'tags') {
+                    // Decode JSON tags column
+                    $document[$columnName] = json_decode($value, true) ?? [];
+                } else {
+                    // Get attribute metadata to check if nullable
+                    $attribute = $this->getAttribute($columnName);
+                    if ($attribute && !$attribute['required']) {
+                        // Nullable field - parse null values
+                        $document[$columnName] = $parseNullableString($value);
+                    } else {
+                        // Required field - use value as-is
+                        $document[$columnName] = $value;
+                    }
+                }
             }
 
-            $metrics[] = new Metric($data);
+            // Add special $id field if present
+            if (isset($document['id'])) {
+                $document['$id'] = $document['id'];
+                unset($document['id']);
+            }
+
+            $metrics[] = new Metric($document);
         }
 
         return $metrics;
@@ -640,16 +1083,29 @@ class ClickHouse extends Adapter
 
     /**
      * Get the SELECT column list for queries.
-     * Returns 6 columns if not using shared tables, 7 if using shared tables.
+     * Dynamically builds the column list from attributes.
      *
      * @return string
      */
     private function getSelectColumns(): string
     {
-        if ($this->sharedTables) {
-            return '_id, metric, value, period, time, tags, tenant';
+        $columns = [];
+
+        // Add id column first
+        $columns[] = $this->escapeIdentifier('id');
+
+        // Dynamically add all attribute columns
+        foreach ($this->getAttributes() as $attribute) {
+            $id = $attribute['$id'];
+            $columns[] = $this->escapeIdentifier($id);
         }
-        return '_id, metric, value, period, time, tags';
+
+        // Add tenant column if shared tables are enabled
+        if ($this->sharedTables) {
+            $columns[] = $this->escapeIdentifier('tenant');
+        }
+
+        return implode(', ', $columns);
     }
 
     /**
@@ -663,155 +1119,128 @@ class ClickHouse extends Adapter
             return '';
         }
 
-        return " AND tenant = {$this->tenant}";
+        return " AND tenant = {tenant:Nullable(UInt64)}";
     }
 
     /**
      * Get usage metrics by period.
      *
-     * @param  array<int,mixed>  $queries
+     * @param  array<int,Query>  $queries
      * @return array<Metric>
      *
      * @throws Exception
      */
     public function getByPeriod(string $metric, string $period, array $queries = []): array
     {
-        $limit = 25;
-        $offset = 0;
+        $allQueries = [
+            Query::equal('metric', [$metric]),
+            Query::equal('period', [$period]),
+        ];
 
+        // Add custom queries
         foreach ($queries as $query) {
-            if (is_object($query) && method_exists($query, 'getMethod') && method_exists($query, 'getValue')) {
-                if ($query->getMethod() === 'limit') {
-                    $limit = (int) $query->getValue();
-                } elseif ($query->getMethod() === 'offset') {
-                    $offset = (int) $query->getValue();
-                }
-            }
+            $allQueries[] = $query;
         }
 
-        $tableName = $this->getTableName();
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        $tenantFilter = $this->getTenantFilter();
+        // Add default ordering
+        $allQueries[] = Query::orderDesc();
 
-        $sql = "
-            SELECT " . $this->getSelectColumns() . "
-            FROM {$escapedDatabaseAndTable}
-            WHERE metric = :metric AND period = :period{$tenantFilter}
-            ORDER BY time DESC
-            LIMIT :limit OFFSET :offset
-            FORMAT TabSeparated
-        ";
-
-        $result = $this->query($sql, [
-            'metric' => $metric,
-            'period' => $period,
-            'limit' => $limit,
-            'offset' => $offset,
-        ]);
-
-        return $this->parseResults($result);
+        return $this->find($allQueries);
     }
 
     /**
      * Get usage metrics between dates.
      *
-     * @param  array<int,mixed>  $queries
+     * @param  array<int,Query>  $queries
      * @return array<Metric>
      *
      * @throws Exception
      */
     public function getBetweenDates(string $metric, string $startDate, string $endDate, array $queries = []): array
     {
-        $limit = 25;
-        $offset = 0;
+        $allQueries = [
+            Query::equal('metric', [$metric]),
+            Query::greaterThanEqual('time', $startDate),
+            Query::lessThanEqual('time', $endDate),
+        ];
 
+        // Add custom queries
         foreach ($queries as $query) {
-            if (is_object($query) && method_exists($query, 'getMethod') && method_exists($query, 'getValue')) {
-                if ($query->getMethod() === 'limit') {
-                    $limit = (int) $query->getValue();
-                } elseif ($query->getMethod() === 'offset') {
-                    $offset = (int) $query->getValue();
-                }
-            }
+            $allQueries[] = $query;
         }
 
-        $tableName = $this->getTableName();
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        $tenantFilter = $this->getTenantFilter();
+        // Add default ordering
+        $allQueries[] = Query::orderDesc();
 
-        $sql = "
-            SELECT " . $this->getSelectColumns() . "
-            FROM {$escapedDatabaseAndTable}
-            WHERE metric = :metric AND time >= :startDate AND time <= :endDate{$tenantFilter}
-            ORDER BY time DESC
-            LIMIT :limit OFFSET :offset
-            FORMAT TabSeparated
-        ";
-
-        $result = $this->query($sql, [
-            'metric' => $metric,
-            'startDate' => $startDate,
-            'endDate' => $endDate,
-            'limit' => $limit,
-            'offset' => $offset,
-        ]);
-
-        return $this->parseResults($result);
+        return $this->find($allQueries);
     }
 
     /**
      * Count usage metrics by period.
      *
-     * @param  array<int,mixed>  $queries
+     * @param  array<int,Query>  $queries
      *
      * @throws Exception
      */
     public function countByPeriod(string $metric, string $period, array $queries = []): int
     {
-        $tableName = $this->getTableName();
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        $tenantFilter = $this->getTenantFilter();
+        $allQueries = [
+            Query::equal('metric', [$metric]),
+            Query::equal('period', [$period]),
+        ];
 
-        $sql = "
-            SELECT count() as count
-            FROM {$escapedDatabaseAndTable}
-            WHERE metric = :metric AND period = :period{$tenantFilter}
-            FORMAT TabSeparated
-        ";
+        // Add custom queries
+        foreach ($queries as $query) {
+            $allQueries[] = $query;
+        }
 
-        $result = $this->query($sql, [
-            'metric' => $metric,
-            'period' => $period,
-        ]);
-
-        return (int) trim($result);
+        return $this->count($allQueries);
     }
 
     /**
      * Sum usage metric values by period.
      *
-     * @param  array<int,mixed>  $queries
+     * @param  array<int,Query>  $queries
      *
      * @throws Exception
      */
     public function sumByPeriod(string $metric, string $period, array $queries = []): int
     {
         $tableName = $this->getTableName();
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+
+        // Build query constraints
+        $allQueries = [
+            Query::equal('metric', [$metric]),
+            Query::equal('period', [$period]),
+        ];
+
+        foreach ($queries as $query) {
+            $allQueries[] = $query;
+        }
+
+        $parsed = $this->parseQueries($allQueries);
+
+        // Build WHERE clause
+        $whereClause = '';
         $tenantFilter = $this->getTenantFilter();
+        if (!empty($parsed['filters']) || $tenantFilter) {
+            $conditions = $parsed['filters'];
+            if ($tenantFilter) {
+                $conditions[] = ltrim($tenantFilter, ' AND');
+                // Add tenant param
+                $parsed['params']['tenant'] = $this->tenant;
+            }
+            $whereClause = ' WHERE ' . implode(' AND ', $conditions);
+        }
 
         $sql = "
             SELECT sum(value) as total
-            FROM {$escapedDatabaseAndTable}
-            WHERE metric = :metric AND period = :period{$tenantFilter}
+            FROM {$escapedTable}{$whereClause}
             FORMAT TabSeparated
         ";
 
-        $result = $this->query($sql, [
-            'metric' => $metric,
-            'period' => $period,
-        ]);
-
+        $result = $this->query($sql, $parsed['params']);
         $total = trim($result);
 
         return empty($total) ? 0 : (int) $total;
@@ -825,15 +1254,20 @@ class ClickHouse extends Adapter
     public function purge(string $datetime): bool
     {
         $tableName = $this->getTableName();
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
         $tenantFilter = $this->getTenantFilter();
 
+        $params = ['datetime' => $datetime];
+        if ($this->sharedTables) {
+            $params['tenant'] = $this->tenant;
+        }
+
         $sql = "
-            DELETE FROM {$escapedDatabaseAndTable}
-            WHERE time < :datetime{$tenantFilter}
+            DELETE FROM {$escapedTable}
+            WHERE time < {datetime:DateTime64(3)}{$tenantFilter}
         ";
 
-        $this->query($sql, ['datetime' => $datetime]);
+        $this->query($sql, $params);
 
         return true;
     }
