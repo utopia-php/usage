@@ -542,13 +542,12 @@ class ClickHouse extends SQL
         }
 
         // Map attribute type to ClickHouse type
-        $attributeType = $attribute['type'] ?? 'string';
+        $attributeType = is_string($attribute['type'] ?? null) ? $attribute['type'] : 'string';
         $baseType = match ($attributeType) {
             'integer' => 'Int64',
             'float' => 'Float64',
             'boolean' => 'UInt8',
             'datetime' => 'DateTime64(3)',
-            Database::VAR_DATETIME => 'DateTime64(3)',
             default => 'String',
         };
 
@@ -918,8 +917,7 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $inParams = [];
-                    $valuesToUse = is_array($values) ? $values : [$values];
-                    foreach ($valuesToUse as $value) {
+                    foreach ($values as $value) {
                         $paramName = 'param_' . $paramCounter++;
                         $inParams[] = "{{$paramName}:String}";
                         $params[$paramName] = $this->formatParamValue($value);
@@ -1058,7 +1056,7 @@ class ClickHouse extends SQL
                     $document[$columnName] = json_decode($value, true) ?? [];
                 } else {
                     // Get attribute metadata to check if nullable
-                    $attribute = $this->getAttribute($columnName);
+                    $attribute = is_string($columnName) ? $this->getAttribute($columnName) : null;
                     if ($attribute && !$attribute['required']) {
                         // Nullable field - parse null values
                         $document[$columnName] = $parseNullableString($value);
@@ -1097,7 +1095,9 @@ class ClickHouse extends SQL
         // Dynamically add all attribute columns
         foreach ($this->getAttributes() as $attribute) {
             $id = $attribute['$id'];
-            $columns[] = $this->escapeIdentifier($id);
+            if (is_string($id)) {
+                $columns[] = $this->escapeIdentifier($id);
+            }
         }
 
         // Add tenant column if shared tables are enabled

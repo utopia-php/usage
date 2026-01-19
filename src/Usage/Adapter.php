@@ -11,10 +11,6 @@ abstract class Adapter
 
     /**
      * Setup database structure
-     *
-     * @param  string  $table  Table name
-     * @param  array<int,array<string,mixed>>  $columns  Column definitions
-     * @param  array<int,array<string,mixed>>  $indexes  Index definitions
      */
     abstract public function setup(): void;
 
@@ -66,4 +62,20 @@ abstract class Adapter
      * Purge old usage metrics
      */
     abstract public function purge(string $datetime): bool;
+
+    /**
+     * Find metrics using Query objects.
+     *
+     * @param array<\Utopia\Database\Query> $queries
+     * @return array<Metric>
+     */
+    abstract public function find(array $queries = []): array;
+
+    /**
+     * Count metrics using Query objects.
+     *
+     * @param array<\Utopia\Database\Query> $queries
+     * @return int
+     */
+    abstract public function count(array $queries = []): int;
 }

@@ -43,9 +43,6 @@ class Usage
     /**
      * Setup the usage metrics storage.
      *
-     * @param string $table Table name for storing usage metrics
-     * @param array<int,array<string,mixed>> $columns Column definitions
-     * @param array<int,array<string,mixed>> $indexes Index definitions
      * @throws \Exception
      */
     public function setup(): void
@@ -135,5 +132,29 @@ class Usage
     public function purge(string $datetime): bool
     {
         return $this->adapter->purge($datetime);
+    }
+
+    /**
+     * Find metrics using Query objects.
+     *
+     * @param array<\Utopia\Database\Query> $queries
+     * @return array<Metric>
+     * @throws \Exception
+     */
+    public function find(array $queries = []): array
+    {
+        return $this->adapter->find($queries);
+    }
+
+    /**
+     * Count metrics using Query objects.
+     *
+     * @param array<\Utopia\Database\Query> $queries
+     * @return int
+     * @throws \Exception
+     */
+    public function count(array $queries = []): int
+    {
+        return $this->adapter->count($queries);
     }
 }

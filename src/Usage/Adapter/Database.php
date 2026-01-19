@@ -9,6 +9,7 @@ use Utopia\Database\Query;
 use Utopia\Exception;
 use Utopia\Usage\Adapter;
 use Utopia\Usage\Metric;
+use Utopia\Usage\Usage;
 
 class Database extends Adapter
 {
@@ -26,26 +27,41 @@ class Database extends Adapter
         return 'Database';
     }
 
-    public function setup(string $table, array $columns, array $indexes): void
+    public function setup(): void
     {
-        $this->collection = $table;
+        $this->collection = 'usage';
         if (! $this->db->exists($this->db->getDatabase())) {
             throw new Exception('You need to create the database before running Usage setup');
         }
+
+        // Define columns based on the metric structure
+        $columns = [
+            ['$id' => 'metric', 'type' => 'string', 'size' => 255, 'required' => true],
+            ['$id' => 'value', 'type' => 'integer', 'required' => true],
+            ['$id' => 'period', 'type' => 'string', 'size' => 10, 'required' => true],
+            ['$id' => 'time', 'type' => 'datetime', 'required' => true],
+            ['$id' => 'tags', 'type' => 'string', 'size' => 16777216, 'required' => false], // JSON text
+        ];
+
+        $indexes = [
+            ['$id' => 'index-metric', 'type' => 'key', 'attributes' => ['metric']],
+            ['$id' => 'index-period', 'type' => 'key', 'attributes' => ['period']],
+            ['$id' => 'index-time', 'type' => 'key', 'attributes' => ['time']],
+        ];
 
         $attributes = \array_map(function ($attribute) {
             return new Document($attribute);
         }, $columns);
 
-        $indexes = \array_map(function ($index) {
+        $indexDocs = \array_map(function ($index) {
             return new Document($index);
         }, $indexes);
 
         try {
             $this->db->createCollection(
-                $table,
+                $this->collection,
                 $attributes,
-                $indexes
+                $indexDocs
             );
         } catch (DuplicateException) {
             // Collection already exists
@@ -54,14 +70,14 @@ class Database extends Adapter
 
     public function log(string $metric, int $value, string $period = '1h', array $tags = []): bool
     {
-        if (! isset(self::PERIODS[$period])) {
-            throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(self::PERIODS)));
+        if (! isset(Usage::PERIODS[$period])) {
+            throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
         }
 
         $now = new \DateTime();
         $time = $period === 'inf'
             ? '1000-01-01 00:00:00'
-            : $now->format(self::PERIODS[$period]);
+            : $now->format(Usage::PERIODS[$period]);
 
         $this->db->getAuthorization()->skip(function () use ($metric, $value, $period, $time, $tags) {
             $this->db->createDocument($this->collection, new Document([
@@ -83,14 +99,14 @@ class Database extends Adapter
             $documents = \array_map(function ($metric) {
                 $period = $metric['period'] ?? '1h';
 
-                if (! isset(self::PERIODS[$period])) {
-                    throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(self::PERIODS)));
+                if (! isset(Usage::PERIODS[$period])) {
+                    throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
                 }
 
                 $now = new \DateTime();
                 $time = $period === 'inf'
                     ? '1000-01-01 00:00:00'
-                    : $now->format(self::PERIODS[$period]);
+                    : $now->format(Usage::PERIODS[$period]);
 
                 return new Document([
                     '$permissions' => [],
@@ -192,5 +208,43 @@ class Database extends Adapter
         });
 
         return true;
+    }
+
+    /**
+     * Find metrics using Query objects.
+     *
+     * @param array<Query> $queries
+     * @return array<Metric>
+     */
+    public function find(array $queries = []): array
+    {
+        /** @var array<Document> $result */
+        $result = $this->db->getAuthorization()->skip(function () use ($queries) {
+            return $this->db->find(
+                collection: $this->collection,
+                queries: $queries,
+            );
+        });
+
+        return \array_map(fn ($doc) => new Metric($doc->getArrayCopy()), $result);
+    }
+
+    /**
+     * Count metrics using Query objects.
+     *
+     * @param array<Query> $queries
+     * @return int
+     */
+    public function count(array $queries = []): int
+    {
+        /** @var int $count */
+        $count = $this->db->getAuthorization()->skip(function () use ($queries) {
+            return $this->db->count(
+                collection: $this->collection,
+                queries: $queries
+            );
+        });
+
+        return $count;
     }
 }
