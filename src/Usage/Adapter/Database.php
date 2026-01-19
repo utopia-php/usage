@@ -11,7 +11,7 @@ use Utopia\Usage\Adapter;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
 
-class Database extends Adapter
+class Database extends SQL
 {
     protected string $collection;
 
@@ -34,28 +34,9 @@ class Database extends Adapter
             throw new Exception('You need to create the database before running Usage setup');
         }
 
-        // Define columns based on the metric structure
-        $columns = [
-            ['$id' => 'metric', 'type' => 'string', 'size' => 255, 'required' => true],
-            ['$id' => 'value', 'type' => 'integer', 'required' => true],
-            ['$id' => 'period', 'type' => 'string', 'size' => 10, 'required' => true],
-            ['$id' => 'time', 'type' => 'datetime', 'required' => true],
-            ['$id' => 'tags', 'type' => 'string', 'size' => 16777216, 'required' => false], // JSON text
-        ];
-
-        $indexes = [
-            ['$id' => 'index-metric', 'type' => 'key', 'attributes' => ['metric']],
-            ['$id' => 'index-period', 'type' => 'key', 'attributes' => ['period']],
-            ['$id' => 'index-time', 'type' => 'key', 'attributes' => ['time']],
-        ];
-
-        $attributes = \array_map(function ($attribute) {
-            return new Document($attribute);
-        }, $columns);
-
-        $indexDocs = \array_map(function ($index) {
-            return new Document($index);
-        }, $indexes);
+        // Use column and index definitions from parent SQL adapter
+        $attributes = $this->getAttributeDocuments();
+        $indexDocs = $this->getIndexDocuments();
 
         try {
             $this->db->createCollection(
@@ -66,6 +47,15 @@ class Database extends Adapter
         } catch (DuplicateException) {
             // Collection already exists
         }
+    }
+
+    /**
+     * Get column definition for Database adapter (not used, but required by SQL parent)
+     */
+    protected function getColumnDefinition(string $id): string
+    {
+        // Not used in Database adapter, but required by SQL abstract class
+        return '';
     }
 
     public function log(string $metric, int $value, string $period = '1h', array $tags = []): bool
