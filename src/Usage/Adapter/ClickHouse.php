@@ -561,6 +561,104 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Validate data format against attribute metadata.
+     *
+     * @param array<string, mixed> $data
+     * @throws Exception
+     */
+    private function validateDataFormat(array $data): void
+    {
+        $attributes = $this->getAttributes();
+
+        foreach ($attributes as $attribute) {
+            /** @var string $attrId */
+            $attrId = $attribute['$id'];
+            $required = $attribute['required'] ?? false;
+            $type = $attribute['type'] ?? 'string';
+            /** @var int $size */
+            $size = $attribute['size'] ?? 0;
+
+            // Check if required attribute is present
+            if ($required && !isset($data[$attrId])) {
+                throw new Exception("Required attribute '{$attrId}' is missing");
+            }
+
+            // Skip validation if not present and not required
+            if (!isset($data[$attrId])) {
+                continue;
+            }
+
+            $value = $data[$attrId];
+
+            // Special handling for tags: accept array (will be JSON-encoded)
+            if ($attrId === 'tags') {
+                if (!is_array($value)) {
+                    throw new Exception("Attribute '{$attrId}' must be an array, got " . gettype($value));
+                }
+                continue;
+            }
+
+            // Validate based on attribute type
+            match ($type) {
+                'string' => $this->validateStringAttribute($attrId, $value, $size),
+                'integer' => $this->validateIntegerAttribute($attrId, $value),
+                'datetime' => $this->validateDatetimeAttribute($attrId, $value),
+                default => null,
+            };
+        }
+    }
+
+    /**
+     * Validate string attribute value.
+     *
+     * @throws Exception
+     */
+    private function validateStringAttribute(string $attrId, mixed $value, int $size): void
+    {
+        if (!is_string($value)) {
+            throw new Exception("Attribute '{$attrId}' must be a string, got " . gettype($value));
+        }
+
+        if ($size > 0 && strlen($value) > $size) {
+            throw new Exception("Attribute '{$attrId}' exceeds maximum size of {$size} characters");
+        }
+    }
+
+    /**
+     * Validate integer attribute value.
+     *
+     * @throws Exception
+     */
+    private function validateIntegerAttribute(string $attrId, mixed $value): void
+    {
+        if (!is_int($value)) {
+            throw new Exception("Attribute '{$attrId}' must be an integer, got " . gettype($value));
+        }
+    }
+
+    /**
+     * Validate datetime attribute value.
+     *
+     * @throws Exception
+     */
+    private function validateDatetimeAttribute(string $attrId, mixed $value): void
+    {
+        if ($value instanceof \DateTime) {
+            return; // Valid DateTime object
+        }
+
+        if (!is_string($value)) {
+            throw new Exception("Attribute '{$attrId}' must be a DateTime object or string, got " . gettype($value));
+        }
+
+        try {
+            new \DateTime($value);
+        } catch (\Exception $e) {
+            throw new Exception("Attribute '{$attrId}' is not a valid datetime string: {$e->getMessage()}");
+        }
+    }
+
+    /**
      * Log a usage metric.
      *
      * @param  array<string,mixed>  $tags
@@ -569,9 +667,37 @@ class ClickHouse extends SQL
      */
     public function log(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool
     {
+        // Validate period
         if (!isset(Usage::PERIODS[$period])) {
             throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
         }
+
+        // Validate metric and value
+        if (empty($metric)) {
+            throw new Exception('Metric cannot be empty');
+        }
+
+        if (strlen($metric) > 255) {
+            throw new Exception('Metric exceeds maximum size of 255 characters');
+        }
+
+        if ($value < 0) {
+            throw new Exception('Value cannot be negative');
+        }
+
+        // Validate tags format
+        if (!is_array($tags)) {
+            throw new Exception('Tags must be an array');
+        }
+
+        // Validate complete data structure
+        $data = [
+            'metric' => $metric,
+            'value' => $value,
+            'period' => $period,
+            'tags' => $tags,
+        ];
+        $this->validateDataFormat($data);
 
         $id = uniqid('', true);
         $now = new \DateTime();
@@ -642,6 +768,66 @@ class ClickHouse extends SQL
             return true;
         }
 
+        // Validate all metrics before processing
+        foreach ($metrics as $index => $metricData) {
+            try {
+                // Validate required fields exist
+                if (!isset($metricData['metric'])) {
+                    throw new Exception("Metric #{$index}: 'metric' is required");
+                }
+                if (!isset($metricData['value'])) {
+                    throw new Exception("Metric #{$index}: 'value' is required");
+                }
+
+                $metric = $metricData['metric'];
+                $value = $metricData['value'];
+                $period = $metricData['period'] ?? Usage::PERIOD_1H;
+
+                // Validate types
+                if (!is_string($metric)) {
+                    throw new Exception("Metric #{$index}: 'metric' must be a string, got " . gettype($metric));
+                }
+                if (!is_int($value)) {
+                    throw new Exception("Metric #{$index}: 'value' must be an integer, got " . gettype($value));
+                }
+                if (!is_string($period)) {
+                    throw new Exception("Metric #{$index}: 'period' must be a string, got " . gettype($period));
+                }
+
+                // Validate metric and value constraints
+                if (empty($metric)) {
+                    throw new Exception("Metric #{$index}: 'metric' cannot be empty");
+                }
+                if (strlen($metric) > 255) {
+                    throw new Exception("Metric #{$index}: 'metric' exceeds maximum size of 255 characters");
+                }
+                if ($value < 0) {
+                    throw new Exception("Metric #{$index}: 'value' cannot be negative");
+                }
+
+                // Validate period
+                if (!isset(Usage::PERIODS[$period])) {
+                    throw new Exception("Metric #{$index}: Invalid period '{$period}'. Allowed: " . implode(', ', array_keys(Usage::PERIODS)));
+                }
+
+                // Validate tags if provided
+                if (isset($metricData['tags']) && !is_array($metricData['tags'])) {
+                    throw new Exception("Metric #{$index}: 'tags' must be an array, got " . gettype($metricData['tags']));
+                }
+
+                // Validate complete data structure against attributes
+                $data = [
+                    'metric' => $metric,
+                    'value' => $value,
+                    'period' => $period,
+                    'tags' => $metricData['tags'] ?? [],
+                ];
+                $this->validateDataFormat($data);
+            } catch (Exception $e) {
+                throw new Exception($e->getMessage());
+            }
+        }
+
         $tableName = $this->getTableName();
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
 
@@ -661,18 +847,12 @@ class ClickHouse extends SQL
         foreach ($metrics as $metricData) {
             $period = $metricData['period'] ?? Usage::PERIOD_1H;
 
-            if (!isset(Usage::PERIODS[$period])) {
-                throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
-            }
-
             $id = uniqid('', true);
             $now = new \DateTime();
             $timestamp = $this->formatDateTime($now);
 
             $metric = $metricData['metric'];
             $value = $metricData['value'];
-            assert(is_string($metric));
-            assert(is_int($value));
 
             $valuePlaceholders = [];
 
