@@ -3,10 +3,8 @@
 namespace Utopia\Usage\Adapter;
 
 use Exception;
-use Utopia\Database\Database;
 use Utopia\Database\Query;
 use Utopia\Fetch\Client;
-use Utopia\Usage\Adapter;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
 use Utopia\Validator\Hostname;

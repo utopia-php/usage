@@ -7,7 +7,6 @@ use Utopia\Database\Document;
 use Utopia\Database\Exception\Duplicate as DuplicateException;
 use Utopia\Database\Query;
 use Utopia\Exception;
-use Utopia\Usage\Adapter;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
 
