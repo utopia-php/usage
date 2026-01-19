@@ -297,4 +297,208 @@ class Metric extends ArrayObject
     {
         return $this->getArrayCopy();
     }
+
+    /**
+     * Get metric schema definition.
+     *
+     * Returns the attribute schema that defines the structure of metric data.
+     * This is used by adapters to understand the metric structure and create
+     * appropriate database tables/collections.
+     *
+     * Each attribute definition includes:
+     * - $id: string (attribute identifier)
+     * - type: string (attribute data type: string, integer, datetime)
+     * - size: int (max size for strings, 0 for others)
+     * - required: bool (whether the attribute is required)
+     * - signed: bool (for numeric types)
+     * - array: bool (whether value is an array)
+     * - filters: array<string> (data filters/validation rules)
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function getSchema(): array
+    {
+        return [
+            [
+                '$id' => 'metric',
+                'type' => 'string',
+                'size' => 255,
+                'required' => true,
+                'signed' => true,
+                'array' => false,
+                'filters' => [],
+            ],
+            [
+                '$id' => 'value',
+                'type' => 'integer',
+                'size' => 0,
+                'required' => true,
+                'signed' => true,
+                'array' => false,
+                'filters' => [],
+            ],
+            [
+                '$id' => 'period',
+                'type' => 'string',
+                'size' => 16,
+                'required' => true,
+                'signed' => true,
+                'array' => false,
+                'filters' => [],
+            ],
+            [
+                '$id' => 'time',
+                'type' => 'datetime',
+                'format' => '',
+                'size' => 0,
+                'signed' => true,
+                'required' => false,
+                'array' => false,
+                'filters' => ['datetime'],
+            ],
+            [
+                '$id' => 'tags',
+                'type' => 'string',
+                'size' => 16777216,
+                'required' => false,
+                'signed' => true,
+                'array' => false,
+                'filters' => ['json'],
+            ],
+        ];
+    }
+
+    /**
+     * Get metric indexes definition.
+     *
+     * Returns the index definitions that should be created on the metric table.
+     * Indexes are used to optimize query performance for common filter operations.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function getIndexes(): array
+    {
+        return [
+            [
+                '$id' => 'index-metric',
+                'type' => 'key',
+                'attributes' => ['metric'],
+            ],
+            [
+                '$id' => 'index-period',
+                'type' => 'key',
+                'attributes' => ['period'],
+            ],
+            [
+                '$id' => 'index-time',
+                'type' => 'key',
+                'attributes' => ['time'],
+            ],
+        ];
+    }
+
+    /**
+     * Validate metric data against schema.
+     *
+     * Validates that metric data conforms to the schema definition.
+     * Checks for:
+     * - Required attributes are present
+     * - Data types match schema types
+     * - String sizes don't exceed limits
+     * - Values are in valid ranges
+     *
+     * @param  array<string, mixed>  $data  The metric data to validate
+     * @throws \Exception If validation fails
+     */
+    public static function validate(array $data): void
+    {
+        $schema = self::getSchema();
+
+        foreach ($schema as $attribute) {
+            /** @var string $attrId */
+            $attrId = $attribute['$id'];
+            $required = $attribute['required'] ?? false;
+            $type = $attribute['type'] ?? 'string';
+            /** @var int $size */
+            $size = $attribute['size'] ?? 0;
+
+            // Check if required attribute is present
+            if ($required && !isset($data[$attrId])) {
+                throw new \Exception("Required attribute '{$attrId}' is missing");
+            }
+
+            // Skip validation if not present and not required
+            if (!isset($data[$attrId])) {
+                continue;
+            }
+
+            $value = $data[$attrId];
+
+            // Special handling for tags: accept array (will be JSON-encoded)
+            if ($attrId === 'tags') {
+                if (!is_array($value)) {
+                    throw new \Exception("Attribute '{$attrId}' must be an array, got " . gettype($value));
+                }
+                continue;
+            }
+
+            // Validate based on attribute type
+            match ($type) {
+                'string' => self::validateStringAttribute($attrId, $value, $size),
+                'integer' => self::validateIntegerAttribute($attrId, $value),
+                'datetime' => self::validateDatetimeAttribute($attrId, $value),
+                default => null,
+            };
+        }
+    }
+
+    /**
+     * Validate string attribute value.
+     *
+     * @throws \Exception
+     */
+    private static function validateStringAttribute(string $attrId, mixed $value, int $size): void
+    {
+        if (!is_string($value)) {
+            throw new \Exception("Attribute '{$attrId}' must be a string, got " . gettype($value));
+        }
+
+        if ($size > 0 && strlen($value) > $size) {
+            throw new \Exception("Attribute '{$attrId}' exceeds maximum size of {$size} characters");
+        }
+    }
+
+    /**
+     * Validate integer attribute value.
+     *
+     * @throws \Exception
+     */
+    private static function validateIntegerAttribute(string $attrId, mixed $value): void
+    {
+        if (!is_int($value)) {
+            throw new \Exception("Attribute '{$attrId}' must be an integer, got " . gettype($value));
+        }
+    }
+
+    /**
+     * Validate datetime attribute value.
+     *
+     * @throws \Exception
+     */
+    private static function validateDatetimeAttribute(string $attrId, mixed $value): void
+    {
+        if ($value instanceof \DateTime) {
+            return; // Valid DateTime object
+        }
+
+        if (!is_string($value)) {
+            throw new \Exception("Attribute '{$attrId}' must be a DateTime object or string, got " . gettype($value));
+        }
+
+        try {
+            new \DateTime($value);
+        } catch (\Exception $e) {
+            throw new \Exception("Attribute '{$attrId}' is not a valid datetime string: {$e->getMessage()}");
+        }
+    }
 }

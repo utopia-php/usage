@@ -3,6 +3,7 @@
 namespace Utopia\Usage\Adapter;
 
 use Utopia\Usage\Adapter;
+use Utopia\Usage\Metric;
 use Utopia\Database\Database;
 use Utopia\Database\Document;
 
@@ -10,7 +11,7 @@ use Utopia\Database\Document;
  * Base SQL Adapter for Audit
  *
  * This is an abstract base class for SQL-based adapters (Database, ClickHouse, etc.)
- * It provides common functionality and schema definitions for all SQL adapters.
+ * It provides common functionality and references schema definitions from the Metric class.
  */
 abstract class SQL extends Adapter
 {
@@ -29,67 +30,13 @@ abstract class SQL extends Adapter
     /**
      * Get attribute definitions for audit logs.
      *
-     * Each attribute is an array with the following string keys:
-     * - $id: string (attribute identifier)
-     * - type: string
-     * - size: int
-     * - required: bool
-     * - signed: bool
-     * - array: bool
-     * - filters: array<string>
+     * Delegates to Metric class which defines the metric schema.
      *
      * @return array<int, array<string, mixed>>
      */
     public function getAttributes(): array
     {
-        return [
-            [
-                '$id' => 'metric',
-                'type' => 'string',
-                'size' => 255,
-                'required' => true,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'value',
-                'type' => 'integer',
-                'size' => 0,
-                'required' => true,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'period',
-                'type' => 'string',
-                'size' => 16,
-                'required' => true,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'time',
-                'type' => 'datetime',
-                'format' => '',
-                'size' => 0,
-                'signed' => true,
-                'required' => false,
-                'array' => false,
-                'filters' => ['datetime'],
-            ],
-            [
-                '$id' => 'tags',
-                'type' => 'string',
-                'size' => 16777216,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => ['json'],
-            ],
-        ];
+        return Metric::getSchema();
     }
 
     /**
@@ -105,45 +52,13 @@ abstract class SQL extends Adapter
     /**
      * Get index definitions for audit logs.
      *
-     * Each index is an array with the following string keys:
-     * - $id: string (index identifier)
-     * - type: string
-     * - attributes: array<string>
+     * Delegates to Metric class which defines the metric indexes.
      *
      * @return array<int, array<string, mixed>>
      */
     public function getIndexes(): array
     {
-        return [
-            [
-                '$id' => 'index-metric',
-                'type' => 'key',
-                'attributes' => ['metric'],
-                'lengths' => [],
-                'orders' => [],
-            ],
-            [
-                '$id' => 'index-period',
-                'type' => 'key',
-                'attributes' => ['period'],
-                'lengths' => [],
-                'orders' => [],
-            ],
-            [
-                '$id' => 'index-metric-period',
-                'type' => 'key',
-                'attributes' => ['metric', 'period'],
-                'lengths' => [],
-                'orders' => [],
-            ],
-            [
-                '$id' => 'index-time',
-                'type' => 'key',
-                'attributes' => ['time'],
-                'lengths' => [],
-                'orders' => ['desc'],
-            ],
-        ];
+        return Metric::getIndexes();
     }
 
     /**

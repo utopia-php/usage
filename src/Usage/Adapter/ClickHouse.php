@@ -561,104 +561,6 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Validate data format against attribute metadata.
-     *
-     * @param array<string, mixed> $data
-     * @throws Exception
-     */
-    private function validateDataFormat(array $data): void
-    {
-        $attributes = $this->getAttributes();
-
-        foreach ($attributes as $attribute) {
-            /** @var string $attrId */
-            $attrId = $attribute['$id'];
-            $required = $attribute['required'] ?? false;
-            $type = $attribute['type'] ?? 'string';
-            /** @var int $size */
-            $size = $attribute['size'] ?? 0;
-
-            // Check if required attribute is present
-            if ($required && !isset($data[$attrId])) {
-                throw new Exception("Required attribute '{$attrId}' is missing");
-            }
-
-            // Skip validation if not present and not required
-            if (!isset($data[$attrId])) {
-                continue;
-            }
-
-            $value = $data[$attrId];
-
-            // Special handling for tags: accept array (will be JSON-encoded)
-            if ($attrId === 'tags') {
-                if (!is_array($value)) {
-                    throw new Exception("Attribute '{$attrId}' must be an array, got " . gettype($value));
-                }
-                continue;
-            }
-
-            // Validate based on attribute type
-            match ($type) {
-                'string' => $this->validateStringAttribute($attrId, $value, $size),
-                'integer' => $this->validateIntegerAttribute($attrId, $value),
-                'datetime' => $this->validateDatetimeAttribute($attrId, $value),
-                default => null,
-            };
-        }
-    }
-
-    /**
-     * Validate string attribute value.
-     *
-     * @throws Exception
-     */
-    private function validateStringAttribute(string $attrId, mixed $value, int $size): void
-    {
-        if (!is_string($value)) {
-            throw new Exception("Attribute '{$attrId}' must be a string, got " . gettype($value));
-        }
-
-        if ($size > 0 && strlen($value) > $size) {
-            throw new Exception("Attribute '{$attrId}' exceeds maximum size of {$size} characters");
-        }
-    }
-
-    /**
-     * Validate integer attribute value.
-     *
-     * @throws Exception
-     */
-    private function validateIntegerAttribute(string $attrId, mixed $value): void
-    {
-        if (!is_int($value)) {
-            throw new Exception("Attribute '{$attrId}' must be an integer, got " . gettype($value));
-        }
-    }
-
-    /**
-     * Validate datetime attribute value.
-     *
-     * @throws Exception
-     */
-    private function validateDatetimeAttribute(string $attrId, mixed $value): void
-    {
-        if ($value instanceof \DateTime) {
-            return; // Valid DateTime object
-        }
-
-        if (!is_string($value)) {
-            throw new Exception("Attribute '{$attrId}' must be a DateTime object or string, got " . gettype($value));
-        }
-
-        try {
-            new \DateTime($value);
-        } catch (\Exception $e) {
-            throw new Exception("Attribute '{$attrId}' is not a valid datetime string: {$e->getMessage()}");
-        }
-    }
-
-    /**
      * Log a usage metric.
      *
      * @param  array<string,mixed>  $tags
@@ -690,14 +592,14 @@ class ClickHouse extends SQL
             throw new Exception('Tags must be an array');
         }
 
-        // Validate complete data structure
+        // Validate complete data structure using Metric class
         $data = [
             'metric' => $metric,
             'value' => $value,
             'period' => $period,
             'tags' => $tags,
         ];
-        $this->validateDataFormat($data);
+        Metric::validate($data);
 
         $id = uniqid('', true);
         $now = new \DateTime();
@@ -815,14 +717,14 @@ class ClickHouse extends SQL
                     throw new Exception("Metric #{$index}: 'tags' must be an array, got " . gettype($metricData['tags']));
                 }
 
-                // Validate complete data structure against attributes
+                // Validate complete data structure using Metric class
                 $data = [
                     'metric' => $metric,
                     'value' => $value,
                     'period' => $period,
                     'tags' => $metricData['tags'] ?? [],
                 ];
-                $this->validateDataFormat($data);
+                Metric::validate($data);
             } catch (Exception $e) {
                 throw new Exception($e->getMessage());
             }
