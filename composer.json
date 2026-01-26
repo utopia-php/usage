@@ -17,7 +17,7 @@
     "minimum-stability": "stable",
     "require": {
         "php": ">=8.0",
-        "utopia-php/fetch": "^0.4.2",
+        "utopia-php/fetch": "0.5.*",
         "utopia-php/database": "^4.3"
     },
     "require-dev": {
