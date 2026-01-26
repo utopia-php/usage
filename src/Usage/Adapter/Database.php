@@ -69,14 +69,19 @@ class Database extends SQL
             : $now->format(Usage::PERIODS[$period]);
 
         $this->db->getAuthorization()->skip(function () use ($metric, $value, $period, $time, $tags) {
-            $this->db->createDocument($this->collection, new Document([
+            $id = \md5("{$time}_{$period}_{$metric}");
+
+            $doc = new Document([
+                '$id' => $id,
                 '$permissions' => [],
                 'metric' => $metric,
                 'value' => $value,
                 'period' => $period,
                 'time' => $time,
                 'tags' => $tags,
-            ]));
+            ]);
+
+            $this->db->upsertDocumentsWithIncrease($this->collection, 'value', [$doc]);
         });
 
         return true;
@@ -85,7 +90,8 @@ class Database extends SQL
     public function logBatch(array $metrics): bool
     {
         $this->db->getAuthorization()->skip(function () use ($metrics) {
-            $documents = \array_map(function ($metric) {
+            $documents = [];
+            foreach ($metrics as $metric) {
                 $period = $metric['period'] ?? '1h';
 
                 if (! isset(Usage::PERIODS[$period])) {
@@ -97,7 +103,10 @@ class Database extends SQL
                     ? '1000-01-01 00:00:00'
                     : $now->format(Usage::PERIODS[$period]);
 
-                return new Document([
+                $id = \md5("{$time}_{$period}_{$metric['metric']}");
+
+                $documents[] = new Document([
+                    '$id' => $id,
                     '$permissions' => [],
                     'metric' => $metric['metric'],
                     'value' => $metric['value'],
@@ -105,9 +114,9 @@ class Database extends SQL
                     'time' => $time,
                     'tags' => $metric['tags'] ?? [],
                 ]);
-            }, $metrics);
+            }
 
-            $this->db->createDocuments($this->collection, $documents);
+            $this->db->upsertDocumentsWithIncrease($this->collection, 'value', $documents);
         });
 
         return true;

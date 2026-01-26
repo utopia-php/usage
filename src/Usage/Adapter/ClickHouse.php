@@ -431,16 +431,18 @@ class ClickHouse extends SQL
         $tableName = $this->getTableName();
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
 
-        // Create table with MergeTree engine for optimal performance
+        // Create table with SummingMergeTree engine so inserts act as increments for matching keys
         $columnDefs = implode(",\n                ", $columns);
         $indexDefs = !empty($indexes) ? ",\n                " . implode(",\n                ", $indexes) : '';
+
+        $orderByExpr = $this->sharedTables ? '(tenant, id)' : '(id)';
 
         $createTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDatabaseAndTable} (
                 {$columnDefs}{$indexDefs}
             )
-            ENGINE = MergeTree()
-            ORDER BY (time, id)
+            ENGINE = SummingMergeTree()
+            ORDER BY {$orderByExpr}
             PARTITION BY toYYYYMM(time)
             SETTINGS index_granularity = 8192
         ";
@@ -601,9 +603,19 @@ class ClickHouse extends SQL
         ];
         Metric::validate($data);
 
-        $id = uniqid('', true);
+        // Period-aligned time so increments fall into the correct bucket
         $now = new \DateTime();
-        $timestamp = $this->formatDateTime($now);
+        $time = $period === Usage::PERIOD_INF
+            ? '1000-01-01 00:00:00'
+            : $now->format(Usage::PERIODS[$period]);
+        $timestamp = $this->formatDateTime($time);
+
+        // Deterministic id so SummingMergeTree will aggregate increments for the same group
+        $idComponents = [$timestamp, $period, $metric];
+        if ($this->sharedTables) {
+            $idComponents[] = (string)$this->tenant;
+        }
+        $id = md5(implode('_', $idComponents));
 
         // Build insert columns dynamically from attributes
         $insertColumns = ['id'];
@@ -749,9 +761,18 @@ class ClickHouse extends SQL
         foreach ($metrics as $metricData) {
             $period = $metricData['period'] ?? Usage::PERIOD_1H;
 
-            $id = uniqid('', true);
+            // Period-aligned time so increments fall into the correct bucket
             $now = new \DateTime();
-            $timestamp = $this->formatDateTime($now);
+            $time = $period === Usage::PERIOD_INF
+                ? '1000-01-01 00:00:00'
+                : $now->format(Usage::PERIODS[$period]);
+            $timestamp = $this->formatDateTime($time);
+
+            $idComponents = [$timestamp, $period, $metric];
+            if ($this->sharedTables) {
+                $idComponents[] = (string)$this->tenant;
+            }
+            $id = md5(implode('_', $idComponents));
 
             $metric = $metricData['metric'];
             $value = $metricData['value'];
@@ -805,6 +826,8 @@ class ClickHouse extends SQL
 
         return true;
     }
+
+
 
     /**
      * Find metrics using Query objects.

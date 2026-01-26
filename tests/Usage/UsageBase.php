@@ -110,6 +110,24 @@ trait UsageBase
         $this->assertEquals(5000, $sumBandwidth);
     }
 
+    public function testIncrementingDefaultBehavior(): void
+    {
+        // Ensure clean state
+        $this->usage->purge(\Utopia\Database\DateTime::now());
+
+        // Log the same metric twice with identical period and tags
+        $this->assertTrue($this->usage->log('increment-test', 5, '1h', []));
+        $this->assertTrue($this->usage->log('increment-test', 7, '1h', []));
+
+        // Because adapters now aggregate by deterministic id/time/period (and tenant where applicable),
+        // there should be a single record and the summed value should be 12.
+        $results = $this->usage->getByPeriod('increment-test', '1h');
+        $this->assertEquals(1, count($results));
+
+        $sum = $this->usage->sumByPeriod('increment-test', '1h');
+        $this->assertEquals(12, $sum);
+    }
+
     public function testWithQueries(): void
     {
         $results = $this->usage->getByPeriod('requests', '1h', [
