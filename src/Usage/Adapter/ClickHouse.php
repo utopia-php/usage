@@ -745,6 +745,23 @@ class ClickHouse extends SQL
                     throw new Exception("Metric #{$index}: 'tags' must be an array, got " . gettype($metricData['tags']));
                 }
 
+                // Validate tenant when provided (metric-level tenant overrides adapter tenant)
+                if (array_key_exists('tenant', $metricData)) {
+                    $tenantValue = $metricData['tenant'];
+
+                    if ($tenantValue !== null) {
+                        if (is_int($tenantValue)) {
+                            if ($tenantValue < 0) {
+                                throw new Exception("Metric #{$index}: 'tenant' cannot be negative");
+                            }
+                        } elseif (is_string($tenantValue) && ctype_digit($tenantValue)) {
+                            // ok numeric string
+                        } else {
+                            throw new Exception("Metric #{$index}: 'tenant' must be a non-negative integer, got " . gettype($tenantValue));
+                        }
+                    }
+                }
+
                 // Validate complete data structure using Metric class
                 $data = [
                     'metric' => $metric,
@@ -789,7 +806,7 @@ class ClickHouse extends SQL
             $timestamp = $this->formatDateTime($time);
 
             // Deterministic id for aggregation
-            $tenant = $this->sharedTables ? $this->tenant : null;
+            $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
             /** @var string $metric */
             /** @var string $period */
             /** @var string $timestamp */
@@ -827,7 +844,7 @@ class ClickHouse extends SQL
 
             if ($this->sharedTables) {
                 $tenantKey = 'tenant_' . $paramCounter;
-                $queryParams[$tenantKey] = $this->tenant;
+                $queryParams[$tenantKey] = $tenant;
                 $valuePlaceholders[] = '{' . $tenantKey . ':Nullable(UInt64)}';
             }
 
@@ -843,6 +860,31 @@ class ClickHouse extends SQL
         $this->query($insertSql, $queryParams);
 
         return true;
+    }
+
+    /**
+     * Resolve tenant for a single metric entry, giving precedence to metric-level tenant.
+     *
+     * @param array<string, mixed> $metricData
+     */
+    private function resolveTenantFromMetric(array $metricData): ?int
+    {
+        $tenant = array_key_exists('tenant', $metricData) ? $metricData['tenant'] : $this->tenant;
+
+        if ($tenant === null) {
+            return null;
+        }
+
+        if (is_int($tenant)) {
+            return $tenant;
+        }
+
+        if (is_string($tenant) && ctype_digit($tenant)) {
+            return (int) $tenant;
+        }
+
+        // Validation should prevent reaching here, but return null defensively
+        return null;
     }
 
 
