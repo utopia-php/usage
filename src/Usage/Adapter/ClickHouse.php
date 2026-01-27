@@ -50,6 +50,9 @@ class ClickHouse extends SQL
 
     private Client $client;
 
+    /** @var bool Whether to use FINAL in SELECT queries to force merge-on-read (tests) */
+    private bool $useFinal = true;
+
     protected ?int $tenant = null;
 
     protected bool $sharedTables = false;
@@ -84,6 +87,15 @@ class ClickHouse extends SQL
         $this->client->addHeader('X-ClickHouse-User', $this->username);
         $this->client->addHeader('X-ClickHouse-Key', $this->password);
         $this->client->setTimeout(30_000); // 30 seconds
+    }
+
+    /**
+     * Enable or disable using FINAL in SELECT queries.
+     */
+    public function setUseFinal(bool $useFinal): self
+    {
+        $this->useFinal = $useFinal;
+        return $this;
     }
 
     /**
@@ -846,6 +858,7 @@ class ClickHouse extends SQL
     {
         $tableName = $this->getTableName();
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $fromTable = $escapedTable . ($this->useFinal ? ' FINAL' : '');
 
         // Parse queries
         $parsed = $this->parseQueries($queries);
@@ -875,7 +888,7 @@ class ClickHouse extends SQL
         $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
         $sql = "
             SELECT {$selectColumns}
-            FROM {$escapedTable}{$whereClause}{$orderClause}{$limitClause}{$offsetClause}
+            FROM {$fromTable}{$whereClause}{$orderClause}{$limitClause}{$offsetClause}
             FORMAT TabSeparated
         ";
 
@@ -894,6 +907,7 @@ class ClickHouse extends SQL
     {
         $tableName = $this->getTableName();
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $fromTable = $escapedTable . ($this->useFinal ? ' FINAL' : '');
 
         // Parse queries - we only need filters and params
         $parsed = $this->parseQueries($queries);
@@ -915,7 +929,7 @@ class ClickHouse extends SQL
 
         $sql = "
             SELECT COUNT(*) as count
-            FROM {$escapedTable}{$whereClause}
+            FROM {$fromTable}{$whereClause}
             FORMAT TabSeparated
         ";
 
@@ -1316,6 +1330,7 @@ class ClickHouse extends SQL
     {
         $tableName = $this->getTableName();
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $fromTable = $escapedTable . ($this->useFinal ? ' FINAL' : '');
 
         // Build query constraints
         $allQueries = [
@@ -1344,7 +1359,7 @@ class ClickHouse extends SQL
 
         $sql = "
             SELECT sum(value) as total
-            FROM {$escapedTable}{$whereClause}
+            FROM {$fromTable}{$whereClause}
             FORMAT TabSeparated
         ";
 

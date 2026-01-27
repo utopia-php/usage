@@ -162,7 +162,6 @@ trait UsageBase
 
             $sum = $this->usage->sumByPeriod('increment-test', '1h');
             $this->assertEquals(12, $sum);
-
         }, 2);
     }
 
