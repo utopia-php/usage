@@ -114,4 +114,16 @@ abstract class SQL extends Adapter
 
         return $definitions;
     }
+
+    /**
+     * Build deterministic document ID based on time bucket, period, metric, and tenant (when applicable).
+     * Tags are intentionally excluded to ensure aggregation regardless of tag differences.
+     */
+    protected function buildDeterministicId(string $metric, string $period, string $timeBucket, ?int $tenant = null): string
+    {
+        $tenantPart = $tenant !== null ? ('|' . $tenant) : '';
+        $hashInput = $timeBucket . '|' . $period . '|' . $metric . $tenantPart;
+
+        return md5($hashInput);
+    }
 }

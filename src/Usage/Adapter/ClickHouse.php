@@ -603,6 +603,9 @@ class ClickHouse extends SQL
         ];
         Metric::validate($data);
 
+        // Normalize tags for deterministic hashing
+        ksort($tags);
+
         // Period-aligned time so increments fall into the correct bucket
         $now = new \DateTime();
         $time = $period === Usage::PERIOD_INF
@@ -611,11 +614,8 @@ class ClickHouse extends SQL
         $timestamp = $this->formatDateTime($time);
 
         // Deterministic id so SummingMergeTree will aggregate increments for the same group
-        $idComponents = [$timestamp, $period, $metric];
-        if ($this->sharedTables) {
-            $idComponents[] = (string)$this->tenant;
-        }
-        $id = md5(implode('_', $idComponents));
+        $tenant = $this->sharedTables ? $this->tenant : null;
+        $id = $this->buildDeterministicId($metric, $period, $timestamp, $tenant);
 
         // Build insert columns dynamically from attributes
         $insertColumns = ['id'];
@@ -760,6 +760,10 @@ class ClickHouse extends SQL
 
         foreach ($metrics as $metricData) {
             $period = $metricData['period'] ?? Usage::PERIOD_1H;
+            $metric = $metricData['metric'];
+            $value = $metricData['value'];
+            $tags = $metricData['tags'] ?? [];
+            ksort($tags);
 
             // Period-aligned time so increments fall into the correct bucket
             $now = new \DateTime();
@@ -768,14 +772,9 @@ class ClickHouse extends SQL
                 : $now->format(Usage::PERIODS[$period]);
             $timestamp = $this->formatDateTime($time);
 
-            $idComponents = [$timestamp, $period, $metric];
-            if ($this->sharedTables) {
-                $idComponents[] = (string)$this->tenant;
-            }
-            $id = md5(implode('_', $idComponents));
-
-            $metric = $metricData['metric'];
-            $value = $metricData['value'];
+            // Deterministic id for aggregation
+            $tenant = $this->sharedTables ? $this->tenant : null;
+            $id = $this->buildDeterministicId($metric, $period, $timestamp, $tenant);
 
             $valuePlaceholders = [];
 
@@ -867,7 +866,6 @@ class ClickHouse extends SQL
         // Build LIMIT and OFFSET
         $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
         $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
-
         $sql = "
             SELECT {$selectColumns}
             FROM {$escapedTable}{$whereClause}{$orderClause}{$limitClause}{$offsetClause}

@@ -68,9 +68,11 @@ class Database extends SQL
             ? '1000-01-01 00:00:00'
             : $now->format(Usage::PERIODS[$period]);
 
-        $this->db->getAuthorization()->skip(function () use ($metric, $value, $period, $time, $tags) {
-            $id = \md5("{$time}_{$period}_{$metric}");
+        // Sort tags for consistent storage
+        ksort($tags);
+        $id = $this->buildDeterministicId($metric, $period, $time);
 
+        $this->db->getAuthorization()->skip(function () use ($metric, $value, $period, $time, $tags, $id) {
             $doc = new Document([
                 '$id' => $id,
                 '$permissions' => [],
@@ -103,7 +105,10 @@ class Database extends SQL
                     ? '1000-01-01 00:00:00'
                     : $now->format(Usage::PERIODS[$period]);
 
-                $id = \md5("{$time}_{$period}_{$metric['metric']}");
+                $tags = $metric['tags'] ?? [];
+                ksort($tags);
+
+                $id = $this->buildDeterministicId($metric['metric'], $period, $time);
 
                 $documents[] = new Document([
                     '$id' => $id,
@@ -112,7 +117,7 @@ class Database extends SQL
                     'value' => $metric['value'],
                     'period' => $period,
                     'time' => $time,
-                    'tags' => $metric['tags'] ?? [],
+                    'tags' => $tags,
                 ]);
             }
 
