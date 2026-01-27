@@ -60,7 +60,7 @@ class ClickHouseTest extends TestCase
                 'metric' => 'tenant-override',
                 'value' => 5,
                 'period' => '1h',
-                'tenant' => 2,
+                '$tenant' => 2,
                 'tags' => [],
             ],
         ];

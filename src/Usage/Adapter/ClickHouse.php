@@ -747,7 +747,7 @@ class ClickHouse extends SQL
 
                 // Validate tenant when provided (metric-level tenant overrides adapter tenant)
                 if (array_key_exists('tenant', $metricData)) {
-                    $tenantValue = $metricData['tenant'];
+                    $tenantValue = $metricData['$tenant'];
 
                     if ($tenantValue !== null) {
                         if (is_int($tenantValue)) {
@@ -869,7 +869,7 @@ class ClickHouse extends SQL
      */
     private function resolveTenantFromMetric(array $metricData): ?int
     {
-        $tenant = array_key_exists('tenant', $metricData) ? $metricData['tenant'] : $this->tenant;
+        $tenant = array_key_exists('$tenant', $metricData) ? $metricData['$tenant'] : $this->tenant;
 
         if ($tenant === null) {
             return null;
