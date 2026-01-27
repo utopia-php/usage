@@ -92,7 +92,7 @@ class Database extends SQL
     public function logBatch(array $metrics): bool
     {
         $this->db->getAuthorization()->skip(function () use ($metrics) {
-            $documents = [];
+            $documentsById = [];
             foreach ($metrics as $metric) {
                 $period = $metric['period'] ?? '1h';
 
@@ -110,18 +110,29 @@ class Database extends SQL
 
                 $id = $this->buildDeterministicId($metric['metric'], $period, $time);
 
-                $documents[] = new Document([
-                    '$id' => $id,
-                    '$permissions' => [],
-                    'metric' => $metric['metric'],
-                    'value' => $metric['value'],
-                    'period' => $period,
-                    'time' => $time,
-                    'tags' => $tags,
-                ]);
+                if (isset($documentsById[$id])) {
+                    $documentsById[$id]['value'] += $metric['value'];
+                } else {
+                    $documentsById[$id] = [
+                        '$id' => $id,
+                        '$permissions' => [],
+                        'metric' => $metric['metric'],
+                        'value' => $metric['value'],
+                        'period' => $period,
+                        'time' => $time,
+                        'tags' => $tags,
+                    ];
+                }
             }
 
-            $this->db->upsertDocumentsWithIncrease($this->collection, 'value', $documents);
+            $documents = [];
+            foreach ($documentsById as $doc) {
+                $documents[] = new Document($doc);
+            }
+
+            if (!empty($documents)) {
+                $this->db->upsertDocumentsWithIncrease($this->collection, 'value', $documents);
+            }
         });
 
         return true;

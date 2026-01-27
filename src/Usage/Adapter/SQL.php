@@ -121,8 +121,8 @@ abstract class SQL extends Adapter
      */
     protected function buildDeterministicId(string $metric, string $period, string $timeBucket, ?int $tenant = null): string
     {
-        $tenantPart = $tenant !== null ? ('|' . $tenant) : '';
-        $hashInput = $timeBucket . '|' . $period . '|' . $metric . $tenantPart;
+        $tenantPart = $tenant !== null ? ('_' . $tenant) : '';
+        $hashInput = $timeBucket . '_' . $period . '_' . $metric . $tenantPart;
 
         return md5($hashInput);
     }
