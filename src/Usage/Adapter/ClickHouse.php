@@ -604,6 +604,7 @@ class ClickHouse extends SQL
         Metric::validate($data);
 
         // Normalize tags for deterministic hashing
+        /** @var array<string,mixed> $tags */
         ksort($tags);
 
         // Period-aligned time so increments fall into the correct bucket
@@ -615,6 +616,9 @@ class ClickHouse extends SQL
 
         // Deterministic id so SummingMergeTree will aggregate increments for the same group
         $tenant = $this->sharedTables ? $this->tenant : null;
+        /** @var string $metric */
+        /** @var string $period */
+        /** @var string $timestamp */
         $id = $this->buildDeterministicId($metric, $period, $timestamp, $tenant);
 
         // Build insert columns dynamically from attributes
@@ -762,7 +766,7 @@ class ClickHouse extends SQL
             $period = $metricData['period'] ?? Usage::PERIOD_1H;
             $metric = $metricData['metric'];
             $value = $metricData['value'];
-            $tags = $metricData['tags'] ?? [];
+            $tags = (array) ($metricData['tags'] ?? []);
             ksort($tags);
 
             // Period-aligned time so increments fall into the correct bucket
@@ -774,6 +778,9 @@ class ClickHouse extends SQL
 
             // Deterministic id for aggregation
             $tenant = $this->sharedTables ? $this->tenant : null;
+            /** @var string $metric */
+            /** @var string $period */
+            /** @var string $timestamp */
             $id = $this->buildDeterministicId($metric, $period, $timestamp, $tenant);
 
             $valuePlaceholders = [];
