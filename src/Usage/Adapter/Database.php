@@ -65,7 +65,7 @@ class Database extends SQL
 
         $now = new \DateTime();
         $time = $period === 'inf'
-            ? '1000-01-01 00:00:00'
+            ? null
             : $now->format(Usage::PERIODS[$period]);
 
         // Sort tags for consistent storage
