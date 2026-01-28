@@ -523,9 +523,6 @@ class ClickHouse extends SQL
             }
         }
 
-        // This is unreachable code but kept for completeness - all valid types are handled above
-        // @phpstan-ignore-next-line
-        throw new Exception('DateTime must be a DateTime object or string');
     }
 
     /**
@@ -1003,11 +1000,7 @@ class ClickHouse extends SQL
         $paramCounter = 0;
 
         foreach ($queries as $query) {
-            if (!$query instanceof Query) {
-                /** @phpstan-ignore-next-line ternary.alwaysTrue - runtime validation despite type hint */
-                $type = is_object($query) ? get_class($query) : gettype($query);
-                throw new \InvalidArgumentException("Invalid query item: expected instance of Query, got {$type}");
-            }
+
 
             $method = $query->getMethod();
             $attribute = $query->getAttribute();
@@ -1019,20 +1012,28 @@ class ClickHouse extends SQL
                     $escapedAttr = $this->escapeIdentifier($attribute);
 
                     // Support arrays of values (produce IN (...) ) or single value equality
-                    if (is_array($values)) {
+                    if (count($values) > 1) {
+                        /** @var array<mixed> $arrayValues */
+                        $arrayValues = $values;
                         $inParams = [];
-                        foreach ($values as $value) {
+                        foreach ($arrayValues as $value) {
                             $paramName = 'param_' . $paramCounter++;
                             if ($attribute === 'time') {
                                 $inParams[] = "{{$paramName}:DateTime64(3)}";
-                                $params[$paramName] = $this->formatDateTime($value);
+                                /** @var \DateTime|string|null $timeValue */
+                                $timeValue = $value;
+                                $params[$paramName] = $this->formatDateTime($timeValue);
                             } else {
                                 $inParams[] = "{{$paramName}:String}";
-                                $params[$paramName] = $this->formatParamValue($value);
+                                /** @var bool|float|int|string $scalarValue */
+                                $scalarValue = $value;
+                                $params[$paramName] = $this->formatParamValue($scalarValue);
                             }
                         }
 
-                        if (count($inParams) === 1) {
+                        /** @var int $inParamCount */
+                        $inParamCount = count($inParams);
+                        if ($inParamCount === 1) {
                             $filters[] = "{$escapedAttr} = " . $inParams[0];
                         } else {
                             $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
@@ -1040,12 +1041,15 @@ class ClickHouse extends SQL
                     } else {
                         $paramName = 'param_' . $paramCounter++;
                         if ($attribute === 'time') {
+                            /** @var array<\DateTime|string|null> $values */
+                            $formattedValue = $this->formatDateTime($values[0]);
                             $filters[] = "{$escapedAttr} = {{$paramName}:DateTime64(3)}";
-                            $params[$paramName] = $this->formatDateTime($values);
                         } else {
+                            /** @var bool|float|int|string $formattedValue */
+                            $formattedValue = $this->formatParamValue($values[0]);
                             $filters[] = "{$escapedAttr} = {{$paramName}:String}";
-                            $params[$paramName] = $this->formatParamValue($values);
                         }
+                        $params[$paramName] = $formattedValue;
                     }
                     break;
 
@@ -1119,10 +1123,14 @@ class ClickHouse extends SQL
                         $paramName = 'param_' . $paramCounter++;
                         if ($attribute === 'time') {
                             $inParams[] = "{{$paramName}:DateTime64(3)}";
-                            $params[$paramName] = $this->formatDateTime($value);
+                            /** @var \DateTime|string|null $singleValue */
+                            $singleValue = $value;
+                            $params[$paramName] = $this->formatDateTime($singleValue);
                         } else {
                             $inParams[] = "{{$paramName}:String}";
-                            $params[$paramName] = $this->formatParamValue($value);
+                            /** @var bool|float|int|string $singleValue */
+                            $singleValue = $value;
+                            $params[$paramName] = $this->formatParamValue($singleValue);
                         }
                     }
                     if (!empty($inParams)) {
@@ -1135,11 +1143,19 @@ class ClickHouse extends SQL
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $paramName = 'param_' . $paramCounter++;
                     if ($attribute === 'time') {
+                        if (is_array($values)) {
+                            /** @var \DateTime|string|null $singleValue */
+                            $singleValue = $values[0] ?? null;
+                        }
                         $filters[] = "{$escapedAttr} <= {{$paramName}:DateTime64(3)}";
-                        $params[$paramName] = $this->formatDateTime(is_array($values) ? ($values[0] ?? null) : $values);
+                        $params[$paramName] = $this->formatDateTime($singleValue);
                     } else {
+                        if (is_array($values)) {
+                            /** @var bool|float|int|string $singleValue */
+                            $singleValue = $values[0] ?? null;
+                        }
                         $filters[] = "{$escapedAttr} <= {{$paramName}:String}";
-                        $params[$paramName] = $this->formatParamValue(is_array($values) ? ($values[0] ?? null) : $values);
+                        $params[$paramName] = $this->formatParamValue($singleValue);
                     }
                     break;
 
@@ -1148,11 +1164,19 @@ class ClickHouse extends SQL
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $paramName = 'param_' . $paramCounter++;
                     if ($attribute === 'time') {
+                        if (is_array($values)) {
+                            /** @var \DateTime|string|null $singleValue */
+                            $singleValue = $values[0] ?? null;
+                        }
                         $filters[] = "{$escapedAttr} >= {{$paramName}:DateTime64(3)}";
-                        $params[$paramName] = $this->formatDateTime(is_array($values) ? ($values[0] ?? null) : $values);
+                        $params[$paramName] = $this->formatDateTime($singleValue);
                     } else {
+                        if (is_array($values)) {
+                            /** @var bool|float|int|string $singleValue */
+                            $singleValue = $values[0] ?? null;
+                        }
                         $filters[] = "{$escapedAttr} >= {{$paramName}:String}";
-                        $params[$paramName] = $this->formatParamValue(is_array($values) ? ($values[0] ?? null) : $values);
+                        $params[$paramName] = $this->formatParamValue($singleValue);
                     }
                     break;
 

@@ -188,12 +188,14 @@ class Database extends SQL
                     break;
                 case Query::TYPE_LESSER_EQUAL:
                     if (!empty($values)) {
+                        /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::lessThanEqual($attribute, $value);
                     }
                     break;
                 case Query::TYPE_GREATER_EQUAL:
                     if (!empty($values)) {
+                        /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::greaterThanEqual($attribute, $value);
                     }
