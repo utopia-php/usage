@@ -31,7 +31,7 @@ abstract class Adapter
     /**
      * Get usage metrics by period
      *
-     * @param  array<\Utopia\Database\Query>  $queries
+     * @param  array<\Utopia\Usage\Query>  $queries
      * @return array<Metric>
      */
     abstract public function getByPeriod(string $metric, string $period, array $queries = []): array;
@@ -39,7 +39,7 @@ abstract class Adapter
     /**
      * Get usage metrics between dates
      *
-     * @param  array<\Utopia\Database\Query>  $queries
+     * @param  array<\Utopia\Usage\Query>  $queries
      * @return array<Metric>
      */
     abstract public function getBetweenDates(string $metric, string $startDate, string $endDate, array $queries = []): array;
@@ -47,14 +47,14 @@ abstract class Adapter
     /**
      * Count usage metrics by period
      *
-     * @param  array<\Utopia\Database\Query>  $queries
+     * @param  array<\Utopia\Usage\Query>  $queries
      */
     abstract public function countByPeriod(string $metric, string $period, array $queries = []): int;
 
     /**
      * Sum usage metrics by period
      *
-     * @param  array<\Utopia\Database\Query>  $queries
+     * @param  array<\Utopia\Usage\Query>  $queries
      */
     abstract public function sumByPeriod(string $metric, string $period, array $queries = []): int;
 
@@ -66,7 +66,7 @@ abstract class Adapter
     /**
      * Find metrics using Query objects.
      *
-     * @param array<\Utopia\Database\Query> $queries
+     * @param array<\Utopia\Usage\Query> $queries
      * @return array<Metric>
      */
     abstract public function find(array $queries = []): array;
@@ -74,7 +74,7 @@ abstract class Adapter
     /**
      * Count metrics using Query objects.
      *
-     * @param array<\Utopia\Database\Query> $queries
+     * @param array<\Utopia\Usage\Query> $queries
      * @return int
      */
     abstract public function count(array $queries = []): int;

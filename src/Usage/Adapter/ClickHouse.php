@@ -3,7 +3,7 @@
 namespace Utopia\Usage\Adapter;
 
 use Exception;
-use Utopia\Database\Query;
+use Utopia\Usage\Query;
 use Utopia\Fetch\Client;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
@@ -1072,17 +1072,7 @@ class ClickHouse extends SQL
                     }
                     break;
 
-                case Query::TYPE_SEARCH:
-                    // SEARCH is like LIKE
-                    $this->validateAttributeName($attribute);
-                    $escapedAttr = $this->escapeIdentifier($attribute);
-                    $paramName = 'param_' . $paramCounter++;
-                    $value = is_array($values) && !empty($values) ? $values[0] : $values;
-                    $filters[] = "{$escapedAttr} LIKE {{$paramName}:String}";
-                    $params[$paramName] = $this->formatParamValue($value);
-                    break;
-
-                case Query::TYPE_SELECT:
+                case Query::TYPE_IN:
                     // SELECT allows selecting multiple columns/values
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
@@ -1098,20 +1088,12 @@ class ClickHouse extends SQL
                     break;
 
                 case Query::TYPE_ORDER_DESC:
-                    // Skip special Query attributes (like $sequence) that aren't real columns
-                    if (str_starts_with($attribute, '$')) {
-                        break;
-                    }
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $orderBy[] = "{$escapedAttr} DESC";
                     break;
 
                 case Query::TYPE_ORDER_ASC:
-                    // Skip special Query attributes (like $sequence) that aren't real columns
-                    if (str_starts_with($attribute, '$')) {
-                        break;
-                    }
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $orderBy[] = "{$escapedAttr} ASC";
@@ -1313,7 +1295,7 @@ class ClickHouse extends SQL
         }
 
         // Add default ordering
-        $allQueries[] = Query::orderDesc();
+        $allQueries[] = Query::orderDesc('time');
 
         return $this->find($allQueries);
     }
@@ -1330,8 +1312,7 @@ class ClickHouse extends SQL
     {
         $allQueries = [
             Query::equal('metric', [$metric]),
-            Query::greaterThanEqual('time', $startDate),
-            Query::lessThanEqual('time', $endDate),
+            Query::between('time', $startDate, $endDate)
         ];
 
         // Add custom queries
@@ -1340,7 +1321,7 @@ class ClickHouse extends SQL
         }
 
         // Add default ordering
-        $allQueries[] = Query::orderDesc();
+        $allQueries[] = Query::orderDesc('time');
 
         return $this->find($allQueries);
     }

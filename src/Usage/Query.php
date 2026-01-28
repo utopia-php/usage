@@ -84,12 +84,12 @@ class Query
      * Filter by equal condition
      *
      * @param string $attribute
-     * @param mixed $value
+     * @param array $value
      * @return self
      */
-    public static function equal(string $attribute, mixed $value): self
+    public static function equal(string $attribute, array $value): self
     {
-        return new self(self::TYPE_EQUAL, $attribute, [$value]);
+        return new self(self::TYPE_EQUAL, $attribute, $value);
     }
 
     /**
@@ -147,7 +147,7 @@ class Query
      * @param string $attribute
      * @return self
      */
-    public static function orderDesc(string $attribute = 'time'): self
+    public static function orderDesc(string $attribute): self
     {
         return new self(self::TYPE_ORDER_DESC, $attribute);
     }
@@ -158,7 +158,7 @@ class Query
      * @param string $attribute
      * @return self
      */
-    public static function orderAsc(string $attribute = 'time'): self
+    public static function orderAsc(string $attribute): self
     {
         return new self(self::TYPE_ORDER_ASC, $attribute);
     }

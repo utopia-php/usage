@@ -77,7 +77,7 @@ class Usage
     /**
      * Get usage metrics by period.
      *
-     * @param  array<\Utopia\Database\Query>  $queries
+     * @param  array<\Utopia\Usage\Query>  $queries
      * @return array<Metric>
      *
      * @throws \Exception
@@ -90,7 +90,7 @@ class Usage
     /**
      * Get usage metrics between dates.
      *
-     * @param  array<\Utopia\Database\Query>  $queries
+     * @param  array<\Utopia\Usage\Query>  $queries
      * @return array<Metric>
      *
      * @throws \Exception
@@ -103,7 +103,7 @@ class Usage
     /**
      * Count usage metrics by period.
      *
-     * @param  array<\Utopia\Database\Query>  $queries
+     * @param  array<\Utopia\Usage\Query>  $queries
      *
      * @throws \Exception
      */
@@ -115,7 +115,7 @@ class Usage
     /**
      * Sum usage metric values by period.
      *
-     * @param  array<\Utopia\Database\Query>  $queries
+     * @param  array<\Utopia\Usage\Query>  $queries
      *
      * @throws \Exception
      */
@@ -137,7 +137,7 @@ class Usage
     /**
      * Find metrics using Query objects.
      *
-     * @param array<\Utopia\Database\Query> $queries
+     * @param array<\Utopia\Usage\Query> $queries
      * @return array<Metric>
      * @throws \Exception
      */
@@ -149,7 +149,7 @@ class Usage
     /**
      * Count metrics using Query objects.
      *
-     * @param array<\Utopia\Database\Query> $queries
+     * @param array<\Utopia\Usage\Query> $queries
      * @return int
      * @throws \Exception
      */

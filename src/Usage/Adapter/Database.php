@@ -5,9 +5,10 @@ namespace Utopia\Usage\Adapter;
 use Utopia\Database\Database as UtopiaDatabase;
 use Utopia\Database\Document;
 use Utopia\Database\Exception\Duplicate as DuplicateException;
-use Utopia\Database\Query;
+use Utopia\Database\Query as DatabaseQuery;
 use Utopia\Exception;
 use Utopia\Usage\Metric;
+use Utopia\Usage\Query;
 use Utopia\Usage\Usage;
 
 class Database extends SQL
@@ -138,17 +139,92 @@ class Database extends SQL
         return true;
     }
 
+    /**
+     * Convert Utopia\Usage\Query to Utopia\Database\Query for use with the Database class.
+     *
+     * @param array<Query> $queries
+     * @return array<DatabaseQuery>
+     */
+    private function convertQueriesToDatabase(array $queries): array
+    {
+        $dbQueries = [];
+        foreach ($queries as $query) {
+            $method = $query->getMethod();
+            $attribute = $query->getAttribute();
+            $values = $query->getValues();
+
+            switch ($method) {
+                case Query::TYPE_EQUAL:
+                    /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
+                    $dbQueries[] = DatabaseQuery::equal($attribute, $values);
+                    break;
+                case Query::TYPE_GREATER:
+                    if (!empty($values)) {
+                        /** @var bool|float|int|string $value */
+                        $value = $values[0];
+                        $dbQueries[] = DatabaseQuery::greaterThan($attribute, $value);
+                    }
+                    break;
+                case Query::TYPE_LESSER:
+                    if (!empty($values)) {
+                        /** @var bool|float|int|string $value */
+                        $value = $values[0];
+                        $dbQueries[] = DatabaseQuery::lessThan($attribute, $value);
+                    }
+                    break;
+                case Query::TYPE_BETWEEN:
+                    if (count($values) >= 2) {
+                        /** @var bool|float|int|string $start */
+                        $start = $values[0];
+                        /** @var bool|float|int|string $end */
+                        $end = $values[1];
+                        $dbQueries[] = DatabaseQuery::between($attribute, $start, $end);
+                    }
+                    break;
+                case Query::TYPE_IN:
+                    // For IN queries, the values are the items to match
+                    // Create using equal with array values for compatibility
+                    /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
+                    $dbQueries[] = DatabaseQuery::contains($attribute, $values);
+                    break;
+                case Query::TYPE_ORDER_DESC:
+                    $dbQueries[] = DatabaseQuery::orderDesc($attribute);
+                    break;
+                case Query::TYPE_ORDER_ASC:
+                    $dbQueries[] = DatabaseQuery::orderAsc($attribute);
+                    break;
+                case Query::TYPE_LIMIT:
+                    if (!empty($values)) {
+                        /** @var int|string $val */
+                        $val = $values[0] ?? 0;
+                        $dbQueries[] = DatabaseQuery::limit((int) $val);
+                    }
+                    break;
+                case Query::TYPE_OFFSET:
+                    if (!empty($values)) {
+                        /** @var int|string $val */
+                        $val = $values[0] ?? 0;
+                        $dbQueries[] = DatabaseQuery::offset((int) $val);
+                    }
+                    break;
+            }
+        }
+
+        return $dbQueries;
+    }
+
     public function getByPeriod(string $metric, string $period, array $queries = []): array
     {
         /** @var array<Document> $result */
         $result = $this->db->getAuthorization()->skip(function () use ($queries, $metric, $period) {
-            $queries[] = Query::equal('metric', [$metric]);
-            $queries[] = Query::equal('period', [$period]);
-            $queries[] = Query::orderDesc();
+            $dbQueries = $this->convertQueriesToDatabase($queries);
+            $dbQueries[] = DatabaseQuery::equal('metric', [$metric]);
+            $dbQueries[] = DatabaseQuery::equal('period', [$period]);
+            $dbQueries[] = DatabaseQuery::orderDesc();
 
             return $this->db->find(
                 collection: $this->collection,
-                queries: $queries,
+                queries: $dbQueries,
             );
         });
 
@@ -159,14 +235,15 @@ class Database extends SQL
     {
         /** @var array<Document> $result */
         $result = $this->db->getAuthorization()->skip(function () use ($queries, $metric, $startDate, $endDate) {
-            $queries[] = Query::equal('metric', [$metric]);
-            $queries[] = Query::greaterThanEqual('time', $startDate);
-            $queries[] = Query::lessThanEqual('time', $endDate);
-            $queries[] = Query::orderDesc();
+            $dbQueries = $this->convertQueriesToDatabase($queries);
+            $dbQueries[] = DatabaseQuery::equal('metric', [$metric]);
+            $dbQueries[] = DatabaseQuery::greaterThanEqual('time', $startDate);
+            $dbQueries[] = DatabaseQuery::lessThanEqual('time', $endDate);
+            $dbQueries[] = DatabaseQuery::orderDesc();
 
             return $this->db->find(
                 collection: $this->collection,
-                queries: $queries,
+                queries: $dbQueries,
             );
         });
 
@@ -177,13 +254,13 @@ class Database extends SQL
     {
         /** @var int $count */
         $count = $this->db->getAuthorization()->skip(function () use ($queries, $metric, $period) {
+            $dbQueries = $this->convertQueriesToDatabase($queries);
+            $dbQueries[] = DatabaseQuery::equal('metric', [$metric]);
+            $dbQueries[] = DatabaseQuery::equal('period', [$period]);
+
             return $this->db->count(
                 collection: $this->collection,
-                queries: [
-                    Query::equal('metric', [$metric]),
-                    Query::equal('period', [$period]),
-                    ...$queries,
-                ]
+                queries: $dbQueries
             );
         });
 
@@ -210,8 +287,8 @@ class Database extends SQL
                 $documents = $this->db->find(
                     collection: $this->collection,
                     queries: [
-                        Query::lessThan('time', $datetime),
-                        Query::limit(100),
+                        DatabaseQuery::lessThan('time', $datetime),
+                        DatabaseQuery::limit(100),
                     ]
                 );
 
@@ -234,9 +311,10 @@ class Database extends SQL
     {
         /** @var array<Document> $result */
         $result = $this->db->getAuthorization()->skip(function () use ($queries) {
+            $dbQueries = $this->convertQueriesToDatabase($queries);
             return $this->db->find(
                 collection: $this->collection,
-                queries: $queries,
+                queries: $dbQueries,
             );
         });
 
@@ -253,9 +331,10 @@ class Database extends SQL
     {
         /** @var int $count */
         $count = $this->db->getAuthorization()->skip(function () use ($queries) {
+            $dbQueries = $this->convertQueriesToDatabase($queries);
             return $this->db->count(
                 collection: $this->collection,
-                queries: $queries
+                queries: $dbQueries
             );
         });
 
