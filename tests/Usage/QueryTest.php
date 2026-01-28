@@ -13,7 +13,7 @@ class QueryTest extends TestCase
     public function testQueryStaticFactoryMethods(): void
     {
         // Test equal
-        $query = Query::equal('userId', '123');
+        $query = Query::equal('userId', ['123']);
         $this->assertEquals(Query::TYPE_EQUAL, $query->getMethod());
         $this->assertEquals('userId', $query->getAttribute());
         $this->assertEquals(['123'], $query->getValues());
@@ -80,7 +80,7 @@ class QueryTest extends TestCase
         $this->assertEquals(['123'], $query->getValues());
 
         // Test toString
-        $query = Query::equal('event', 'create');
+        $query = Query::equal('event', ['create']);
         $json = $query->toString();
         $this->assertJson($json);
 
@@ -127,7 +127,7 @@ class QueryTest extends TestCase
      */
     public function testGetValue(): void
     {
-        $query = Query::equal('userId', '123');
+        $query = Query::equal('userId', ['123']);
         $this->assertEquals('123', $query->getValue());
 
         $query = Query::limit(10);

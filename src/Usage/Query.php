@@ -84,12 +84,12 @@ class Query
      * Filter by equal condition
      *
      * @param string $attribute
-     * @param array $value
+     * @param array<string|int|float|bool|array<mixed,mixed>> $values
      * @return self
      */
-    public static function equal(string $attribute, array $value): self
+    public static function equal(string $attribute, array $values): self
     {
-        return new self(self::TYPE_EQUAL, $attribute, $value);
+        return new self(self::TYPE_EQUAL, $attribute, $values);
     }
 
     /**
