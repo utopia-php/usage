@@ -181,11 +181,22 @@ class Database extends SQL
                         $dbQueries[] = DatabaseQuery::between($attribute, $start, $end);
                     }
                     break;
-                case Query::TYPE_IN:
-                    // For IN queries, the values are the items to match
-                    // Create using equal with array values for compatibility
+                case Query::TYPE_CONTAINS:
+                    // For contains queries, the values are the items to match
                     /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
                     $dbQueries[] = DatabaseQuery::contains($attribute, $values);
+                    break;
+                case Query::TYPE_LESSER_EQUAL:
+                    if (!empty($values)) {
+                        $value = $values[0];
+                        $dbQueries[] = DatabaseQuery::lessThanEqual($attribute, $value);
+                    }
+                    break;
+                case Query::TYPE_GREATER_EQUAL:
+                    if (!empty($values)) {
+                        $value = $values[0];
+                        $dbQueries[] = DatabaseQuery::greaterThanEqual($attribute, $value);
+                    }
                     break;
                 case Query::TYPE_ORDER_DESC:
                     $dbQueries[] = DatabaseQuery::orderDesc($attribute);

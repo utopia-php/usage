@@ -15,7 +15,9 @@ class Query
     public const TYPE_GREATER = 'greaterThan';
     public const TYPE_LESSER = 'lessThan';
     public const TYPE_BETWEEN = 'between';
-    public const TYPE_IN = 'contains';
+    public const TYPE_LESSER_EQUAL = 'lessThanEqual';
+    public const TYPE_GREATER_EQUAL = 'greaterThanEqual';
+    public const TYPE_CONTAINS = 'contains';
 
     // Order methods
     public const TYPE_ORDER_DESC = 'orderDesc';
@@ -105,6 +107,14 @@ class Query
     }
 
     /**
+     * Filter by less than or equal condition
+     */
+    public static function lessThanEqual(string $attribute, mixed $value): self
+    {
+        return new self(self::TYPE_LESSER_EQUAL, $attribute, [$value]);
+    }
+
+    /**
      * Filter by greater than condition
      *
      * @param string $attribute
@@ -114,6 +124,14 @@ class Query
     public static function greaterThan(string $attribute, mixed $value): self
     {
         return new self(self::TYPE_GREATER, $attribute, [$value]);
+    }
+
+    /**
+     * Filter by greater than or equal condition
+     */
+    public static function greaterThanEqual(string $attribute, mixed $value): self
+    {
+        return new self(self::TYPE_GREATER_EQUAL, $attribute, [$value]);
     }
 
     /**
@@ -136,9 +154,9 @@ class Query
      * @param array<mixed> $values
      * @return self
      */
-    public static function in(string $attribute, array $values): self
+    public static function contains(string $attribute, array $values): self
     {
-        return new self(self::TYPE_IN, $attribute, $values);
+        return new self(self::TYPE_CONTAINS, $attribute, $values);
     }
 
     /**

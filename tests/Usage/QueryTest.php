@@ -30,15 +30,27 @@ class QueryTest extends TestCase
         $this->assertEquals('time', $query->getAttribute());
         $this->assertEquals(['2023-01-01'], $query->getValues());
 
+        // Test greaterThanEqual
+        $query = Query::greaterThanEqual('time', '2023-01-01');
+        $this->assertEquals(Query::TYPE_GREATER_EQUAL, $query->getMethod());
+        $this->assertEquals('time', $query->getAttribute());
+        $this->assertEquals(['2023-01-01'], $query->getValues());
+
+        // Test lessThanEqual
+        $query = Query::lessThanEqual('time', '2024-01-01');
+        $this->assertEquals(Query::TYPE_LESSER_EQUAL, $query->getMethod());
+        $this->assertEquals('time', $query->getAttribute());
+        $this->assertEquals(['2024-01-01'], $query->getValues());
+
         // Test between
         $query = Query::between('time', '2023-01-01', '2024-01-01');
         $this->assertEquals(Query::TYPE_BETWEEN, $query->getMethod());
         $this->assertEquals('time', $query->getAttribute());
         $this->assertEquals(['2023-01-01', '2024-01-01'], $query->getValues());
 
-        // Test in
-        $query = Query::in('event', ['create', 'update', 'delete']);
-        $this->assertEquals(Query::TYPE_IN, $query->getMethod());
+        // Test contains
+        $query = Query::contains('event', ['create', 'update', 'delete']);
+        $this->assertEquals(Query::TYPE_CONTAINS, $query->getMethod());
         $this->assertEquals('event', $query->getAttribute());
         $this->assertEquals(['create', 'update', 'delete'], $query->getValues());
 

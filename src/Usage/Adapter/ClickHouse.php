@@ -1017,11 +1017,36 @@ class ClickHouse extends SQL
                 case Query::TYPE_EQUAL:
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
-                    $paramName = 'param_' . $paramCounter++;
-                    // Query values are arrays, use first element
-                    $value = is_array($values) && !empty($values) ? $values[0] : $values;
-                    $filters[] = "{$escapedAttr} = {{$paramName}:String}";
-                    $params[$paramName] = $this->formatParamValue($value);
+
+                    // Support arrays of values (produce IN (...) ) or single value equality
+                    if (is_array($values)) {
+                        $inParams = [];
+                        foreach ($values as $value) {
+                            $paramName = 'param_' . $paramCounter++;
+                            if ($attribute === 'time') {
+                                $inParams[] = "{{$paramName}:DateTime64(3)}";
+                                $params[$paramName] = $this->formatDateTime($value);
+                            } else {
+                                $inParams[] = "{{$paramName}:String}";
+                                $params[$paramName] = $this->formatParamValue($value);
+                            }
+                        }
+
+                        if (count($inParams) === 1) {
+                            $filters[] = "{$escapedAttr} = " . $inParams[0];
+                        } else {
+                            $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
+                        }
+                    } else {
+                        $paramName = 'param_' . $paramCounter++;
+                        if ($attribute === 'time') {
+                            $filters[] = "{$escapedAttr} = {{$paramName}:DateTime64(3)}";
+                            $params[$paramName] = $this->formatDateTime($values);
+                        } else {
+                            $filters[] = "{$escapedAttr} = {{$paramName}:String}";
+                            $params[$paramName] = $this->formatParamValue($values);
+                        }
+                    }
                     break;
 
                 case Query::TYPE_LESSER:
@@ -1072,20 +1097,7 @@ class ClickHouse extends SQL
                     }
                     break;
 
-                case Query::TYPE_IN:
-                    // SELECT allows selecting multiple columns/values
-                    $this->validateAttributeName($attribute);
-                    $escapedAttr = $this->escapeIdentifier($attribute);
-                    $inParams = [];
-                    foreach ($values as $value) {
-                        $paramName = 'param_' . $paramCounter++;
-                        $inParams[] = "{{$paramName}:String}";
-                        $params[$paramName] = $this->formatParamValue($value);
-                    }
-                    if (!empty($inParams)) {
-                        $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
-                    }
-                    break;
+
 
                 case Query::TYPE_ORDER_DESC:
                     $this->validateAttributeName($attribute);
@@ -1097,6 +1109,51 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $orderBy[] = "{$escapedAttr} ASC";
+                    break;
+
+                case Query::TYPE_CONTAINS:
+                    $this->validateAttributeName($attribute);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $inParams = [];
+                    foreach ($values as $value) {
+                        $paramName = 'param_' . $paramCounter++;
+                        if ($attribute === 'time') {
+                            $inParams[] = "{{$paramName}:DateTime64(3)}";
+                            $params[$paramName] = $this->formatDateTime($value);
+                        } else {
+                            $inParams[] = "{{$paramName}:String}";
+                            $params[$paramName] = $this->formatParamValue($value);
+                        }
+                    }
+                    if (!empty($inParams)) {
+                        $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
+                    }
+                    break;
+
+                case Query::TYPE_LESSER_EQUAL:
+                    $this->validateAttributeName($attribute);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $paramName = 'param_' . $paramCounter++;
+                    if ($attribute === 'time') {
+                        $filters[] = "{$escapedAttr} <= {{$paramName}:DateTime64(3)}";
+                        $params[$paramName] = $this->formatDateTime(is_array($values) ? ($values[0] ?? null) : $values);
+                    } else {
+                        $filters[] = "{$escapedAttr} <= {{$paramName}:String}";
+                        $params[$paramName] = $this->formatParamValue(is_array($values) ? ($values[0] ?? null) : $values);
+                    }
+                    break;
+
+                case Query::TYPE_GREATER_EQUAL:
+                    $this->validateAttributeName($attribute);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $paramName = 'param_' . $paramCounter++;
+                    if ($attribute === 'time') {
+                        $filters[] = "{$escapedAttr} >= {{$paramName}:DateTime64(3)}";
+                        $params[$paramName] = $this->formatDateTime(is_array($values) ? ($values[0] ?? null) : $values);
+                    } else {
+                        $filters[] = "{$escapedAttr} >= {{$paramName}:String}";
+                        $params[$paramName] = $this->formatParamValue(is_array($values) ? ($values[0] ?? null) : $values);
+                    }
                     break;
 
                 case Query::TYPE_LIMIT:

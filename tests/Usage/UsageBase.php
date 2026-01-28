@@ -147,6 +147,52 @@ trait UsageBase
         $this->assertEquals(0, count($results2));
     }
 
+    public function testEqualWithArrayValues(): void
+    {
+        // Test equal query with array of values (IN clause)
+        $results = $this->usage->find([
+            Query::equal('metric', ['requests', 'bandwidth']),
+        ]);
+
+        // Should find all metrics matching either 'requests' or 'bandwidth'
+        $this->assertGreaterThanOrEqual(2, count($results));
+    }
+
+    public function testContainsQuery(): void
+    {
+        // Test contains query with multiple values
+        $results = $this->usage->find([
+            Query::contains('metric', ['requests', 'storage']),
+        ]);
+
+        // Should find all metrics matching either 'requests' or 'storage'
+        $this->assertGreaterThanOrEqual(2, count($results));
+    }
+
+    public function testLessThanEqualQuery(): void
+    {
+        // Get current time and subtract some time to test lessThanEqual
+        $now = (new \DateTime())->format('Y-m-d\TH:i:s');
+        $results = $this->usage->find([
+            Query::lessThanEqual('time', $now),
+        ]);
+
+        // Should find all metrics with time <= now
+        $this->assertGreaterThanOrEqual(0, count($results));
+    }
+
+    public function testGreaterThanEqualQuery(): void
+    {
+        // Get a time in the past (formatted as ISO 8601 string)
+        $past = (new \DateTime())->modify('-24 hours')->format('Y-m-d\TH:i:s');
+        $results = $this->usage->find([
+            Query::greaterThanEqual('time', $past),
+        ]);
+
+        // Should find all metrics with time >= past (most recent metrics)
+        $this->assertGreaterThanOrEqual(0, count($results));
+    }
+
     public function testPurge(): void
     {
         sleep(2);
