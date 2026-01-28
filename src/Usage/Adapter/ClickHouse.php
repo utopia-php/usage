@@ -456,7 +456,7 @@ class ClickHouse extends SQL
             ENGINE = SummingMergeTree()
             ORDER BY {$orderByExpr}
             PARTITION BY toYYYYMM(time)
-            SETTINGS index_granularity = 8192
+            SETTINGS index_granularity = 8192, allow_nullable_key = 1
         ";
 
         $this->query($createTableSql);
@@ -622,15 +622,15 @@ class ClickHouse extends SQL
         // Period-aligned time so increments fall into the correct bucket
         $now = new \DateTime();
         $time = $period === Usage::PERIOD_INF
-            ? '1000-01-01 00:00:00'
+            ? null
             : $now->format(Usage::PERIODS[$period]);
-        $timestamp = $this->formatDateTime($time);
+        $timestamp = $time !== null ? $this->formatDateTime($time) : null;
 
         // Deterministic id so SummingMergeTree will aggregate increments for the same group
         $tenant = $this->sharedTables ? $this->tenant : null;
         /** @var string $metric */
         /** @var string $period */
-        /** @var string $timestamp */
+        /** @var string|null $timestamp */
         $id = $this->buildDeterministicId($metric, $period, $timestamp, $tenant);
 
         // Build insert columns dynamically from attributes
@@ -801,15 +801,15 @@ class ClickHouse extends SQL
             // Period-aligned time so increments fall into the correct bucket
             $now = new \DateTime();
             $time = $period === Usage::PERIOD_INF
-                ? '1000-01-01 00:00:00'
+                ? null
                 : $now->format(Usage::PERIODS[$period]);
-            $timestamp = $this->formatDateTime($time);
+            $timestamp = $time !== null ? $this->formatDateTime($time) : null;
 
             // Deterministic id for aggregation
             $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
             /** @var string $metric */
             /** @var string $period */
-            /** @var string $timestamp */
+            /** @var string|null $timestamp */
             $id = $this->buildDeterministicId($metric, $period, $timestamp, $tenant);
 
             $valuePlaceholders = [];
@@ -915,6 +915,7 @@ class ClickHouse extends SQL
             $conditions = $parsed['filters'];
             if ($tenantFilter) {
                 $conditions[] = ltrim($tenantFilter, ' AND');
+                $parsed['params']['tenant'] = $this->tenant;
             }
             $whereClause = ' WHERE ' . implode(' AND ', $conditions);
         }
@@ -968,6 +969,11 @@ class ClickHouse extends SQL
         // Remove limit and offset from params
         $params = $parsed['params'];
         unset($params['limit'], $params['offset']);
+
+        // Add tenant param if filter is active
+        if ($tenantFilter) {
+            $params['tenant'] = $this->tenant;
+        }
 
         $sql = "
             SELECT COUNT(*) as count
