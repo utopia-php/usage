@@ -183,4 +183,41 @@ class Usage
     {
         return $this->adapter->count($queries);
     }
+
+    /**
+     * Set the namespace prefix for table names.
+     *
+     * @param string $namespace
+     * @return $this
+     * @throws \Exception
+     */
+    public function setNamespace(string $namespace): self
+    {
+        $this->adapter->setNamespace($namespace);
+        return $this;
+    }
+
+    /**
+     * Set the tenant ID for multi-tenant support.
+     *
+     * @param int|null $tenant
+     * @return $this
+     */
+    public function setTenant(?int $tenant): self
+    {
+        $this->adapter->setTenant($tenant);
+        return $this;
+    }
+
+    /**
+     * Enable or disable shared tables mode (multi-tenant with tenant column).
+     *
+     * @param bool $sharedTables
+     * @return $this
+     */
+    public function setSharedTables(bool $sharedTables): self
+    {
+        $this->adapter->setSharedTables($sharedTables);
+        return $this;
+    }
 }

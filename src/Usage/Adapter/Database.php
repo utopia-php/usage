@@ -445,4 +445,43 @@ class Database extends SQL
 
         return $count;
     }
+
+    /**
+     * Set the namespace prefix for table names.
+     * (Not supported in Database adapter)
+     *
+     * @param string $namespace
+     * @return self
+     */
+    public function setNamespace(string $namespace): self
+    {
+        $this->db->setNamespace($namespace);
+        return $this;
+    }
+
+    /**
+     * Set the tenant ID for multi-tenant support.
+     * (Not supported in Database adapter)
+     *
+     * @param int|null $tenant
+     * @return self
+     */
+    public function setTenant(?int $tenant): self
+    {
+        $this->db->setTenant($tenant);
+        return $this;
+    }
+
+    /**
+     * Enable or disable shared tables mode (multi-tenant with tenant column).
+     * (Not supported in Database adapter)
+     *
+     * @param bool $sharedTables
+     * @return self
+     */
+    public function setSharedTables(bool $sharedTables): self
+    {
+        $this->setSharedTables($sharedTables);
+        return $this;
+    }
 }

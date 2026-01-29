@@ -94,4 +94,28 @@ abstract class Adapter
      * @return int
      */
     abstract public function count(array $queries = []): int;
+
+    /**
+     * Set the namespace prefix for table names.
+     *
+     * @param string $namespace
+     * @return self
+     */
+    abstract public function setNamespace(string $namespace): self;
+
+    /**
+     * Set the tenant ID for multi-tenant support.
+     *
+     * @param int|null $tenant
+     * @return self
+     */
+    abstract public function setTenant(?int $tenant): self;
+
+    /**
+     * Enable or disable shared tables mode (multi-tenant with tenant column).
+     *
+     * @param bool $sharedTables
+     * @return self
+     */
+    abstract public function setSharedTables(bool $sharedTables): self;
 }
