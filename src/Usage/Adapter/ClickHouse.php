@@ -559,11 +559,7 @@ class ClickHouse extends SQL
                 throw new Exception("Invalid datetime string: {$dateTime}");
             }
         }
-
-        // For any other type, try to convert to DateTime
-        throw new Exception("Invalid datetime value type: " . gettype($dateTime));
     }
-
     /**
      * Get ClickHouse-specific SQL column definition for a given attribute ID.
      *
@@ -706,6 +702,7 @@ class ClickHouse extends SQL
 
         // Add attributes dynamically - must include ALL attributes in schema order
         foreach ($this->getAttributes() as $attribute) {
+            /** @var string $attrId */
             $attrId = $attribute['$id'];
 
             $attrKey = $attrId . ($paramCounter > 0 ? '_' . $paramCounter : '');
@@ -746,6 +743,7 @@ class ClickHouse extends SQL
             $insertColumns[] = 'tenant';
         }
 
+        /** @var array<string> */
         return $insertColumns;
     }
 
@@ -848,10 +846,14 @@ class ClickHouse extends SQL
             $valueClauses = [];
 
             foreach ($metricsBatch as $metricData) {
+                /** @var string $period */
                 $period = $metricData['period'] ?? Usage::PERIOD_1H;
+                /** @var string $metric */
                 $metric = $metricData['metric'];
+                /** @var int $value */
                 $value = $metricData['value'];
-                $tags = (array) ($metricData['tags'] ?? []);
+                /** @var array<string, mixed> $tags */
+                $tags = $metricData['tags'] ?? [];
 
                 // Build values for this metric
                 $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
@@ -906,6 +908,7 @@ class ClickHouse extends SQL
                     throw new Exception("Metric #{$index}: 'period' must be a string, got " . gettype($period));
                 }
 
+                /** @var array<string, mixed> */
                 $tags = $metricData['tags'] ?? [];
                 $this->validateMetricData($metric, $value, $period, $tags, $index);
 
@@ -964,10 +967,14 @@ class ClickHouse extends SQL
             $valueClauses = [];
 
             foreach ($metricsBatch as $metricData) {
+                /** @var string $period */
                 $period = $metricData['period'] ?? Usage::PERIOD_1H;
+                /** @var string $metric */
                 $metric = $metricData['metric'];
+                /** @var int $value */
                 $value = $metricData['value'];
-                $tags = (array) ($metricData['tags'] ?? []);
+                /** @var array<string, mixed> $tags */
+                $tags = $metricData['tags'] ?? [];
 
                 // Build values for this metric
                 $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
