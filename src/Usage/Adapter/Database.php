@@ -90,7 +90,7 @@ class Database extends SQL
         return true;
     }
 
-    public function logBatch(array $metrics): bool
+    public function logBatch(array $metrics, int $batchSize = 1000): bool
     {
         $this->db->getAuthorization()->skip(function () use ($metrics) {
             $documentsById = [];
@@ -133,6 +133,98 @@ class Database extends SQL
 
             if (!empty($documents)) {
                 $this->db->upsertDocumentsWithIncrease($this->collection, 'value', $documents);
+            }
+        });
+
+        return true;
+    }
+
+    /**
+     * Log usage counter metric (upserts document, replaces if ID matches).
+     *
+     * @param  array<string,mixed>  $tags
+     * @return bool
+     * @throws Exception
+     */
+    public function logCounter(string $metric, int $value, string $period = '1h', array $tags = []): bool
+    {
+        if (! isset(Usage::PERIODS[$period])) {
+            throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
+        }
+
+        $now = new \DateTime();
+        $time = $period === 'inf'
+            ? null
+            : $now->format(Usage::PERIODS[$period]);
+
+        // Sort tags for consistent storage
+        ksort($tags);
+        $id = $this->buildDeterministicId($metric, $period, $time);
+
+        $this->db->getAuthorization()->skip(function () use ($metric, $value, $period, $time, $tags, $id) {
+            $doc = new Document([
+                '$id' => $id,
+                '$permissions' => [],
+                'metric' => $metric,
+                'value' => $value,
+                'period' => $period,
+                'time' => $time,
+                'tags' => $tags,
+            ]);
+
+            $this->db->upsertDocument($this->collection, $doc);
+        });
+
+        return true;
+    }
+
+    /**
+     * Log multiple usage counter metrics in batch (upserts documents, replaces if ID matches).
+     *
+     * @param array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}> $metrics
+     * @return bool
+     * @throws Exception
+     */
+    public function logBatchCounter(array $metrics, int $batchSize = 1000): bool
+    {
+        $this->db->getAuthorization()->skip(function () use ($metrics) {
+            $documentsById = [];
+            foreach ($metrics as $metric) {
+                $period = $metric['period'] ?? '1h';
+
+                if (! isset(Usage::PERIODS[$period])) {
+                    throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
+                }
+
+                $now = new \DateTime();
+                $time = $period === 'inf'
+                    ? null
+                    : $now->format(Usage::PERIODS[$period]);
+
+                $tags = $metric['tags'] ?? [];
+                ksort($tags);
+
+                $id = $this->buildDeterministicId($metric['metric'], $period, $time);
+
+                // Last one wins for the same ID (counter behavior, not aggregating)
+                $documentsById[$id] = [
+                    '$id' => $id,
+                    '$permissions' => [],
+                    'metric' => $metric['metric'],
+                    'value' => $metric['value'],
+                    'period' => $period,
+                    'time' => $time,
+                    'tags' => $tags,
+                ];
+            }
+
+            $documents = [];
+            foreach ($documentsById as $doc) {
+                $documents[] = new Document($doc);
+            }
+
+            if (!empty($documents)) {
+                $this->db->upsertDocuments($this->collection, $documents);
             }
         });
 

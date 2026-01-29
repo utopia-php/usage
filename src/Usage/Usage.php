@@ -66,12 +66,38 @@ class Usage
      * Log multiple usage metrics in batch.
      *
      * @param array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}> $metrics
+     * @param int $batchSize Maximum number of metrics per INSERT statement
      * @return bool
      * @throws \Exception
      */
-    public function logBatch(array $metrics): bool
+    public function logBatch(array $metrics, int $batchSize = 1000): bool
     {
-        return $this->adapter->logBatch($metrics);
+        return $this->adapter->logBatch($metrics, $batchSize);
+    }
+
+    /**
+     * Log a usage counter metric (individual entry without aggregation).
+     *
+     * @param  array<string,mixed>  $tags
+     *
+     * @throws \Exception
+     */
+    public function logCounter(string $metric, int $value, string $period = '1h', array $tags = []): bool
+    {
+        return $this->adapter->logCounter($metric, $value, $period, $tags);
+    }
+
+    /**
+     * Log multiple usage counter metrics in batch (individual entries without aggregation).
+     *
+     * @param array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}> $metrics
+     * @param int $batchSize Maximum number of metrics per INSERT statement
+     * @return bool
+     * @throws \Exception
+     */
+    public function logBatchCounter(array $metrics, int $batchSize = 1000): bool
+    {
+        return $this->adapter->logBatchCounter($metrics, $batchSize);
     }
 
     /**

@@ -25,8 +25,24 @@ abstract class Adapter
      * Log multiple metrics in batch
      *
      * @param  array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}>  $metrics
+     * @param  int  $batchSize  Maximum number of metrics per INSERT statement
      */
-    abstract public function logBatch(array $metrics): bool;
+    abstract public function logBatch(array $metrics, int $batchSize = 1000): bool;
+
+    /**
+     * Log usage counter metric (individual entry without aggregation)
+     *
+     * @param  array<string,mixed>  $tags
+     */
+    abstract public function logCounter(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool;
+
+    /**
+     * Log multiple counter metrics in batch (individual entries without aggregation)
+     *
+     * @param  array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}>  $metrics
+     * @param  int  $batchSize  Maximum number of metrics per INSERT statement
+     */
+    abstract public function logBatchCounter(array $metrics, int $batchSize = 1000): bool;
 
     /**
      * Get usage metrics by period

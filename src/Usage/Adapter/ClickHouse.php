@@ -33,6 +33,10 @@ class ClickHouse extends SQL
 
     private const DEFAULT_TABLE = self::COLLECTION;
 
+    private const DEFAULT_COUNTER_TABLE = self::COLLECTION . '_counter';
+
+    private const INSERT_BATCH_SIZE = 1_000;
+
     private string $host;
 
     private int $port;
@@ -290,6 +294,23 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Get the counter table name with namespace prefix.
+     * Counter table stores logs as individual entries without aggregation.
+     *
+     * @return string
+     */
+    private function getCounterTableName(): string
+    {
+        $tableName = self::DEFAULT_COUNTER_TABLE;
+
+        if (!empty($this->namespace)) {
+            $tableName = $this->namespace . '_' . $tableName;
+        }
+
+        return $tableName;
+    }
+
+    /**
      * Execute a ClickHouse query via HTTP interface using Fetch Client.
      *
      * Uses ClickHouse query parameters (sent as POST multipart form data) to prevent SQL injection.
@@ -443,7 +464,7 @@ class ClickHouse extends SQL
         $tableName = $this->getTableName();
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
 
-        // Create table with SummingMergeTree engine so inserts act as increments for matching keys
+        // Create aggregated table with SummingMergeTree engine so inserts act as increments for matching keys
         $columnDefs = implode(",\n                ", $columns);
         $indexDefs = !empty($indexes) ? ",\n                " . implode(",\n                ", $indexes) : '';
 
@@ -460,6 +481,22 @@ class ClickHouse extends SQL
         ";
 
         $this->query($createTableSql);
+
+        // Create counter table with ReplacingMergeTree engine (replaces on duplicate ORDER BY key)
+        $counterTableName = $this->getCounterTableName();
+        $escapedCounterDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
+
+        $createCounterTableSql = "
+            CREATE TABLE IF NOT EXISTS {$escapedCounterDatabaseAndTable} (
+                {$columnDefs}{$indexDefs}
+            )
+            ENGINE = ReplacingMergeTree()
+            ORDER BY {$orderByExpr}
+            PARTITION BY toYYYYMM(time)
+            SETTINGS index_granularity = 8192, allow_nullable_key = 1
+        ";
+
+        $this->query($createCounterTableSql);
     }
 
     /**
@@ -523,6 +560,8 @@ class ClickHouse extends SQL
             }
         }
 
+        // For any other type, try to convert to DateTime
+        throw new Exception("Invalid datetime value type: " . gettype($dateTime));
     }
 
     /**
@@ -572,35 +611,37 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Log a usage metric.
+     * Validate a metric's basic structure and constraints.
      *
-     * @param  array<string,mixed>  $tags
-     *
+     * @param string $metric Metric name
+     * @param int $value Metric value
+     * @param string $period Period identifier
+     * @param array<string,mixed> $tags Tags
+     * @param int|null $metricIndex Index for batch error messages
      * @throws Exception
      */
-    public function log(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool
+    private function validateMetricData(string $metric, int $value, string $period, array $tags, ?int $metricIndex = null): void
     {
-        // Validate period
-        if (!isset(Usage::PERIODS[$period])) {
-            throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
-        }
+        $prefix = $metricIndex !== null ? "Metric #{$metricIndex}: " : '';
 
-        // Validate metric and value
         if (empty($metric)) {
-            throw new Exception('Metric cannot be empty');
+            throw new Exception($prefix . 'Metric cannot be empty');
         }
 
         if (strlen($metric) > 255) {
-            throw new Exception('Metric exceeds maximum size of 255 characters');
+            throw new Exception($prefix . 'Metric exceeds maximum size of 255 characters');
         }
 
         if ($value < 0) {
-            throw new Exception('Value cannot be negative');
+            throw new Exception($prefix . 'Value cannot be negative');
         }
 
-        // Validate tags format
+        if (!isset(Usage::PERIODS[$period])) {
+            throw new \InvalidArgumentException($prefix . 'Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
+        }
+
         if (!is_array($tags)) {
-            throw new Exception('Tags must be an array');
+            throw new Exception($prefix . 'Tags must be an array');
         }
 
         // Validate complete data structure using Metric class
@@ -611,31 +652,50 @@ class ClickHouse extends SQL
             'tags' => $tags,
         ];
         Metric::validate($data);
+    }
 
-        // Normalize tags for deterministic hashing
-        /** @var array<string,mixed> $tags */
+    /**
+     * Build insert value placeholders and query parameters for a metric.
+     *
+     * @param string $metric Metric name
+     * @param int $value Metric value
+     * @param string $period Period identifier
+     * @param array<string,mixed> $tags Tags
+     * @param int|null $tenant Tenant ID
+     * @param int $paramCounter Parameter counter for batch operations
+     * @return array{queryParams: array<string, mixed>, valuePlaceholders: array<string>}
+     * @throws Exception
+     */
+    private function buildInsertValuesForMetric(
+        string $metric,
+        int $value,
+        string $period,
+        array $tags,
+        ?int $tenant,
+        int $paramCounter = 0
+    ): array {
+        $queryParams = [];
+        $valuePlaceholders = [];
+
+        // Normalize tags
         ksort($tags);
 
-        // Period-aligned time so increments fall into the correct bucket
+        // Period-aligned time
         $now = new \DateTime();
         $time = $period === Usage::PERIOD_INF
             ? null
             : $now->format(Usage::PERIODS[$period]);
         $timestamp = $time !== null ? $this->formatDateTime($time) : null;
 
-        // Deterministic id so SummingMergeTree will aggregate increments for the same group
-        $tenant = $this->sharedTables ? $this->tenant : null;
-        /** @var string $metric */
-        /** @var string $period */
-        /** @var string|null $timestamp */
+        // Deterministic id
         $id = $this->buildDeterministicId($metric, $period, $timestamp, $tenant);
 
-        // Build insert columns dynamically from attributes
-        $insertColumns = ['id'];
-        $queryParams = ['id' => $id];
-        $valuePlaceholders = ['{id:String}'];
+        // Build id
+        $idKey = 'id' . ($paramCounter > 0 ? '_' . $paramCounter : '');
+        $queryParams[$idKey] = $id;
+        $valuePlaceholders[] = '{' . $idKey . ':String}';
 
-        // Map attribute values to their positions
+        // Map attribute values
         $attributeMap = [
             'metric' => $metric,
             'value' => $value,
@@ -644,28 +704,68 @@ class ClickHouse extends SQL
             'tags' => json_encode($tags),
         ];
 
-        // Add columns from attributes in order
+        // Add attributes dynamically - must include ALL attributes in schema order
         foreach ($this->getAttributes() as $attribute) {
             $attrId = $attribute['$id'];
-            if (!isset($attributeMap[$attrId])) {
-                continue; // Skip attributes not in our data
-            }
 
-            $insertColumns[] = $attrId;
-            $queryParams[$attrId] = $attributeMap[$attrId];
-
-            // Determine ClickHouse type hint
+            $attrKey = $attrId . ($paramCounter > 0 ? '_' . $paramCounter : '');
             $type = $this->getColumnType($attrId);
-            $valuePlaceholders[] = '{' . $attrId . ':' . $type . '}';
+
+            // Use the value from map, or null if not present
+            $queryParams[$attrKey] = $attributeMap[$attrId] ?? null;
+            $valuePlaceholders[] = '{' . $attrKey . ':' . $type . '}';
         }
 
-        // Add tenant column if using shared tables
+        // Add tenant if shared tables
+        if ($this->sharedTables) {
+            $tenantKey = 'tenant' . ($paramCounter > 0 ? '_' . $paramCounter : '');
+            $queryParams[$tenantKey] = $tenant;
+            $valuePlaceholders[] = '{' . $tenantKey . ':Nullable(UInt64)}';
+        }
+
+        return [
+            'queryParams' => $queryParams,
+            'valuePlaceholders' => $valuePlaceholders,
+        ];
+    }
+
+    /**
+     * Build the INSERT column list (same for all rows).
+     *
+     * @return array<string>
+     */
+    private function buildInsertColumns(): array
+    {
+        $insertColumns = ['id'];
+
+        foreach ($this->getAttributes() as $attribute) {
+            $insertColumns[] = $attribute['$id'];
+        }
+
         if ($this->sharedTables) {
             $insertColumns[] = 'tenant';
-            $valuePlaceholders[] = '{tenant:Nullable(UInt64)}';
-            $queryParams['tenant'] = $this->tenant;
         }
 
+        return $insertColumns;
+    }
+
+    /**
+     * Log a usage metric.
+     *
+     * @param  array<string,mixed>  $tags
+     *
+     * @throws Exception
+     */
+    public function log(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool
+    {
+        // Validate
+        $this->validateMetricData($metric, $value, $period, $tags);
+
+        // Build query
+        $tenant = $this->sharedTables ? $this->tenant : null;
+        $result = $this->buildInsertValuesForMetric($metric, $value, $period, $tags, $tenant);
+
+        $insertColumns = $this->buildInsertColumns();
         $tableName = $this->getTableName();
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
 
@@ -673,29 +773,114 @@ class ClickHouse extends SQL
             INSERT INTO {$escapedDatabaseAndTable}
             (" . implode(', ', $insertColumns) . ")
             VALUES (
-                " . implode(", ", $valuePlaceholders) . "
+                " . implode(", ", $result['valuePlaceholders']) . "
             )
         ";
 
-        $this->query($sql, $queryParams);
+        $this->query($sql, $result['queryParams']);
 
         return true;
     }
 
     /**
-     * Log multiple usage metrics in batch.
+     * Log a usage counter metric (uses deterministic ID, replaces if ID matches).
      *
-     * @param  array<int,array<string,mixed>>  $metrics
+     * @param  array<string,mixed>  $tags
      *
      * @throws Exception
      */
-    public function logBatch(array $metrics): bool
+    public function logCounter(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool
+    {
+        // Validate
+        $this->validateMetricData($metric, $value, $period, $tags);
+
+        // Build query
+        $tenant = $this->sharedTables ? $this->tenant : null;
+        $result = $this->buildInsertValuesForMetric($metric, $value, $period, $tags, $tenant);
+
+        $insertColumns = $this->buildInsertColumns();
+        $counterTableName = $this->getCounterTableName();
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
+
+        $sql = "
+            INSERT INTO {$escapedDatabaseAndTable}
+            (" . implode(', ', $insertColumns) . ")
+            VALUES (
+                " . implode(", ", $result['valuePlaceholders']) . "
+            )
+        ";
+
+        $this->query($sql, $result['queryParams']);
+
+        return true;
+    }
+
+    /**
+     * Log multiple usage counter metrics in batch (individual entries without aggregation).
+     *
+     * @param  array<int,array<string,mixed>>  $metrics
+     * @param  int  $batchSize  Maximum number of metrics per INSERT statement
+     *
+     * @throws Exception
+     */
+    public function logBatchCounter(array $metrics, int $batchSize = self::INSERT_BATCH_SIZE): bool
     {
         if (empty($metrics)) {
             return true;
         }
 
         // Validate all metrics before processing
+        $this->validateMetricsBatch($metrics);
+
+        // Ensure batch size is within acceptable range
+        $batchSize = \min(self::INSERT_BATCH_SIZE, \max(1, $batchSize));
+
+        $counterTableName = $this->getCounterTableName();
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
+
+        // Build column list (same for all rows)
+        $insertColumns = $this->buildInsertColumns();
+
+        // Process metrics in batches
+        foreach (\array_chunk($metrics, $batchSize) as $metricsBatch) {
+            $paramCounter = 0;
+            $queryParams = [];
+            $valueClauses = [];
+
+            foreach ($metricsBatch as $metricData) {
+                $period = $metricData['period'] ?? Usage::PERIOD_1H;
+                $metric = $metricData['metric'];
+                $value = $metricData['value'];
+                $tags = (array) ($metricData['tags'] ?? []);
+
+                // Build values for this metric
+                $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
+                $result = $this->buildInsertValuesForMetric($metric, $value, $period, $tags, $tenant, $paramCounter);
+
+                $queryParams = array_merge($queryParams, $result['queryParams']);
+                $valueClauses[] = '(' . implode(', ', $result['valuePlaceholders']) . ')';
+                $paramCounter++;
+            }
+
+            $insertSql = "
+                INSERT INTO {$escapedDatabaseAndTable}
+                (" . implode(', ', $insertColumns) . ")
+                VALUES " . implode(', ', $valueClauses);
+
+            $this->query($insertSql, $queryParams);
+        }
+
+        return true;
+    }
+
+    /**
+     * Validate all metrics in a batch before processing.
+     *
+     * @param array<int,array<string,mixed>> $metrics
+     * @throws Exception
+     */
+    private function validateMetricsBatch(array $metrics): void
+    {
         foreach ($metrics as $index => $metricData) {
             try {
                 // Validate required fields exist
@@ -721,26 +906,8 @@ class ClickHouse extends SQL
                     throw new Exception("Metric #{$index}: 'period' must be a string, got " . gettype($period));
                 }
 
-                // Validate metric and value constraints
-                if (empty($metric)) {
-                    throw new Exception("Metric #{$index}: 'metric' cannot be empty");
-                }
-                if (strlen($metric) > 255) {
-                    throw new Exception("Metric #{$index}: 'metric' exceeds maximum size of 255 characters");
-                }
-                if ($value < 0) {
-                    throw new Exception("Metric #{$index}: 'value' cannot be negative");
-                }
-
-                // Validate period
-                if (!isset(Usage::PERIODS[$period])) {
-                    throw new Exception("Metric #{$index}: Invalid period '{$period}'. Allowed: " . implode(', ', array_keys(Usage::PERIODS)));
-                }
-
-                // Validate tags if provided
-                if (isset($metricData['tags']) && !is_array($metricData['tags'])) {
-                    throw new Exception("Metric #{$index}: 'tags' must be an array, got " . gettype($metricData['tags']));
-                }
+                $tags = $metricData['tags'] ?? [];
+                $this->validateMetricData($metric, $value, $period, $tags, $index);
 
                 // Validate tenant when provided (metric-level tenant overrides adapter tenant)
                 if (array_key_exists('tenant', $metricData)) {
@@ -758,103 +925,66 @@ class ClickHouse extends SQL
                         }
                     }
                 }
-
-                // Validate complete data structure using Metric class
-                $data = [
-                    'metric' => $metric,
-                    'value' => $value,
-                    'period' => $period,
-                    'tags' => $metricData['tags'] ?? [],
-                ];
-                Metric::validate($data);
             } catch (Exception $e) {
                 throw new Exception($e->getMessage());
             }
         }
+    }
+
+    /**
+     * Log multiple usage metrics in batch.
+     *
+     * @param  array<int,array<string,mixed>>  $metrics
+     * @param  int  $batchSize  Maximum number of metrics per INSERT statement
+     *
+     * @throws Exception
+     */
+    public function logBatch(array $metrics, int $batchSize = self::INSERT_BATCH_SIZE): bool
+    {
+        if (empty($metrics)) {
+            return true;
+        }
+
+        // Validate all metrics before processing
+        $this->validateMetricsBatch($metrics);
+
+        // Ensure batch size is within acceptable range
+        $batchSize = \min(self::INSERT_BATCH_SIZE, \max(1, $batchSize));
 
         $tableName = $this->getTableName();
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
 
-        // Build column list dynamically from attributes
-        $insertColumns = ['id'];
-        foreach ($this->getAttributes() as $attribute) {
-            $insertColumns[] = $attribute['$id'];
-        }
-        if ($this->sharedTables) {
-            $insertColumns[] = 'tenant';
-        }
+        // Build column list (same for all rows)
+        $insertColumns = $this->buildInsertColumns();
 
-        $paramCounter = 0;
-        $queryParams = [];
-        $valueClauses = [];
+        // Process metrics in batches
+        foreach (\array_chunk($metrics, $batchSize) as $metricsBatch) {
+            $paramCounter = 0;
+            $queryParams = [];
+            $valueClauses = [];
 
-        foreach ($metrics as $metricData) {
-            $period = $metricData['period'] ?? Usage::PERIOD_1H;
-            $metric = $metricData['metric'];
-            $value = $metricData['value'];
-            $tags = (array) ($metricData['tags'] ?? []);
-            ksort($tags);
+            foreach ($metricsBatch as $metricData) {
+                $period = $metricData['period'] ?? Usage::PERIOD_1H;
+                $metric = $metricData['metric'];
+                $value = $metricData['value'];
+                $tags = (array) ($metricData['tags'] ?? []);
 
-            // Period-aligned time so increments fall into the correct bucket
-            $now = new \DateTime();
-            $time = $period === Usage::PERIOD_INF
-                ? null
-                : $now->format(Usage::PERIODS[$period]);
-            $timestamp = $time !== null ? $this->formatDateTime($time) : null;
+                // Build values for this metric
+                $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
+                $result = $this->buildInsertValuesForMetric($metric, $value, $period, $tags, $tenant, $paramCounter);
 
-            // Deterministic id for aggregation
-            $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
-            /** @var string $metric */
-            /** @var string $period */
-            /** @var string|null $timestamp */
-            $id = $this->buildDeterministicId($metric, $period, $timestamp, $tenant);
-
-            $valuePlaceholders = [];
-
-            // Add id
-            $idKey = 'id_' . $paramCounter;
-            $queryParams[$idKey] = $id;
-            $valuePlaceholders[] = '{' . $idKey . ':String}';
-
-            // Add attributes dynamically
-            $attributeMap = [
-                'metric' => $metric,
-                'value' => $value,
-                'period' => $period,
-                'time' => $timestamp,
-                'tags' => json_encode($metricData['tags'] ?? []),
-            ];
-
-            foreach ($this->getAttributes() as $attribute) {
-                $attrId = $attribute['$id'];
-                if (!isset($attributeMap[$attrId])) {
-                    continue;
-                }
-
-                $attrKey = $attrId . '_' . $paramCounter;
-                $queryParams[$attrKey] = $attributeMap[$attrId];
-
-                // Determine ClickHouse type hint
-                $type = $this->getColumnType($attrId);
-                $valuePlaceholders[] = '{' . $attrKey . ':' . $type . '}';
+                $queryParams = array_merge($queryParams, $result['queryParams']);
+                $valueClauses[] = '(' . implode(', ', $result['valuePlaceholders']) . ')';
+                $paramCounter++;
             }
 
-            if ($this->sharedTables) {
-                $tenantKey = 'tenant_' . $paramCounter;
-                $queryParams[$tenantKey] = $tenant;
-                $valuePlaceholders[] = '{' . $tenantKey . ':Nullable(UInt64)}';
-            }
+            $insertSql = "
+                INSERT INTO {$escapedDatabaseAndTable}
+                (" . implode(', ', $insertColumns) . ")
+                VALUES " . implode(', ', $valueClauses);
 
-            $valueClauses[] = '(' . implode(', ', $valuePlaceholders) . ')';
-            $paramCounter++;
+            $this->query($insertSql, $queryParams);
         }
-
-        $insertSql = "
-            INSERT INTO {$escapedDatabaseAndTable}
-            (" . implode(', ', $insertColumns) . ")
-            VALUES " . implode(', ', $valueClauses);
-
-        $this->query($insertSql, $queryParams);
 
         return true;
     }
@@ -884,10 +1014,9 @@ class ClickHouse extends SQL
         return null;
     }
 
-
-
     /**
      * Find metrics using Query objects.
+     * Queries both aggregated and counter tables and combines results.
      *
      * @param array<Query> $queries
      * @return array<Metric>
@@ -896,8 +1025,12 @@ class ClickHouse extends SQL
     public function find(array $queries = []): array
     {
         $tableName = $this->getTableName();
+        $counterTableName = $this->getCounterTableName();
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $escapedCounterTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
+        // FINAL on both tables (SummingMergeTree and ReplacingMergeTree)
         $fromTable = $escapedTable . ($this->useFinal ? ' FINAL' : '');
+        $fromCounterTable = $escapedCounterTable . ($this->useFinal ? ' FINAL' : '');
 
         // Parse queries
         $parsed = $this->parseQueries($queries);
@@ -926,9 +1059,15 @@ class ClickHouse extends SQL
         // Build LIMIT and OFFSET
         $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
         $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
+
+        // Query both tables with UNION ALL
         $sql = "
             SELECT {$selectColumns}
-            FROM {$fromTable}{$whereClause}{$orderClause}{$limitClause}{$offsetClause}
+            FROM {$fromTable}{$whereClause}
+            UNION ALL
+            SELECT {$selectColumns}
+            FROM {$fromCounterTable}{$whereClause}
+            {$orderClause}{$limitClause}{$offsetClause}
             FORMAT TabSeparated
         ";
 
@@ -938,6 +1077,7 @@ class ClickHouse extends SQL
 
     /**
      * Count metrics using Query objects.
+     * Counts from both aggregated and counter tables.
      *
      * @param array<Query> $queries
      * @return int
@@ -946,8 +1086,12 @@ class ClickHouse extends SQL
     public function count(array $queries = []): int
     {
         $tableName = $this->getTableName();
+        $counterTableName = $this->getCounterTableName();
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $escapedCounterTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
+        // FINAL on both tables (SummingMergeTree and ReplacingMergeTree)
         $fromTable = $escapedTable . ($this->useFinal ? ' FINAL' : '');
+        $fromCounterTable = $escapedCounterTable . ($this->useFinal ? ' FINAL' : '');
 
         // Parse queries - we only need filters and params
         $parsed = $this->parseQueries($queries);
@@ -972,9 +1116,14 @@ class ClickHouse extends SQL
             $params['tenant'] = $this->tenant;
         }
 
+        // Count from both tables
         $sql = "
-            SELECT COUNT(*) as count
-            FROM {$fromTable}{$whereClause}
+            SELECT SUM(cnt) as total
+            FROM (
+                SELECT COUNT(*) as cnt FROM {$fromTable}{$whereClause}
+                UNION ALL
+                SELECT COUNT(*) as cnt FROM {$fromCounterTable}{$whereClause}
+            )
             FORMAT TabSeparated
         ";
 
@@ -1431,6 +1580,7 @@ class ClickHouse extends SQL
 
     /**
      * Sum usage metric values by period.
+     * Sums from both aggregated and counter tables.
      *
      * @param  array<int,Query>  $queries
      *
@@ -1439,8 +1589,12 @@ class ClickHouse extends SQL
     public function sumByPeriod(string $metric, string $period, array $queries = []): int
     {
         $tableName = $this->getTableName();
+        $counterTableName = $this->getCounterTableName();
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $escapedCounterTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
+        // FINAL on both tables (SummingMergeTree and ReplacingMergeTree)
         $fromTable = $escapedTable . ($this->useFinal ? ' FINAL' : '');
+        $fromCounterTable = $escapedCounterTable . ($this->useFinal ? ' FINAL' : '');
 
         // Build query constraints
         $allQueries = [
@@ -1467,9 +1621,14 @@ class ClickHouse extends SQL
             $whereClause = ' WHERE ' . implode(' AND ', $conditions);
         }
 
+        // Sum from both tables
         $sql = "
-            SELECT sum(value) as total
-            FROM {$fromTable}{$whereClause}
+            SELECT SUM(total) as grand_total
+            FROM (
+                SELECT sum(value) as total FROM {$fromTable}{$whereClause}
+                UNION ALL
+                SELECT sum(value) as total FROM {$fromCounterTable}{$whereClause}
+            )
             FORMAT TabSeparated
         ";
 
@@ -1481,13 +1640,16 @@ class ClickHouse extends SQL
 
     /**
      * Purge usage metrics older than the specified datetime.
+     * Purges from both aggregated and counter tables.
      *
      * @throws Exception
      */
     public function purge(string $datetime): bool
     {
         $tableName = $this->getTableName();
+        $counterTableName = $this->getCounterTableName();
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $escapedCounterTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
         $tenantFilter = $this->getTenantFilter();
 
         $params = ['datetime' => $datetime];
@@ -1495,11 +1657,18 @@ class ClickHouse extends SQL
             $params['tenant'] = $this->tenant;
         }
 
+        // Purge from aggregated table
         $sql = "
             DELETE FROM {$escapedTable}
             WHERE time < {datetime:DateTime64(3)}{$tenantFilter}
         ";
+        $this->query($sql, $params);
 
+        // Purge from counter table
+        $sql = "
+            DELETE FROM {$escapedCounterTable}
+            WHERE time < {datetime:DateTime64(3)}{$tenantFilter}
+        ";
         $this->query($sql, $params);
 
         return true;
