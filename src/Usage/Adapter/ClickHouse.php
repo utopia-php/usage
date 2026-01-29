@@ -456,7 +456,7 @@ class ClickHouse extends SQL
             $attributes = $index['attributes'];
             // Escape index name and attribute names to prevent SQL injection
             $escapedIndexName = $this->escapeIdentifier($indexName);
-            $escapedAttributes = array_map(fn ($attr) => $this->escapeIdentifier($attr), $attributes);
+            $escapedAttributes = array_map(fn($attr) => $this->escapeIdentifier($attr), $attributes);
             $attributeList = implode(', ', $escapedAttributes);
             $indexes[] = "INDEX {$escapedIndexName} ({$attributeList}) TYPE bloom_filter GRANULARITY 1";
         }
@@ -559,6 +559,9 @@ class ClickHouse extends SQL
                 throw new Exception("Invalid datetime string: {$dateTime}");
             }
         }
+
+        /** @phpstan-ignore-next-line */
+        throw new Exception("Invalid datetime value type: " . gettype($dateTime));
     }
     /**
      * Get ClickHouse-specific SQL column definition for a given attribute ID.
