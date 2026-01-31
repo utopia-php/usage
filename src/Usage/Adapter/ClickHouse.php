@@ -370,6 +370,56 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Execute a ClickHouse INSERT using JSONEachRow format.
+     *
+     * This is significantly more efficient than SQL parameter binding for batch inserts.
+     *
+     * @param string $table Table name
+     * @param array<string> $data Array of JSON strings (one per row)
+     * @throws Exception
+     */
+    private function insert(string $table, array $data): void
+    {
+        if (empty($data)) {
+            return;
+        }
+
+        $scheme = $this->secure ? 'https' : 'http';
+        $escapedTable = $this->escapeIdentifier($table);
+        $url = "{$scheme}://{$this->host}:{$this->port}/?query=INSERT+INTO+{$escapedTable}+FORMAT+JSONEachRow";
+
+        // Update the database header
+        $this->client->addHeader('X-ClickHouse-Database', $this->database);
+        $this->client->addHeader('Content-Type', 'application/x-ndjson');
+
+        // Join JSON strings with newlines
+        $body = implode("\n", $data);
+
+        try {
+            $response = $this->client->fetch(
+                url: $url,
+                method: Client::METHOD_POST,
+                body: $body
+            );
+
+            if ($response->getStatusCode() !== 200) {
+                $bodyStr = $response->getBody();
+                $bodyStr = is_string($bodyStr) ? $bodyStr : '';
+                throw new Exception("ClickHouse insert failed with HTTP {$response->getStatusCode()}: {$bodyStr}");
+            }
+        } catch (Exception $e) {
+            throw new Exception(
+                "ClickHouse insert execution failed: {$e->getMessage()}",
+                0,
+                $e
+            );
+        } finally {
+            // Clean up Content-Type to avoid affecting other queries
+            $this->client->removeHeader('Content-Type');
+        }
+    }
+
+    /**
      * Format a parameter value for safe transmission to ClickHouse.
      *
      * Converts PHP values to their string representation without SQL quoting.
@@ -653,102 +703,6 @@ class ClickHouse extends SQL
         Metric::validate($data);
     }
 
-    /**
-     * Build insert value placeholders and query parameters for a metric.
-     *
-     * @param string $metric Metric name
-     * @param int $value Metric value
-     * @param string $period Period identifier
-     * @param array<string,mixed> $tags Tags
-     * @param int|null $tenant Tenant ID
-     * @param int $paramCounter Parameter counter for batch operations
-     * @return array{queryParams: array<string, mixed>, valuePlaceholders: array<string>}
-     * @throws Exception
-     */
-    private function buildInsertValuesForMetric(
-        string $metric,
-        int $value,
-        string $period,
-        array $tags,
-        ?int $tenant,
-        int $paramCounter = 0
-    ): array {
-        $queryParams = [];
-        $valuePlaceholders = [];
-
-        // Normalize tags
-        ksort($tags);
-
-        // Period-aligned time
-        $now = new \DateTime();
-        $time = $period === Usage::PERIOD_INF
-            ? null
-            : $now->format(Usage::PERIODS[$period]);
-        $timestamp = $time !== null ? $this->formatDateTime($time) : null;
-
-        // Deterministic id
-        $id = $this->buildDeterministicId($metric, $period, $timestamp, $tenant);
-
-        // Build id
-        $idKey = 'id' . ($paramCounter > 0 ? '_' . $paramCounter : '');
-        $queryParams[$idKey] = $id;
-        $valuePlaceholders[] = '{' . $idKey . ':String}';
-
-        // Map attribute values
-        $attributeMap = [
-            'metric' => $metric,
-            'value' => $value,
-            'period' => $period,
-            'time' => $timestamp,
-            'tags' => json_encode($tags),
-        ];
-
-        // Add attributes dynamically - must include ALL attributes in schema order
-        foreach ($this->getAttributes() as $attribute) {
-            /** @var string $attrId */
-            $attrId = $attribute['$id'];
-
-            $attrKey = $attrId . ($paramCounter > 0 ? '_' . $paramCounter : '');
-            $type = $this->getColumnType($attrId);
-
-            // Use the value from map, or null if not present
-            $queryParams[$attrKey] = $attributeMap[$attrId] ?? null;
-            $valuePlaceholders[] = '{' . $attrKey . ':' . $type . '}';
-        }
-
-        // Add tenant if shared tables
-        if ($this->sharedTables) {
-            $tenantKey = 'tenant' . ($paramCounter > 0 ? '_' . $paramCounter : '');
-            $queryParams[$tenantKey] = $tenant;
-            $valuePlaceholders[] = '{' . $tenantKey . ':Nullable(UInt64)}';
-        }
-
-        return [
-            'queryParams' => $queryParams,
-            'valuePlaceholders' => $valuePlaceholders,
-        ];
-    }
-
-    /**
-     * Build the INSERT column list (same for all rows).
-     *
-     * @return array<string>
-     */
-    private function buildInsertColumns(): array
-    {
-        $insertColumns = ['id'];
-
-        foreach ($this->getAttributes() as $attribute) {
-            $insertColumns[] = $attribute['$id'];
-        }
-
-        if ($this->sharedTables) {
-            $insertColumns[] = 'tenant';
-        }
-
-        /** @var array<string> */
-        return $insertColumns;
-    }
 
     /**
      * Log a usage metric.
@@ -759,28 +713,14 @@ class ClickHouse extends SQL
      */
     public function log(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool
     {
-        // Validate
-        $this->validateMetricData($metric, $value, $period, $tags);
-
-        // Build query
-        $tenant = $this->sharedTables ? $this->tenant : null;
-        $result = $this->buildInsertValuesForMetric($metric, $value, $period, $tags, $tenant);
-
-        $insertColumns = $this->buildInsertColumns();
-        $tableName = $this->getTableName();
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-
-        $sql = "
-            INSERT INTO {$escapedDatabaseAndTable}
-            (" . implode(', ', $insertColumns) . ")
-            VALUES (
-                " . implode(", ", $result['valuePlaceholders']) . "
-            )
-        ";
-
-        $this->query($sql, $result['queryParams']);
-
-        return true;
+        return $this->logBatch([
+            [
+                'metric' => $metric,
+                'value' => $value,
+                'period' => $period,
+                'tags' => $tags,
+            ]
+        ]);
     }
 
     /**
@@ -792,28 +732,14 @@ class ClickHouse extends SQL
      */
     public function logCounter(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool
     {
-        // Validate
-        $this->validateMetricData($metric, $value, $period, $tags);
-
-        // Build query
-        $tenant = $this->sharedTables ? $this->tenant : null;
-        $result = $this->buildInsertValuesForMetric($metric, $value, $period, $tags, $tenant);
-
-        $insertColumns = $this->buildInsertColumns();
-        $counterTableName = $this->getCounterTableName();
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
-
-        $sql = "
-            INSERT INTO {$escapedDatabaseAndTable}
-            (" . implode(', ', $insertColumns) . ")
-            VALUES (
-                " . implode(", ", $result['valuePlaceholders']) . "
-            )
-        ";
-
-        $this->query($sql, $result['queryParams']);
-
-        return true;
+        return $this->logBatchCounter([
+            [
+                'metric' => $metric,
+                'value' => $value,
+                'period' => $period,
+                'tags' => $tags,
+            ]
+        ]);
     }
 
     /**
@@ -837,42 +763,25 @@ class ClickHouse extends SQL
         $batchSize = \min(self::INSERT_BATCH_SIZE, \max(1, $batchSize));
 
         $counterTableName = $this->getCounterTableName();
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
-
-        // Build column list (same for all rows)
-        $insertColumns = $this->buildInsertColumns();
 
         // Process metrics in batches
         foreach (\array_chunk($metrics, $batchSize) as $metricsBatch) {
-            $paramCounter = 0;
-            $queryParams = [];
-            $valueClauses = [];
+            $rows = [];
 
             foreach ($metricsBatch as $metricData) {
-                /** @var string $period */
-                $period = $metricData['period'] ?? Usage::PERIOD_1H;
-                /** @var string $metric */
-                $metric = $metricData['metric'];
-                /** @var int $value */
-                $value = $metricData['value'];
-                /** @var array<string, mixed> $tags */
-                $tags = $metricData['tags'] ?? [];
-
-                // Build values for this metric
-                $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
-                $result = $this->buildInsertValuesForMetric($metric, $value, $period, $tags, $tenant, $paramCounter);
-
-                $queryParams = array_merge($queryParams, $result['queryParams']);
-                $valueClauses[] = '(' . implode(', ', $result['valuePlaceholders']) . ')';
-                $paramCounter++;
+                // Prepare row data
+                $row = $this->prepareMetricRow($metricData);
+                if ($row) {
+                    $encoded = json_encode($row);
+                    if ($encoded) {
+                        $rows[] = $encoded;
+                    }
+                }
             }
 
-            $insertSql = "
-                INSERT INTO {$escapedDatabaseAndTable}
-                (" . implode(', ', $insertColumns) . ")
-                VALUES " . implode(', ', $valueClauses);
-
-            $this->query($insertSql, $queryParams);
+            if (!empty($rows)) {
+                $this->insert($counterTableName, $rows);
+            }
         }
 
         return true;
@@ -887,52 +796,48 @@ class ClickHouse extends SQL
     private function validateMetricsBatch(array $metrics): void
     {
         foreach ($metrics as $index => $metricData) {
-            try {
-                // Validate required fields exist
-                if (!isset($metricData['metric'])) {
-                    throw new Exception("Metric #{$index}: 'metric' is required");
-                }
-                if (!isset($metricData['value'])) {
-                    throw new Exception("Metric #{$index}: 'value' is required");
-                }
+            // Validate required fields exist
+            if (!isset($metricData['metric'])) {
+                throw new Exception("Metric #{$index}: 'metric' is required");
+            }
+            if (!isset($metricData['value'])) {
+                throw new Exception("Metric #{$index}: 'value' is required");
+            }
 
-                $metric = $metricData['metric'];
-                $value = $metricData['value'];
-                $period = $metricData['period'] ?? Usage::PERIOD_1H;
+            $metric = $metricData['metric'];
+            $value = $metricData['value'];
+            $period = $metricData['period'] ?? Usage::PERIOD_1H;
 
-                // Validate types
-                if (!is_string($metric)) {
-                    throw new Exception("Metric #{$index}: 'metric' must be a string, got " . gettype($metric));
-                }
-                if (!is_int($value)) {
-                    throw new Exception("Metric #{$index}: 'value' must be an integer, got " . gettype($value));
-                }
-                if (!is_string($period)) {
-                    throw new Exception("Metric #{$index}: 'period' must be a string, got " . gettype($period));
-                }
+            // Validate types
+            if (!is_string($metric)) {
+                throw new Exception("Metric #{$index}: 'metric' must be a string, got " . gettype($metric));
+            }
+            if (!is_int($value)) {
+                throw new Exception("Metric #{$index}: 'value' must be an integer, got " . gettype($value));
+            }
+            if (!is_string($period)) {
+                throw new Exception("Metric #{$index}: 'period' must be a string, got " . gettype($period));
+            }
 
-                /** @var array<string, mixed> */
-                $tags = $metricData['tags'] ?? [];
-                $this->validateMetricData($metric, $value, $period, $tags, $index);
+            /** @var array<string, mixed> */
+            $tags = $metricData['tags'] ?? [];
+            $this->validateMetricData($metric, $value, $period, $tags, $index);
 
-                // Validate tenant when provided (metric-level tenant overrides adapter tenant)
-                if (array_key_exists('tenant', $metricData)) {
-                    $tenantValue = $metricData['$tenant'];
+            // Validate tenant when provided (metric-level tenant overrides adapter tenant)
+            if (array_key_exists('tenant', $metricData)) {
+                $tenantValue = $metricData['$tenant'];
 
-                    if ($tenantValue !== null) {
-                        if (is_int($tenantValue)) {
-                            if ($tenantValue < 0) {
-                                throw new Exception("Metric #{$index}: 'tenant' cannot be negative");
-                            }
-                        } elseif (is_string($tenantValue) && ctype_digit($tenantValue)) {
-                            // ok numeric string
-                        } else {
-                            throw new Exception("Metric #{$index}: 'tenant' must be a non-negative integer, got " . gettype($tenantValue));
+                if ($tenantValue !== null) {
+                    if (is_int($tenantValue)) {
+                        if ($tenantValue < 0) {
+                            throw new Exception("Metric #{$index}: 'tenant' cannot be negative");
                         }
+                    } elseif (is_string($tenantValue) && ctype_digit($tenantValue)) {
+                        // ok numeric string
+                    } else {
+                        throw new Exception("Metric #{$index}: 'tenant' must be a non-negative integer, got " . gettype($tenantValue));
                     }
                 }
-            } catch (Exception $e) {
-                throw new Exception($e->getMessage());
             }
         }
     }
@@ -958,45 +863,78 @@ class ClickHouse extends SQL
         $batchSize = \min(self::INSERT_BATCH_SIZE, \max(1, $batchSize));
 
         $tableName = $this->getTableName();
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-
-        // Build column list (same for all rows)
-        $insertColumns = $this->buildInsertColumns();
 
         // Process metrics in batches
         foreach (\array_chunk($metrics, $batchSize) as $metricsBatch) {
-            $paramCounter = 0;
-            $queryParams = [];
-            $valueClauses = [];
+            $rows = [];
 
             foreach ($metricsBatch as $metricData) {
-                /** @var string $period */
-                $period = $metricData['period'] ?? Usage::PERIOD_1H;
-                /** @var string $metric */
-                $metric = $metricData['metric'];
-                /** @var int $value */
-                $value = $metricData['value'];
-                /** @var array<string, mixed> $tags */
-                $tags = $metricData['tags'] ?? [];
-
-                // Build values for this metric
-                $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
-                $result = $this->buildInsertValuesForMetric($metric, $value, $period, $tags, $tenant, $paramCounter);
-
-                $queryParams = array_merge($queryParams, $result['queryParams']);
-                $valueClauses[] = '(' . implode(', ', $result['valuePlaceholders']) . ')';
-                $paramCounter++;
+                // Prepare row data
+                $row = $this->prepareMetricRow($metricData);
+                if ($row) {
+                    $encoded = json_encode($row);
+                    if ($encoded) {
+                        $rows[] = $encoded;
+                    }
+                }
             }
 
-            $insertSql = "
-                INSERT INTO {$escapedDatabaseAndTable}
-                (" . implode(', ', $insertColumns) . ")
-                VALUES " . implode(', ', $valueClauses);
-
-            $this->query($insertSql, $queryParams);
+            if (!empty($rows)) {
+                $this->insert($tableName, $rows);
+            }
         }
 
         return true;
+    }
+
+    /**
+     * Prepare a row for JSONEachRow insert.
+     *
+     * @param array<string, mixed> $metricData
+     * @return array<string, mixed>|null
+     */
+    private function prepareMetricRow(array $metricData): ?array
+    {
+        /** @var string $period */
+        $period = $metricData['period'] ?? Usage::PERIOD_1H;
+        /** @var string $metric */
+        $metric = $metricData['metric'];
+        /** @var int $value */
+        $value = $metricData['value'];
+        /** @var array<string, mixed> $tags */
+        $tags = $metricData['tags'] ?? [];
+
+        // Normalize tags
+        ksort($tags);
+
+        // Period-aligned time
+        $now = new \DateTime();
+        $time = $period === Usage::PERIOD_INF
+            ? null
+            : $now->format(Usage::PERIODS[$period]);
+        $timestamp = $time !== null ? $this->formatDateTime($time) : null;
+
+        // Resolve tenant
+        $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
+
+        // Deterministic id
+        $id = $this->buildDeterministicId($metric, $period, $timestamp, $tenant);
+
+        // Build row compatible with JSONEachRow (keys match column names)
+        $row = [
+            'id' => $id,
+            'metric' => $metric,
+            'value' => $value,
+            'period' => $period,
+            'time' => $timestamp, // DateTime64(3) accepts string format
+            'tags' => $tags, // Will be JSON encoded automatically by json_encode($row)
+        ];
+
+        if ($this->sharedTables) {
+            $row['tenant'] = $tenant;
+        }
+
+        return $row;
     }
 
     /**
