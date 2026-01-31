@@ -891,9 +891,9 @@ class ClickHouse extends SQL
      * Prepare a row for JSONEachRow insert.
      *
      * @param array<string, mixed> $metricData
-     * @return array<string, mixed>|null
+     * @return array<string, mixed>
      */
-    private function prepareMetricRow(array $metricData): ?array
+    private function prepareMetricRow(array $metricData): array
     {
         /** @var string $period */
         $period = $metricData['period'] ?? Usage::PERIOD_1H;
@@ -1078,7 +1078,7 @@ class ClickHouse extends SQL
         $result = $this->query($sql, $params);
         $json = json_decode($result, true);
 
-        if (!isset($json['data'][0]['total'])) {
+        if (!is_array($json) || !isset($json['data'][0]['total'])) {
             return 0;
         }
 
@@ -1334,7 +1334,8 @@ class ClickHouse extends SQL
         }
 
         $json = json_decode($result, true);
-        if (!isset($json['data'])) {
+
+        if (!is_array($json) || !isset($json['data']) || !is_array($json['data'])) {
             return [];
         }
 
@@ -1342,6 +1343,9 @@ class ClickHouse extends SQL
         $metrics = [];
 
         foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
             $document = [];
 
             foreach ($row as $key => $value) {
@@ -1350,7 +1354,7 @@ class ClickHouse extends SQL
                     $document[$key] = $value !== null ? (int) $value : null;
                 } elseif ($key === 'time') {
                     // Time comes as string in JSON format, convert to ISO 8601 if needed
-                    $parsedTime = $value;
+                    $parsedTime = (string)$value;
                     if (strpos($parsedTime, 'T') === false) {
                         $parsedTime = str_replace(' ', 'T', $parsedTime) . '+00:00';
                     }
@@ -1557,9 +1561,10 @@ class ClickHouse extends SQL
         ";
 
         $result = $this->query($sql, $parsed['params']);
+
         $json = json_decode($result, true);
 
-        if (!isset($json['data'][0]['grand_total'])) {
+        if (!is_array($json) || !isset($json['data'][0]['grand_total'])) {
             return 0;
         }
 
