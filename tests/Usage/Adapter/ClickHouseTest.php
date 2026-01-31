@@ -289,4 +289,102 @@ class ClickHouseTest extends TestCase
         $sum = $this->usage->sumByPeriod('default-batch-test', '1h');
         $this->assertEquals(50, $sum);
     }
+    /**
+     * Test metrics with special characters to ensure JSON encoding/decoding is correct
+     */
+    public function testMetricsWithSpecialCharacters(): void
+    {
+        $specialVal = "Text with \n newline, \t tab, \"quote\", and unicode \u{1F600}";
+        $this->assertTrue($this->usage->log('special-metric', 1, '1h', ['s' => $specialVal]));
+
+        $results = $this->usage->find([
+            \Utopia\Usage\Query::equal('metric', ['special-metric']),
+        ]);
+
+        $this->assertEquals(1, count($results));
+        $this->assertEquals('special-metric', $results[0]->getMetric());
+        $tags = $results[0]->getTags();
+        $this->assertEquals($specialVal, $tags['s']);
+    }
+
+    /**
+     * Comprehensive test for find() with various query types
+     */
+    public function testFind(): void
+    {
+        // Cleanup
+        $this->usage->purge(DateTime::now());
+
+        // Setup test data
+        $now = DateTime::now();
+        // metric A: value 10, time NOW
+        $this->usage->log('metric-A', 10, '1h', ['category' => 'cat1']);
+        // metric B: value 20, time NOW
+        $this->usage->log('metric-B', 20, '1h', ['category' => 'cat2']);
+        // metric C: value 30, time NOW - 2 hours
+        $oldTime = (new \DateTime())->modify('-2 hours');
+        // We can't easily force time in log(), so we just rely on metrics created now being "newer" than this timestamp
+
+        // 1. Array Equal (IN)
+        $results = $this->usage->find([
+            \Utopia\Usage\Query::equal('metric', ['metric-A', 'metric-B']),
+        ]);
+        $this->assertGreaterThanOrEqual(2, count($results));
+
+        // 2. Scalar Equal
+        $results = $this->usage->find([
+            \Utopia\Usage\Query::equal('value', [20]),
+        ]);
+        $this->assertGreaterThanOrEqual(1, count($results));
+        $this->assertEquals(20, $results[0]->getValue());
+
+        // 3. Less Than
+        $results = $this->usage->find([
+            \Utopia\Usage\Query::lessThan('value', 20),
+            \Utopia\Usage\Query::equal('metric', ['metric-A']),
+        ]);
+        $this->assertGreaterThanOrEqual(1, count($results));
+        $this->assertEquals(10, $results[0]->getValue());
+
+        // 4. Greater Than
+        $results = $this->usage->find([
+            \Utopia\Usage\Query::greaterThan('value', 10),
+            \Utopia\Usage\Query::equal('metric', ['metric-B']),
+        ]);
+        $this->assertGreaterThanOrEqual(1, count($results));
+        $this->assertEquals(20, $results[0]->getValue());
+
+        // 5. Between
+        $results = $this->usage->find([
+            \Utopia\Usage\Query::between('value', 5, 25),
+            \Utopia\Usage\Query::equal('metric', ['metric-A', 'metric-B']),
+        ]);
+        $this->assertGreaterThanOrEqual(2, count($results));
+
+        // 6. Contains (IN alias for non-array input logic in Query class)
+        $results = $this->usage->find([
+            \Utopia\Usage\Query::contains('metric', ['metric-A']),
+        ]);
+        $this->assertGreaterThanOrEqual(1, count($results));
+
+        // 7. Order Desc
+        $results = $this->usage->find([
+            \Utopia\Usage\Query::equal('metric', ['metric-A', 'metric-B']),
+            \Utopia\Usage\Query::orderDesc('value'),
+            \Utopia\Usage\Query::limit(2),
+        ]);
+        $this->assertGreaterThanOrEqual(2, count($results));
+        // First should be B (20), Second A (10)
+        $this->assertTrue($results[0]->getValue() >= $results[1]->getValue());
+
+        // 8. Order Asc
+        $results = $this->usage->find([
+            \Utopia\Usage\Query::equal('metric', ['metric-A', 'metric-B']),
+            \Utopia\Usage\Query::orderAsc('value'),
+            \Utopia\Usage\Query::limit(2),
+        ]);
+        $this->assertGreaterThanOrEqual(2, count($results));
+        // First should be A (10), Second B (20)
+        $this->assertTrue($results[0]->getValue() <= $results[1]->getValue());
+    }
 }

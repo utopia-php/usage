@@ -1016,7 +1016,7 @@ class ClickHouse extends SQL
             SELECT {$selectColumns}
             FROM {$fromCounterTable}{$whereClause}
             {$orderClause}{$limitClause}{$offsetClause}
-            FORMAT TabSeparated
+            FORMAT JSON
         ";
 
         $result = $this->query($sql, $parsed['params']);
@@ -1072,12 +1072,17 @@ class ClickHouse extends SQL
                 UNION ALL
                 SELECT COUNT(*) as cnt FROM {$fromCounterTable}{$whereClause}
             )
-            FORMAT TabSeparated
+            FORMAT JSON
         ";
 
         $result = $this->query($sql, $params);
-        $trimmed = trim($result);
-        return $trimmed !== '' ? (int) $trimmed : 0;
+        $json = json_decode($result, true);
+
+        if (!isset($json['data'][0]['total'])) {
+            return 0;
+        }
+
+        return (int) $json['data'][0]['total'];
     }
 
     /**
@@ -1318,7 +1323,7 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Parse ClickHouse TabSeparated results into Metric array.
+     * Parse ClickHouse JSON results into Metric array.
      *
      * @return array<Metric>
      */
@@ -1328,72 +1333,42 @@ class ClickHouse extends SQL
             return [];
         }
 
-        $lines = explode("\n", trim($result));
+        $json = json_decode($result, true);
+        if (!isset($json['data'])) {
+            return [];
+        }
+
+        $rows = $json['data'];
         $metrics = [];
 
-        // Build select columns list matching getSelectColumns()
-        $selectColumns = ['id'];
-        foreach ($this->getAttributes() as $attribute) {
-            $selectColumns[] = $attribute['$id'];
-        }
-
-        if ($this->sharedTables) {
-            $selectColumns[] = 'tenant';
-        }
-
-        $expectedColumns = count($selectColumns);
-
-        foreach ($lines as $line) {
-            if (empty(trim($line))) {
-                continue;
-            }
-
-            $columns = explode("\t", $line);
-
-            if (count($columns) < $expectedColumns) {
-                continue;
-            }
-
-            // Helper function to parse nullable string fields
-            $parseNullableString = static function ($value): ?string {
-                if ($value === '\\N' || $value === '') {
-                    return null;
-                }
-                return $value;
-            };
-
-            // Build document dynamically by mapping columns to values
+        foreach ($rows as $row) {
             $document = [];
-            foreach ($selectColumns as $index => $columnName) {
-                if (!isset($columns[$index])) {
-                    continue;
-                }
 
-                $value = $columns[$index];
-
-                if ($columnName === 'tenant') {
-                    // Parse tenant as integer or null
-                    $document[$columnName] = ($value === '\\N' || $value === '') ? null : (int) $value;
-                } elseif ($columnName === 'time') {
-                    // Convert ClickHouse timestamp format back to ISO 8601
+            foreach ($row as $key => $value) {
+                if ($key === 'tenant') {
+                    // Parse tenant
+                    $document[$key] = $value !== null ? (int) $value : null;
+                } elseif ($key === 'time') {
+                    // Time comes as string in JSON format, convert to ISO 8601 if needed
                     $parsedTime = $value;
                     if (strpos($parsedTime, 'T') === false) {
                         $parsedTime = str_replace(' ', 'T', $parsedTime) . '+00:00';
                     }
-                    $document[$columnName] = $parsedTime;
-                } elseif ($columnName === 'tags') {
-                    // Decode JSON tags column
-                    $document[$columnName] = json_decode($value, true) ?? [];
-                } else {
-                    // Get attribute metadata to check if nullable
-                    $attribute = is_string($columnName) ? $this->getAttribute($columnName) : null;
-                    if ($attribute && !$attribute['required']) {
-                        // Nullable field - parse null values
-                        $document[$columnName] = $parseNullableString($value);
+                    $document[$key] = $parsedTime;
+                } elseif ($key === 'tags') {
+                    // Tags in JSON output are already mixed (array or object), no need to json_decode
+                    // ClickHouse JSON output for Map/Array might vary, but for String it's a string
+                    // If we store tags as String (serialized JSON), we need to decode it.
+                    // The schema says tags is String? Let's check getColumnType.
+                    // Ah, tags is usually String in ClickHouse adapter (checked log/logBatch).
+                    // So it comes as a string, we need to decode it.
+                    if (is_string($value)) {
+                        $document[$key] = json_decode($value, true) ?? [];
                     } else {
-                        // Required field - use value as-is
-                        $document[$columnName] = $value;
+                        $document[$key] = $value;
                     }
+                } else {
+                    $document[$key] = $value;
                 }
             }
 
@@ -1577,13 +1552,18 @@ class ClickHouse extends SQL
                 UNION ALL
                 SELECT sum(value) as total FROM {$fromCounterTable}{$whereClause}
             )
-            FORMAT TabSeparated
+
+            FORMAT JSON
         ";
 
         $result = $this->query($sql, $parsed['params']);
-        $total = trim($result);
+        $json = json_decode($result, true);
 
-        return empty($total) ? 0 : (int) $total;
+        if (!isset($json['data'][0]['grand_total'])) {
+            return 0;
+        }
+
+        return (int) $json['data'][0]['grand_total'];
     }
 
     /**
