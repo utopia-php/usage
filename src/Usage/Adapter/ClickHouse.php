@@ -63,6 +63,12 @@ class ClickHouse extends SQL
 
     protected string $namespace = '';
 
+    /** @var bool Whether to log queries for debugging */
+    private bool $enableQueryLogging = false;
+
+    /** @var array<array{sql: string, params: array<string, mixed>, duration: float, timestamp: float, success: bool, error?: string}> Query execution log */
+    private array $queryLog = [];
+
     /**
      * @param  string  $host  ClickHouse host
      * @param  string  $username  ClickHouse username (default: 'default')
@@ -99,6 +105,39 @@ class ClickHouse extends SQL
     public function setUseFinal(bool $useFinal): self
     {
         $this->useFinal = $useFinal;
+        return $this;
+    }
+
+    /**
+     * Enable or disable query logging for debugging.
+     *
+     * @param bool $enable Whether to enable query logging
+     * @return self
+     */
+    public function enableQueryLogging(bool $enable = true): self
+    {
+        $this->enableQueryLogging = $enable;
+        return $this;
+    }
+
+    /**
+     * Get the query execution log.
+     *
+     * @return array<array{sql: string, params: array<string, mixed>, duration: float, timestamp: float, success: bool, error?: string}>
+     */
+    public function getQueryLog(): array
+    {
+        return $this->queryLog;
+    }
+
+    /**
+     * Clear the query execution log.
+     *
+     * @return self
+     */
+    public function clearQueryLog(): self
+    {
+        $this->queryLog = [];
         return $this;
     }
 
@@ -311,6 +350,36 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Log a query execution for debugging purposes.
+     *
+     * @param string $sql SQL query executed
+     * @param array<string, mixed> $params Query parameters
+     * @param float $duration Execution duration in seconds
+     * @param bool $success Whether the query succeeded
+     * @param string|null $error Error message if query failed
+     */
+    private function logQuery(string $sql, array $params, float $duration, bool $success, ?string $error = null): void
+    {
+        if (!$this->enableQueryLogging) {
+            return;
+        }
+
+        $logEntry = [
+            'sql' => $sql,
+            'params' => $params,
+            'duration' => $duration,
+            'timestamp' => microtime(true),
+            'success' => $success,
+        ];
+
+        if ($error !== null) {
+            $logEntry['error'] = $error;
+        }
+
+        $this->queryLog[] = $logEntry;
+    }
+
+    /**
      * Execute a ClickHouse query via HTTP interface using Fetch Client.
      *
      * Uses ClickHouse query parameters (sent as POST multipart form data) to prevent SQL injection.
@@ -331,6 +400,7 @@ class ClickHouse extends SQL
      */
     private function query(string $sql, array $params = []): string
     {
+        $startTime = microtime(true);
         $scheme = $this->secure ? 'https' : 'http';
         $url = "{$scheme}://{$this->host}:{$this->port}/";
 
@@ -353,12 +423,20 @@ class ClickHouse extends SQL
             if ($response->getStatusCode() !== 200) {
                 $bodyStr = $response->getBody();
                 $bodyStr = is_string($bodyStr) ? $bodyStr : '';
-                throw new Exception("ClickHouse query failed with HTTP {$response->getStatusCode()}: {$bodyStr}");
+                $duration = microtime(true) - $startTime;
+                $errorMsg = "ClickHouse query failed with HTTP {$response->getStatusCode()}: {$bodyStr}";
+                $this->logQuery($sql, $params, $duration, false, $errorMsg);
+                throw new Exception($errorMsg);
             }
 
             $body = $response->getBody();
-            return is_string($body) ? $body : '';
+            $result = is_string($body) ? $body : '';
+            $duration = microtime(true) - $startTime;
+            $this->logQuery($sql, $params, $duration, true);
+            return $result;
         } catch (Exception $e) {
+            $duration = microtime(true) - $startTime;
+            $this->logQuery($sql, $params, $duration, false, $e->getMessage());
             // Preserve the original exception context for better debugging
             // Re-throw with additional context while maintaining the original exception chain
             throw new Exception(
@@ -384,6 +462,7 @@ class ClickHouse extends SQL
             return;
         }
 
+        $startTime = microtime(true);
         $scheme = $this->secure ? 'https' : 'http';
         $escapedTable = $this->escapeIdentifier($table);
         $url = "{$scheme}://{$this->host}:{$this->port}/?query=INSERT+INTO+{$escapedTable}+FORMAT+JSONEachRow";
@@ -395,6 +474,9 @@ class ClickHouse extends SQL
         // Join JSON strings with newlines
         $body = implode("\n", $data);
 
+        $sql = "INSERT INTO {$escapedTable} FORMAT JSONEachRow";
+        $params = ['rows' => count($data), 'bytes' => strlen($body)];
+
         try {
             $response = $this->client->fetch(
                 url: $url,
@@ -405,9 +487,17 @@ class ClickHouse extends SQL
             if ($response->getStatusCode() !== 200) {
                 $bodyStr = $response->getBody();
                 $bodyStr = is_string($bodyStr) ? $bodyStr : '';
-                throw new Exception("ClickHouse insert failed with HTTP {$response->getStatusCode()}: {$bodyStr}");
+                $duration = microtime(true) - $startTime;
+                $errorMsg = "ClickHouse insert failed with HTTP {$response->getStatusCode()}: {$bodyStr}";
+                $this->logQuery($sql, $params, $duration, false, $errorMsg);
+                throw new Exception($errorMsg);
             }
+
+            $duration = microtime(true) - $startTime;
+            $this->logQuery($sql, $params, $duration, true);
         } catch (Exception $e) {
+            $duration = microtime(true) - $startTime;
+            $this->logQuery($sql, $params, $duration, false, $e->getMessage());
             throw new Exception(
                 "ClickHouse insert execution failed: {$e->getMessage()}",
                 0,
