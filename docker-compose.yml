@@ -31,8 +31,8 @@ services:
     networks:
       - usage
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - "8124:8123"
+      - "9001:9000"
     healthcheck:
       test: ["CMD", "clickhouse-client", "--host=localhost", "--port=9000", "-q", "SELECT 1"]
       interval: 5s

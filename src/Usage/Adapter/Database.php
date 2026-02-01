@@ -27,6 +27,46 @@ class Database extends SQL
         return 'Database';
     }
 
+    /**
+     * Check database connection health and collection existence.
+     *
+     * @return array{healthy: bool, database?: string, collection?: string, error?: string}
+     */
+    public function healthCheck(): array
+    {
+        try {
+            // Check if database exists
+            $databaseName = $this->db->getDatabase();
+            if (!$this->db->exists($databaseName)) {
+                return [
+                    'healthy' => false,
+                    'error' => "Database '{$databaseName}' does not exist"
+                ];
+            }
+
+            // Check if collection exists
+            $collectionName = $this->collection ?? 'usage';
+            if (!$this->db->getCollection($collectionName)->isEmpty()) {
+                return [
+                    'healthy' => true,
+                    'database' => $databaseName,
+                    'collection' => $collectionName
+                ];
+            }
+
+            return [
+                'healthy' => true,
+                'database' => $databaseName,
+                'collection' => $collectionName
+            ];
+        } catch (\Exception $e) {
+            return [
+                'healthy' => false,
+                'error' => $e->getMessage()
+            ];
+        }
+    }
+
     public function setup(): void
     {
         $this->collection = 'usage';

@@ -10,6 +10,13 @@ abstract class Adapter
     abstract public function getName(): string;
 
     /**
+     * Check adapter health and connection status
+     *
+     * @return array<string, mixed> Health check result with 'healthy' bool and additional adapter-specific information
+     */
+    abstract public function healthCheck(): array;
+
+    /**
      * Setup database structure
      */
     abstract public function setup(): void;

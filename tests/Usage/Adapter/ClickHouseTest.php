@@ -387,4 +387,66 @@ class ClickHouseTest extends TestCase
         // First should be A (10), Second B (20)
         $this->assertTrue($results[0]->getValue() <= $results[1]->getValue());
     }
+
+    /**
+     * Test healthCheck() method
+     */
+    public function testHealthCheck(): void
+    {
+        $adapter = $this->usage->getAdapter();
+
+        $health = $adapter->healthCheck();
+
+        // Assert basic structure
+        $this->assertIsArray($health);
+        $this->assertArrayHasKey('healthy', $health);
+        $this->assertArrayHasKey('host', $health);
+        $this->assertArrayHasKey('port', $health);
+        $this->assertArrayHasKey('database', $health);
+        $this->assertArrayHasKey('secure', $health);
+
+        // Assert connection is healthy
+        $this->assertTrue($health['healthy'], 'ClickHouse should be healthy');
+
+        // Assert additional fields are present when healthy
+        $this->assertArrayHasKey('version', $health);
+        $this->assertArrayHasKey('uptime', $health);
+        $this->assertArrayHasKey('response_time', $health);
+        $this->assertIsString($health['version']);
+        $this->assertIsInt($health['uptime']);
+        $this->assertIsFloat($health['response_time']);
+        $this->assertGreaterThan(0, $health['response_time']);
+    }
+
+    /**
+     * Test healthCheck() with invalid connection
+     */
+    public function testHealthCheckFailure(): void
+    {
+        // Create adapter with invalid host
+        $adapter = new ClickHouseAdapter('invalid-host-that-does-not-exist', 'default', '', 8123, false);
+
+        $health = $adapter->healthCheck();
+
+        // Assert basic structure
+        $this->assertIsArray($health);
+        $this->assertArrayHasKey('healthy', $health);
+        $this->assertArrayHasKey('host', $health);
+
+        // Assert connection failed
+        $this->assertFalse($health['healthy'], 'ClickHouse should be unhealthy with invalid host');
+
+        // Assert error message is present
+        $this->assertArrayHasKey('error', $health);
+        if (isset($health['error'])) {
+            $this->assertIsString($health['error']);
+            $this->assertNotEmpty($health['error']);
+        }
+
+        // Assert response time is still recorded
+        $this->assertArrayHasKey('response_time', $health);
+        if (isset($health['response_time'])) {
+            $this->assertIsFloat($health['response_time']);
+        }
+    }
 }

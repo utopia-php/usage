@@ -41,6 +41,16 @@ class Usage
     }
 
     /**
+     * Check adapter health and connection status.
+     *
+     * @return array<string, mixed> Health check result with 'healthy' bool and additional adapter-specific information
+     */
+    public function healthCheck(): array
+    {
+        return $this->adapter->healthCheck();
+    }
+
+    /**
      * Setup the usage metrics storage.
      *
      * @throws \Exception

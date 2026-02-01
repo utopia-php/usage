@@ -49,4 +49,63 @@ class DatabaseTest extends TestCase
             // ignore duplicate exception
         }
     }
+
+    /**
+     * Test healthCheck() method
+     */
+    public function testHealthCheck(): void
+    {
+        $adapter = $this->usage->getAdapter();
+
+        $health = $adapter->healthCheck();
+
+        // Assert basic structure
+        $this->assertIsArray($health);
+        $this->assertArrayHasKey('healthy', $health);
+
+        // Assert connection is healthy
+        $this->assertTrue($health['healthy'], 'Database should be healthy');
+
+        // Assert additional fields are present when healthy
+        $this->assertArrayHasKey('database', $health);
+        $this->assertArrayHasKey('collection', $health);
+        $this->assertIsString($health['database']);
+        $this->assertIsString($health['collection']);
+    }
+
+    /**
+     * Test healthCheck() with database that doesn't exist
+     */
+    public function testHealthCheckWithNonExistentDatabase(): void
+    {
+        // Create a new database instance pointing to a non-existent database
+        $dbHost = 'mariadb';
+        $dbPort = '3306';
+        $dbUser = 'root';
+        $dbPass = 'password';
+
+        $pdo = new PDO("mysql:host={$dbHost};port={$dbPort};charset=utf8mb4", $dbUser, $dbPass, MariaDB::getPdoAttributes());
+        $cache = new Cache(new NoCache());
+        $database = new Database(new MariaDB($pdo), $cache);
+        $database->setDatabase('nonexistent_database_xyz');
+        $database->setNamespace('test');
+
+        $adapter = new AdapterDatabase($database);
+
+        $health = $adapter->healthCheck();
+
+        // Assert basic structure
+        $this->assertIsArray($health);
+        $this->assertArrayHasKey('healthy', $health);
+
+        // Assert connection failed
+        $this->assertFalse($health['healthy'], 'Database should be unhealthy with non-existent database');
+
+        // Assert error message is present
+        $this->assertArrayHasKey('error', $health);
+        if (isset($health['error'])) {
+            $this->assertIsString($health['error']);
+            $this->assertNotEmpty($health['error']);
+        }
+    }
 }
