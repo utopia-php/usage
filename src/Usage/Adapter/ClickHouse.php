@@ -773,9 +773,10 @@ class ClickHouse extends SQL
                 $row = $this->prepareMetricRow($metricData);
                 if ($row) {
                     $encoded = json_encode($row);
-                    if ($encoded) {
-                        $rows[] = $encoded;
+                    if ($encoded === false) {
+                        throw new Exception("Failed to JSON encode metric row: " . json_last_error_msg());
                     }
+                    $rows[] = $encoded;
                 }
             }
 
@@ -873,9 +874,10 @@ class ClickHouse extends SQL
                 $row = $this->prepareMetricRow($metricData);
                 if ($row) {
                     $encoded = json_encode($row);
-                    if ($encoded) {
-                        $rows[] = $encoded;
+                    if ($encoded === false) {
+                        throw new Exception("Failed to JSON encode metric row: " . json_last_error_msg());
                     }
+                    $rows[] = $encoded;
                 }
             }
 
