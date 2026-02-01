@@ -449,4 +449,94 @@ class ClickHouseTest extends TestCase
             $this->assertIsFloat($health['response_time']);
         }
     }
+
+    /**
+     * Test setTimeout() method with valid timeout
+     */
+    public function testSetTimeoutValid(): void
+    {
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
+
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
+
+        // Test setting valid timeout
+        $result = $adapter->setTimeout(5000); // 5 seconds
+
+        // Should return self for chaining
+        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
+
+        // Test that it still works after setting timeout
+        $health = $adapter->healthCheck();
+        $this->assertTrue($health['healthy']);
+    }
+
+    /**
+     * Test setTimeout() with minimum timeout (1 second)
+     */
+    public function testSetTimeoutMinimum(): void
+    {
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port);
+        $adapter->setTimeout(1000); // 1 second minimum
+
+        $this->assertTrue(true); // If we reach here, no exception was thrown
+    }
+
+    /**
+     * Test setTimeout() with maximum timeout (10 minutes)
+     */
+    public function testSetTimeoutMaximum(): void
+    {
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port);
+        $adapter->setTimeout(600000); // 10 minutes maximum
+
+        $this->assertTrue(true); // If we reach here, no exception was thrown
+    }
+
+    /**
+     * Test setTimeout() with timeout below minimum
+     */
+    public function testSetTimeoutBelowMinimum(): void
+    {
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('Timeout must be at least 1000 milliseconds');
+
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port);
+        $adapter->setTimeout(999); // Below minimum
+    }
+
+    /**
+     * Test setTimeout() with timeout above maximum
+     */
+    public function testSetTimeoutAboveMaximum(): void
+    {
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('Timeout cannot exceed 600000 milliseconds');
+
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port);
+        $adapter->setTimeout(600001); // Above maximum
+    }
 }

@@ -109,6 +109,25 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Set the HTTP request timeout in milliseconds.
+     *
+     * @param int $milliseconds Timeout in milliseconds (min: 1000ms, max: 600000ms)
+     * @return self
+     * @throws Exception If timeout is out of valid range
+     */
+    public function setTimeout(int $milliseconds): self
+    {
+        if ($milliseconds < 1000) {
+            throw new Exception('Timeout must be at least 1000 milliseconds (1 second)');
+        }
+        if ($milliseconds > 600000) {
+            throw new Exception('Timeout cannot exceed 600000 milliseconds (10 minutes)');
+        }
+        $this->client->setTimeout($milliseconds);
+        return $this;
+    }
+
+    /**
      * Enable or disable query logging for debugging.
      *
      * @param bool $enable Whether to enable query logging
