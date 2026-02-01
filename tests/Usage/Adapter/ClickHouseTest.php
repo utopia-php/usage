@@ -650,4 +650,110 @@ class ClickHouseTest extends TestCase
         $this->assertGreaterThan($initialCount, $newStats['request_count']);
         $this->assertGreaterThanOrEqual(3, $newStats['request_count'] - $initialCount);
     }
+
+    /**
+     * Test retry logic configuration
+     */
+    public function testRetryConfiguration(): void
+    {
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
+
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
+
+        // Test setting max retries
+        $result = $adapter->setMaxRetries(5);
+        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
+
+        // Test setting retry delay
+        $result = $adapter->setRetryDelay(200);
+        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
+
+        // Verify stats reflect configuration
+        $stats = $adapter->getConnectionStats();
+        $this->assertSame(5, $stats['max_retries']);
+        $this->assertSame(200, $stats['retry_delay']);
+
+        // Test valid retry range (0-10)
+        $adapter->setMaxRetries(0);
+        $stats = $adapter->getConnectionStats();
+        $this->assertSame(0, $stats['max_retries']);
+
+        $adapter->setMaxRetries(10);
+        $stats = $adapter->getConnectionStats();
+        $this->assertSame(10, $stats['max_retries']);
+    }
+
+    /**
+     * Test retry validation errors
+     */
+    public function testRetryValidation(): void
+    {
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
+
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
+
+        // Test max retries below minimum
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('Max retries must be between 0 and 10');
+        $adapter->setMaxRetries(-1);
+    }
+
+    /**
+     * Test retry delay validation
+     */
+    public function testRetryDelayValidation(): void
+    {
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
+
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
+
+        // Test retry delay below minimum
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('Retry delay must be between 10 and 5000 milliseconds');
+        $adapter->setRetryDelay(5);
+    }
+
+    /**
+     * Test retry logic with successful operations
+     */
+    public function testRetryWithSuccessfulOperations(): void
+    {
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
+
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
+        $adapter->setNamespace('utopia_usage_retry_test');
+        $adapter->setTenant(1);
+        $adapter->setMaxRetries(2);
+        $adapter->setRetryDelay(50);
+
+        if ($database = getenv('CLICKHOUSE_DATABASE')) {
+            $adapter->setDatabase($database);
+        }
+
+        $usage = new Usage($adapter);
+        $usage->setup();
+
+        // These operations should succeed on first attempt (no retries needed)
+        $result = $usage->log('retry.test', 100, '1h', ['test' => 'success']);
+        $this->assertTrue($result);
+
+        $count = $usage->count([]);
+        $this->assertIsInt($count);
+    }
 }

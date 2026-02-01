@@ -78,6 +78,12 @@ class ClickHouse extends SQL
     /** @var int Number of requests made using this adapter instance */
     private int $requestCount = 0;
 
+    /** @var int Maximum number of retry attempts for failed requests (0 = no retries) */
+    private int $maxRetries = 3;
+
+    /** @var int Initial retry delay in milliseconds (doubles with each retry) */
+    private int $retryDelay = 100;
+
     /**
      * @param  string  $host  ClickHouse host
      * @param  string  $username  ClickHouse username (default: 'default')
@@ -175,9 +181,42 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Set maximum number of retry attempts for failed requests.
+     *
+     * @param int $maxRetries Maximum retry attempts (0-10, 0 = no retries)
+     * @return self
+     * @throws Exception If maxRetries is out of valid range
+     */
+    public function setMaxRetries(int $maxRetries): self
+    {
+        if ($maxRetries < 0 || $maxRetries > 10) {
+            throw new Exception('Max retries must be between 0 and 10');
+        }
+        $this->maxRetries = $maxRetries;
+        return $this;
+    }
+
+    /**
+     * Set initial retry delay in milliseconds.
+     * Delay doubles with each retry attempt (exponential backoff).
+     *
+     * @param int $milliseconds Initial delay in milliseconds (10-5000ms)
+     * @return self
+     * @throws Exception If delay is out of valid range
+     */
+    public function setRetryDelay(int $milliseconds): self
+    {
+        if ($milliseconds < 10 || $milliseconds > 5000) {
+            throw new Exception('Retry delay must be between 10 and 5000 milliseconds');
+        }
+        $this->retryDelay = $milliseconds;
+        return $this;
+    }
+
+    /**
      * Get connection statistics for monitoring.
      *
-     * @return array{request_count: int, keep_alive_enabled: bool, compression_enabled: bool, query_logging_enabled: bool}
+     * @return array{request_count: int, keep_alive_enabled: bool, compression_enabled: bool, query_logging_enabled: bool, max_retries: int, retry_delay: int}
      */
     public function getConnectionStats(): array
     {
@@ -186,6 +225,8 @@ class ClickHouse extends SQL
             'keep_alive_enabled' => $this->enableKeepAlive,
             'compression_enabled' => $this->enableCompression,
             'query_logging_enabled' => $this->enableQueryLogging,
+            'max_retries' => $this->maxRetries,
+            'retry_delay' => $this->retryDelay,
         ];
     }
 
@@ -490,8 +531,9 @@ class ClickHouse extends SQL
      * @param float $duration Execution duration in seconds
      * @param bool $success Whether the query succeeded
      * @param string|null $error Error message if query failed
+     * @param int $retryAttempt Current retry attempt number (0 = first attempt)
      */
-    private function logQuery(string $sql, array $params, float $duration, bool $success, ?string $error = null): void
+    private function logQuery(string $sql, array $params, float $duration, bool $success, ?string $error = null, int $retryAttempt = 0): void
     {
         if (!$this->enableQueryLogging) {
             return;
@@ -505,11 +547,59 @@ class ClickHouse extends SQL
             'success' => $success,
         ];
 
+        if ($retryAttempt > 0) {
+            $logEntry['retry_attempt'] = $retryAttempt;
+        }
+
         if ($error !== null) {
             $logEntry['error'] = $error;
         }
 
         $this->queryLog[] = $logEntry;
+    }
+
+    /**
+     * Determine if an error is retryable based on HTTP status code or error message.
+     *
+     * @param int|null $httpCode HTTP status code if available
+     * @param string $errorMessage Error message
+     * @return bool True if the error is retryable
+     */
+    private function isRetryableError(?int $httpCode, string $errorMessage): bool
+    {
+        // Retry on server errors and specific client errors
+        if ($httpCode !== null) {
+            // Retry on: 408 (Timeout), 429 (Too Many Requests), 500, 502, 503, 504
+            if (in_array($httpCode, [408, 429, 500, 502, 503, 504], true)) {
+                return true;
+            }
+            // Don't retry on client errors (4xx except 408, 429)
+            if ($httpCode >= 400 && $httpCode < 500) {
+                return false;
+            }
+        }
+
+        // Retry on connection/network errors
+        $retryablePatterns = [
+            'connection',
+            'timeout',
+            'timed out',
+            'refused',
+            'reset',
+            'broken pipe',
+            'network',
+            'temporary',
+            'unavailable',
+        ];
+
+        $lowerMessage = strtolower($errorMessage);
+        foreach ($retryablePatterns as $pattern) {
+            if (strpos($lowerMessage, $pattern) !== false) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -533,66 +623,100 @@ class ClickHouse extends SQL
      */
     private function query(string $sql, array $params = []): string
     {
-        $startTime = microtime(true);
-        $scheme = $this->secure ? 'https' : 'http';
-        $url = "{$scheme}://{$this->host}:{$this->port}/";
+        $attempt = 0;
+        $lastException = null;
 
-        // Update the database header for each query (in case setDatabase was called)
-        $this->client->addHeader('X-ClickHouse-Database', $this->database);
+        while ($attempt <= $this->maxRetries) {
+            $startTime = microtime(true);
+            $scheme = $this->secure ? 'https' : 'http';
+            $url = "{$scheme}://{$this->host}:{$this->port}/";
 
-        // Enable keep-alive for connection pooling
-        if ($this->enableKeepAlive) {
-            $this->client->addHeader('Connection', 'keep-alive');
-        } else {
-            $this->client->addHeader('Connection', 'close');
-        }
+            // Update the database header for each query (in case setDatabase was called)
+            $this->client->addHeader('X-ClickHouse-Database', $this->database);
 
-        // Enable compression if configured
-        if ($this->enableCompression) {
-            $this->client->addHeader('Accept-Encoding', 'gzip');
-        }
-
-        // Track request count for statistics
-        $this->requestCount++;
-
-        // Build multipart form data body with query and parameters
-        // The Fetch client will automatically encode arrays as multipart/form-data
-        $body = ['query' => $sql];
-        foreach ($params as $key => $value) {
-            $body['param_' . $key] = $this->formatParamValue($value);
-        }
-
-        try {
-            $response = $this->client->fetch(
-                url: $url,
-                method: Client::METHOD_POST,
-                body: $body
-            );
-            if ($response->getStatusCode() !== 200) {
-                $bodyStr = $response->getBody();
-                $bodyStr = is_string($bodyStr) ? $bodyStr : '';
-                $duration = microtime(true) - $startTime;
-                $errorMsg = "ClickHouse query failed with HTTP {$response->getStatusCode()}: {$bodyStr}";
-                $this->logQuery($sql, $params, $duration, false, $errorMsg);
-                throw new Exception($errorMsg);
+            // Enable keep-alive for connection pooling
+            if ($this->enableKeepAlive) {
+                $this->client->addHeader('Connection', 'keep-alive');
+            } else {
+                $this->client->addHeader('Connection', 'close');
             }
 
-            $body = $response->getBody();
-            $result = is_string($body) ? $body : '';
-            $duration = microtime(true) - $startTime;
-            $this->logQuery($sql, $params, $duration, true);
-            return $result;
-        } catch (Exception $e) {
-            $duration = microtime(true) - $startTime;
-            $this->logQuery($sql, $params, $duration, false, $e->getMessage());
-            // Preserve the original exception context for better debugging
-            // Re-throw with additional context while maintaining the original exception chain
-            throw new Exception(
-                "ClickHouse query execution failed: {$e->getMessage()}",
-                0,
-                $e
-            );
+            // Enable compression if configured
+            if ($this->enableCompression) {
+                $this->client->addHeader('Accept-Encoding', 'gzip');
+            }
+
+            // Track request count for statistics (only on first attempt)
+            if ($attempt === 0) {
+                $this->requestCount++;
+            }
+
+            // Build multipart form data body with query and parameters
+            // The Fetch client will automatically encode arrays as multipart/form-data
+            $body = ['query' => $sql];
+            foreach ($params as $key => $value) {
+                $body['param_' . $key] = $this->formatParamValue($value);
+            }
+
+            try {
+                $response = $this->client->fetch(
+                    url: $url,
+                    method: Client::METHOD_POST,
+                    body: $body
+                );
+                $httpCode = $response->getStatusCode();
+
+                if ($httpCode !== 200) {
+                    $bodyStr = $response->getBody();
+                    $bodyStr = is_string($bodyStr) ? $bodyStr : '';
+                    $duration = microtime(true) - $startTime;
+                    $errorMsg = "ClickHouse query failed with HTTP {$httpCode}: {$bodyStr}";
+                    $this->logQuery($sql, $params, $duration, false, $errorMsg, $attempt);
+
+                    // Check if error is retryable
+                    if ($attempt < $this->maxRetries && $this->isRetryableError($httpCode, $errorMsg)) {
+                        $attempt++;
+                        $delay = $this->retryDelay * (2 ** ($attempt - 1)); // Exponential backoff
+                        usleep($delay * 1000); // Convert ms to microseconds
+                        continue;
+                    }
+
+                    throw new Exception($errorMsg);
+                }
+
+                $body = $response->getBody();
+                $result = is_string($body) ? $body : '';
+                $duration = microtime(true) - $startTime;
+                $this->logQuery($sql, $params, $duration, true, null, $attempt);
+                return $result;
+            } catch (Exception $e) {
+                $duration = microtime(true) - $startTime;
+                $this->logQuery($sql, $params, $duration, false, $e->getMessage(), $attempt);
+                $lastException = $e;
+
+                // Check if error is retryable
+                if ($attempt < $this->maxRetries && $this->isRetryableError(null, $e->getMessage())) {
+                    $attempt++;
+                    $delay = $this->retryDelay * (2 ** ($attempt - 1)); // Exponential backoff
+                    usleep($delay * 1000); // Convert ms to microseconds
+                    continue;
+                }
+
+                // Preserve the original exception context for better debugging
+                throw new Exception(
+                    "ClickHouse query execution failed after " . ($attempt + 1) . " attempt(s): {$e->getMessage()}",
+                    0,
+                    $e
+                );
+            }
         }
+
+        // Should never reach here, but just in case
+        throw new Exception(
+            "ClickHouse query execution failed after " . ($this->maxRetries + 1) . " attempt(s)",
+            0,
+            $lastException
+        );
     }
 
     /**
@@ -610,66 +734,108 @@ class ClickHouse extends SQL
             return;
         }
 
-        $startTime = microtime(true);
-        $scheme = $this->secure ? 'https' : 'http';
-        $escapedTable = $this->escapeIdentifier($table);
-        $url = "{$scheme}://{$this->host}:{$this->port}/?query=INSERT+INTO+{$escapedTable}+FORMAT+JSONEachRow";
+        $attempt = 0;
+        $lastException = null;
 
-        // Update the database header
-        $this->client->addHeader('X-ClickHouse-Database', $this->database);
-        $this->client->addHeader('Content-Type', 'application/x-ndjson');
+        while ($attempt <= $this->maxRetries) {
+            $startTime = microtime(true);
+            $scheme = $this->secure ? 'https' : 'http';
+            $escapedTable = $this->escapeIdentifier($table);
+            $url = "{$scheme}://{$this->host}:{$this->port}/?query=INSERT+INTO+{$escapedTable}+FORMAT+JSONEachRow";
 
-        // Enable keep-alive for connection pooling
-        if ($this->enableKeepAlive) {
-            $this->client->addHeader('Connection', 'keep-alive');
-        } else {
-            $this->client->addHeader('Connection', 'close');
-        }
+            // Update the database header
+            $this->client->addHeader('X-ClickHouse-Database', $this->database);
+            $this->client->addHeader('Content-Type', 'application/x-ndjson');
 
-        // Enable compression if configured
-        if ($this->enableCompression) {
-            $this->client->addHeader('Accept-Encoding', 'gzip');
-        }
-
-        // Track request count for statistics
-        $this->requestCount++;
-
-        // Join JSON strings with newlines
-        $body = implode("\n", $data);
-
-        $sql = "INSERT INTO {$escapedTable} FORMAT JSONEachRow";
-        $params = ['rows' => count($data), 'bytes' => strlen($body)];
-
-        try {
-            $response = $this->client->fetch(
-                url: $url,
-                method: Client::METHOD_POST,
-                body: $body
-            );
-
-            if ($response->getStatusCode() !== 200) {
-                $bodyStr = $response->getBody();
-                $bodyStr = is_string($bodyStr) ? $bodyStr : '';
-                $duration = microtime(true) - $startTime;
-                $errorMsg = "ClickHouse insert failed with HTTP {$response->getStatusCode()}: {$bodyStr}";
-                $this->logQuery($sql, $params, $duration, false, $errorMsg);
-                throw new Exception($errorMsg);
+            // Enable keep-alive for connection pooling
+            if ($this->enableKeepAlive) {
+                $this->client->addHeader('Connection', 'keep-alive');
+            } else {
+                $this->client->addHeader('Connection', 'close');
             }
 
-            $duration = microtime(true) - $startTime;
-            $this->logQuery($sql, $params, $duration, true);
-        } catch (Exception $e) {
-            $duration = microtime(true) - $startTime;
-            $this->logQuery($sql, $params, $duration, false, $e->getMessage());
-            throw new Exception(
-                "ClickHouse insert execution failed: {$e->getMessage()}",
-                0,
-                $e
-            );
-        } finally {
-            // Clean up Content-Type to avoid affecting other queries
-            $this->client->removeHeader('Content-Type');
+            // Enable compression if configured
+            if ($this->enableCompression) {
+                $this->client->addHeader('Accept-Encoding', 'gzip');
+            }
+
+            // Track request count for statistics (only on first attempt)
+            if ($attempt === 0) {
+                $this->requestCount++;
+            }
+
+            // Join JSON strings with newlines
+            $body = implode("\n", $data);
+
+            $sql = "INSERT INTO {$escapedTable} FORMAT JSONEachRow";
+            $params = ['rows' => count($data), 'bytes' => strlen($body)];
+
+            try {
+                $response = $this->client->fetch(
+                    url: $url,
+                    method: Client::METHOD_POST,
+                    body: $body
+                );
+
+                $httpCode = $response->getStatusCode();
+
+                if ($httpCode !== 200) {
+                    $bodyStr = $response->getBody();
+                    $bodyStr = is_string($bodyStr) ? $bodyStr : '';
+                    $duration = microtime(true) - $startTime;
+                    $errorMsg = "ClickHouse insert failed with HTTP {$httpCode}: {$bodyStr}";
+                    $this->logQuery($sql, $params, $duration, false, $errorMsg, $attempt);
+
+                    // Clean up Content-Type before retry
+                    $this->client->removeHeader('Content-Type');
+
+                    // Check if error is retryable
+                    if ($attempt < $this->maxRetries && $this->isRetryableError($httpCode, $errorMsg)) {
+                        $attempt++;
+                        $delay = $this->retryDelay * (2 ** ($attempt - 1)); // Exponential backoff
+                        usleep($delay * 1000); // Convert ms to microseconds
+                        continue;
+                    }
+
+                    throw new Exception($errorMsg);
+                }
+
+                $duration = microtime(true) - $startTime;
+                $this->logQuery($sql, $params, $duration, true, null, $attempt);
+
+                // Clean up Content-Type after successful insert
+                $this->client->removeHeader('Content-Type');
+                return;
+            } catch (Exception $e) {
+                $duration = microtime(true) - $startTime;
+                $this->logQuery($sql, $params, $duration, false, $e->getMessage(), $attempt);
+                $lastException = $e;
+
+                // Clean up Content-Type before retry
+                $this->client->removeHeader('Content-Type');
+
+                // Check if error is retryable
+                if ($attempt < $this->maxRetries && $this->isRetryableError(null, $e->getMessage())) {
+                    $attempt++;
+                    $delay = $this->retryDelay * (2 ** ($attempt - 1)); // Exponential backoff
+                    usleep($delay * 1000); // Convert ms to microseconds
+                    continue;
+                }
+
+                throw new Exception(
+                    "ClickHouse insert execution failed after " . ($attempt + 1) . " attempt(s): {$e->getMessage()}",
+                    0,
+                    $e
+                );
+            }
         }
+
+        // Should never reach here, but just in case
+        throw new Exception(
+            "ClickHouse insert execution failed after " . ($this->maxRetries + 1) . " attempt(s)",
+            0,
+            $lastException
+        );
     }
 
     /**
