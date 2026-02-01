@@ -69,6 +69,9 @@ class ClickHouse extends SQL
     /** @var array<array{sql: string, params: array<string, mixed>, duration: float, timestamp: float, success: bool, error?: string}> Query execution log */
     private array $queryLog = [];
 
+    /** @var bool Whether to enable gzip compression for HTTP requests/responses */
+    private bool $enableCompression = false;
+
     /**
      * @param  string  $host  ClickHouse host
      * @param  string  $username  ClickHouse username (default: 'default')
@@ -136,6 +139,19 @@ class ClickHouse extends SQL
     public function enableQueryLogging(bool $enable = true): self
     {
         $this->enableQueryLogging = $enable;
+        return $this;
+    }
+
+    /**
+     * Enable or disable gzip compression for HTTP requests/responses.
+     * When enabled, responses from ClickHouse will be gzip-compressed, reducing bandwidth usage.
+     *
+     * @param bool $enable Whether to enable compression
+     * @return self
+     */
+    public function setCompression(bool $enable): self
+    {
+        $this->enableCompression = $enable;
         return $this;
     }
 
@@ -490,6 +506,11 @@ class ClickHouse extends SQL
         // Update the database header for each query (in case setDatabase was called)
         $this->client->addHeader('X-ClickHouse-Database', $this->database);
 
+        // Enable compression if configured
+        if ($this->enableCompression) {
+            $this->client->addHeader('Accept-Encoding', 'gzip');
+        }
+
         // Build multipart form data body with query and parameters
         // The Fetch client will automatically encode arrays as multipart/form-data
         $body = ['query' => $sql];
@@ -553,6 +574,11 @@ class ClickHouse extends SQL
         // Update the database header
         $this->client->addHeader('X-ClickHouse-Database', $this->database);
         $this->client->addHeader('Content-Type', 'application/x-ndjson');
+
+        // Enable compression if configured
+        if ($this->enableCompression) {
+            $this->client->addHeader('Accept-Encoding', 'gzip');
+        }
 
         // Join JSON strings with newlines
         $body = implode("\n", $data);

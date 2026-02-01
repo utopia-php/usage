@@ -539,4 +539,59 @@ class ClickHouseTest extends TestCase
         $adapter = new ClickHouseAdapter($host, $username, $password, $port);
         $adapter->setTimeout(600001); // Above maximum
     }
+
+    /**
+     * Test compression functionality
+     */
+    public function testCompression(): void
+    {
+        // Create a new adapter instance with compression enabled
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
+
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
+        $adapter->setNamespace('utopia_usage_compression_test');
+        $adapter->setTenant(1);
+
+        if ($database = getenv('CLICKHOUSE_DATABASE')) {
+            $adapter->setDatabase($database);
+        }
+
+        $usage = new Usage($adapter);
+        $usage->setup();
+
+        // Test enabling compression
+        $result = $adapter->setCompression(true);
+        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
+
+        // Test disabling compression
+        $result = $adapter->setCompression(false);
+        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
+
+        // Enable compression for all subsequent operations
+        $adapter->setCompression(true);
+
+        // Insert data using logBatch with compression enabled
+        $batchResult = $usage->logBatch([
+            ['metric' => 'compression.test.batch', 'value' => 50, 'period' => '1h', 'tags' => ['type' => 'batch']],
+            ['metric' => 'compression.test.batch', 'value' => 75, 'period' => '1h', 'tags' => ['type' => 'batch']],
+            ['metric' => 'compression.test.single', 'value' => 100, 'period' => '1h', 'tags' => ['type' => 'single']],
+        ]);
+        $this->assertTrue($batchResult);
+
+        // Verify find query works with compression (returns array)
+        $metrics = $usage->find([]);
+        $this->assertIsArray($metrics);
+
+        // Verify count query works with compression (returns int)
+        $count = $usage->count([]);
+        $this->assertIsInt($count);
+
+        // Verify sum operation works with compression (returns int)
+        $sum = $usage->sumByPeriod('compression.test.batch', '1h');
+        $this->assertIsInt($sum);
+    }
 }
