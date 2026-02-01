@@ -594,4 +594,60 @@ class ClickHouseTest extends TestCase
         $sum = $usage->sumByPeriod('compression.test.batch', '1h');
         $this->assertIsInt($sum);
     }
+
+    /**
+     * Test connection pooling functionality
+     */
+    public function testConnectionPooling(): void
+    {
+        // Create a new adapter instance
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
+
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
+        $adapter->setNamespace('utopia_usage_pooling_test');
+        $adapter->setTenant(1);
+
+        if ($database = getenv('CLICKHOUSE_DATABASE')) {
+            $adapter->setDatabase($database);
+        }
+
+        $usage = new Usage($adapter);
+        $usage->setup();
+
+        // Test enabling keep-alive
+        $result = $adapter->setKeepAlive(true);
+        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
+
+        // Test disabling keep-alive
+        $result = $adapter->setKeepAlive(false);
+        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
+
+        // Re-enable for testing
+        $adapter->setKeepAlive(true);
+
+        // Get initial stats
+        $stats = $adapter->getConnectionStats();
+        $this->assertIsArray($stats);
+        $this->assertArrayHasKey('request_count', $stats);
+        $this->assertArrayHasKey('keep_alive_enabled', $stats);
+        $this->assertArrayHasKey('compression_enabled', $stats);
+        $this->assertArrayHasKey('query_logging_enabled', $stats);
+        $this->assertTrue($stats['keep_alive_enabled']);
+
+        $initialCount = $stats['request_count'];
+
+        // Make some requests
+        $usage->log('pooling.test', 100, '1h', ['test' => 'value']);
+        $usage->find([]);
+        $usage->count([]);
+
+        // Verify request count increased
+        $newStats = $adapter->getConnectionStats();
+        $this->assertGreaterThan($initialCount, $newStats['request_count']);
+        $this->assertGreaterThanOrEqual(3, $newStats['request_count'] - $initialCount);
+    }
 }
