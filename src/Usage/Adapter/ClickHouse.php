@@ -150,6 +150,56 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Check ClickHouse connection health and get server information.
+     *
+     * @return array{healthy: bool, host: string, port: int, database: string, secure: bool, version?: string, uptime?: int, error?: string, response_time?: float}
+     */
+    public function healthCheck(): array
+    {
+        $startTime = microtime(true);
+        $result = [
+            'healthy' => false,
+            'host' => $this->host,
+            'port' => $this->port,
+            'database' => $this->database,
+            'secure' => $this->secure,
+        ];
+
+        try {
+            // Simple connectivity test
+            $response = $this->query('SELECT 1 as ping FORMAT JSON');
+            $json = json_decode($response, true);
+
+            if (!is_array($json) || !isset($json['data'][0]['ping'])) {
+                $result['error'] = 'Invalid response format';
+                return $result;
+            }
+
+            // Get server version and uptime
+            try {
+                $versionResponse = $this->query('SELECT version() as version, uptime() as uptime FORMAT JSON');
+                $versionJson = json_decode($versionResponse, true);
+
+                if (is_array($versionJson) && isset($versionJson['data'][0])) {
+                    $result['version'] = (string) $versionJson['data'][0]['version'];
+                    $result['uptime'] = (int) $versionJson['data'][0]['uptime'];
+                }
+            } catch (Exception $e) {
+                // Version info is optional, don't fail health check
+            }
+
+            $result['healthy'] = true;
+            $result['response_time'] = round(microtime(true) - $startTime, 3);
+
+            return $result;
+        } catch (Exception $e) {
+            $result['error'] = $e->getMessage();
+            $result['response_time'] = round(microtime(true) - $startTime, 3);
+            return $result;
+        }
+    }
+
+    /**
      * Validate host parameter.
      *
      * @param string $host
