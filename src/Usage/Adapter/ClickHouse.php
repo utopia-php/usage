@@ -989,16 +989,9 @@ class ClickHouse extends SQL
         $selectColumns = $this->getSelectColumns();
 
         // Build WHERE clause
-        $whereClause = '';
-        $tenantFilter = $this->getTenantFilter();
-        if (!empty($parsed['filters']) || $tenantFilter) {
-            $conditions = $parsed['filters'];
-            if ($tenantFilter) {
-                $conditions[] = ltrim($tenantFilter, ' AND');
-                $parsed['params']['tenant'] = $this->tenant;
-            }
-            $whereClause = ' WHERE ' . implode(' AND ', $conditions);
-        }
+        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+        $whereClause = $whereData['clause'];
+        $parsed['params'] = $whereData['params'];
 
         // Build ORDER BY clause
         $orderClause = '';
@@ -1050,25 +1043,14 @@ class ClickHouse extends SQL
         // Parse queries - we only need filters and params
         $parsed = $this->parseQueries($queries);
 
-        // Build WHERE clause
-        $whereClause = '';
-        $tenantFilter = $this->getTenantFilter();
-        if (!empty($parsed['filters']) || $tenantFilter) {
-            $conditions = $parsed['filters'];
-            if ($tenantFilter) {
-                $conditions[] = ltrim($tenantFilter, ' AND');
-            }
-            $whereClause = ' WHERE ' . implode(' AND ', $conditions);
-        }
-
-        // Remove limit and offset from params
+        // Remove limit and offset from params (not needed for count)
         $params = $parsed['params'];
         unset($params['limit'], $params['offset']);
 
-        // Add tenant param if filter is active
-        if ($tenantFilter) {
-            $params['tenant'] = $this->tenant;
-        }
+        // Build WHERE clause
+        $whereData = $this->buildWhereClause($parsed['filters'], $params);
+        $whereClause = $whereData['clause'];
+        $params = $whereData['params'];
 
         // Count from both tables
         $sql = "
@@ -1089,6 +1071,35 @@ class ClickHouse extends SQL
         }
 
         return (int) $json['data'][0]['total'];
+    }
+
+    /**
+     * Build WHERE clause from filters with optional tenant filtering.
+     *
+     * @param array<string> $filters SQL filter conditions
+     * @param array<string, mixed> $params Existing query parameters
+     * @param bool $includeTenant Whether to include tenant filter
+     * @return array{clause: string, params: array<string, mixed>}
+     */
+    private function buildWhereClause(array $filters, array $params = [], bool $includeTenant = true): array
+    {
+        $conditions = $filters;
+        $whereParams = $params;
+
+        if ($includeTenant) {
+            $tenantFilter = $this->getTenantFilter();
+            if ($tenantFilter) {
+                $conditions[] = ltrim($tenantFilter, ' AND');
+                $whereParams['tenant'] = $this->tenant;
+            }
+        }
+
+        $clause = !empty($conditions) ? ' WHERE ' . implode(' AND ', $conditions) : '';
+
+        return [
+            'clause' => $clause,
+            'params' => $whereParams
+        ];
     }
 
     /**
@@ -1493,6 +1504,59 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Sum metric values using Query objects.
+     * Sums from both aggregated and counter tables.
+     *
+     * @param array<Query> $queries
+     * @param string $attribute Attribute to sum (default: 'value')
+     * @return int
+     * @throws Exception
+     */
+    public function sum(array $queries = [], string $attribute = 'value'): int
+    {
+        $tableName = $this->getTableName();
+        $counterTableName = $this->getCounterTableName();
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $escapedCounterTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
+        // FINAL on both tables (SummingMergeTree and ReplacingMergeTree)
+        $fromTable = $escapedTable . ($this->useFinal ? ' FINAL' : '');
+        $fromCounterTable = $escapedCounterTable . ($this->useFinal ? ' FINAL' : '');
+
+        // Validate attribute name
+        $this->validateAttributeName($attribute);
+        $escapedAttribute = $this->escapeIdentifier($attribute);
+
+        // Parse queries
+        $parsed = $this->parseQueries($queries);
+
+        // Build WHERE clause
+        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+        $whereClause = $whereData['clause'];
+        $params = $whereData['params'];
+
+        // Sum from both tables
+        $sql = "
+            SELECT SUM(total) as grand_total
+            FROM (
+                SELECT sum({$escapedAttribute}) as total FROM {$fromTable}{$whereClause}
+                UNION ALL
+                SELECT sum({$escapedAttribute}) as total FROM {$fromCounterTable}{$whereClause}
+            )
+            FORMAT JSON
+        ";
+
+        $result = $this->query($sql, $params);
+
+        $json = json_decode($result, true);
+
+        if (!is_array($json) || !isset($json['data'][0]['grand_total'])) {
+            return 0;
+        }
+
+        return (int) $json['data'][0]['grand_total'];
+    }
+
+    /**
      * Count usage metrics by period.
      *
      * @param  array<int,Query>  $queries
@@ -1524,60 +1588,17 @@ class ClickHouse extends SQL
      */
     public function sumByPeriod(string $metric, string $period, array $queries = []): int
     {
-        $tableName = $this->getTableName();
-        $counterTableName = $this->getCounterTableName();
-        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        $escapedCounterTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
-        // FINAL on both tables (SummingMergeTree and ReplacingMergeTree)
-        $fromTable = $escapedTable . ($this->useFinal ? ' FINAL' : '');
-        $fromCounterTable = $escapedCounterTable . ($this->useFinal ? ' FINAL' : '');
-
-        // Build query constraints
         $allQueries = [
             Query::equal('metric', [$metric]),
             Query::equal('period', [$period]),
         ];
 
+        // Add custom queries
         foreach ($queries as $query) {
             $allQueries[] = $query;
         }
 
-        $parsed = $this->parseQueries($allQueries);
-
-        // Build WHERE clause
-        $whereClause = '';
-        $tenantFilter = $this->getTenantFilter();
-        if (!empty($parsed['filters']) || $tenantFilter) {
-            $conditions = $parsed['filters'];
-            if ($tenantFilter) {
-                $conditions[] = ltrim($tenantFilter, ' AND');
-                // Add tenant param
-                $parsed['params']['tenant'] = $this->tenant;
-            }
-            $whereClause = ' WHERE ' . implode(' AND ', $conditions);
-        }
-
-        // Sum from both tables
-        $sql = "
-            SELECT SUM(total) as grand_total
-            FROM (
-                SELECT sum(value) as total FROM {$fromTable}{$whereClause}
-                UNION ALL
-                SELECT sum(value) as total FROM {$fromCounterTable}{$whereClause}
-            )
-
-            FORMAT JSON
-        ";
-
-        $result = $this->query($sql, $parsed['params']);
-
-        $json = json_decode($result, true);
-
-        if (!is_array($json) || !isset($json['data'][0]['grand_total'])) {
-            return 0;
-        }
-
-        return (int) $json['data'][0]['grand_total'];
+        return $this->sum($allQueries);
     }
 
     /**
