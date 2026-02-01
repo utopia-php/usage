@@ -756,4 +756,41 @@ class ClickHouseTest extends TestCase
         $count = $usage->count([]);
         $this->assertIsInt($count);
     }
+
+    /**
+     * Test error messages include operation context
+     */
+    public function testErrorMessagesIncludeContext(): void
+    {
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
+
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
+        $adapter->setNamespace('utopia_usage_error_test');
+        $adapter->setDatabase('nonexistent_db_for_testing_errors_12345');
+        $adapter->setTenant(1);
+        $adapter->setMaxRetries(0); // Disable retries for faster test
+
+        $usage = new Usage($adapter);
+
+        try {
+            // This should fail because database doesn't exist
+            $usage->find([]);
+            $this->fail('Expected exception was not thrown');
+        } catch (\Exception $e) {
+            $errorMessage = $e->getMessage();
+
+            // Verify error message includes operation context
+            $this->assertStringContainsString('Operation: find()', $errorMessage, 'Error should include operation context');
+
+            // Verify error message includes query information
+            $this->assertStringContainsString('Query:', $errorMessage, 'Error should include query information');
+
+            // Verify error includes actual error details
+            $this->assertStringContainsString('ClickHouse', $errorMessage, 'Error should mention ClickHouse');
+        }
+    }
 }

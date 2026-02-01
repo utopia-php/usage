@@ -84,6 +84,9 @@ class ClickHouse extends SQL
     /** @var int Initial retry delay in milliseconds (doubles with each retry) */
     private int $retryDelay = 100;
 
+    /** @var string|null Current operation context for better error messages */
+    private ?string $operationContext = null;
+
     /**
      * @param  string  $host  ClickHouse host
      * @param  string  $username  ClickHouse username (default: 'default')
@@ -266,6 +269,8 @@ class ClickHouse extends SQL
      */
     public function healthCheck(): array
     {
+        $this->setOperationContext('healthCheck()');
+
         $startTime = microtime(true);
         $result = [
             'healthy' => false,
@@ -603,6 +608,49 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Set the current operation context for better error messages.
+     *
+     * @param string|null $context Operation context (e.g., "find()", "log()", "setup()")
+     * @return void
+     */
+    private function setOperationContext(?string $context): void
+    {
+        $this->operationContext = $context;
+    }
+
+    /**
+     * Build a contextual error message with operation, table, and query info.
+     *
+     * @param string $baseMessage The base error message
+     * @param string|null $table Table name if applicable
+     * @param string|null $sql SQL query (will be truncated if too long)
+     * @return string Enhanced error message with context
+     */
+    private function buildErrorMessage(string $baseMessage, ?string $table = null, ?string $sql = null): string
+    {
+        $parts = [];
+
+        if ($this->operationContext !== null) {
+            $parts[] = "Operation: {$this->operationContext}";
+        }
+
+        if ($table !== null) {
+            $parts[] = "Table: {$table}";
+        }
+
+        if ($sql !== null) {
+            // Truncate SQL if too long (keep first 200 chars)
+            $truncatedSql = strlen($sql) > 200 ? substr($sql, 0, 200) . '...' : $sql;
+            // Normalize whitespace for readability
+            $truncatedSql = preg_replace('/\s+/', ' ', $truncatedSql);
+            $parts[] = "Query: {$truncatedSql}";
+        }
+
+        $context = !empty($parts) ? ' [' . implode(', ', $parts) . ']' : '';
+        return $baseMessage . $context;
+    }
+
+    /**
      * Execute a ClickHouse query via HTTP interface using Fetch Client.
      *
      * Uses ClickHouse query parameters (sent as POST multipart form data) to prevent SQL injection.
@@ -670,11 +718,12 @@ class ClickHouse extends SQL
                     $bodyStr = $response->getBody();
                     $bodyStr = is_string($bodyStr) ? $bodyStr : '';
                     $duration = microtime(true) - $startTime;
-                    $errorMsg = "ClickHouse query failed with HTTP {$httpCode}: {$bodyStr}";
+                    $baseError = "ClickHouse query failed with HTTP {$httpCode}: {$bodyStr}";
+                    $errorMsg = $this->buildErrorMessage($baseError, null, $sql);
                     $this->logQuery($sql, $params, $duration, false, $errorMsg, $attempt);
 
                     // Check if error is retryable
-                    if ($attempt < $this->maxRetries && $this->isRetryableError($httpCode, $errorMsg)) {
+                    if ($attempt < $this->maxRetries && $this->isRetryableError($httpCode, $baseError)) {
                         $attempt++;
                         $delay = $this->retryDelay * (2 ** ($attempt - 1)); // Exponential backoff
                         usleep($delay * 1000); // Convert ms to microseconds
@@ -703,20 +752,16 @@ class ClickHouse extends SQL
                 }
 
                 // Preserve the original exception context for better debugging
-                throw new Exception(
-                    "ClickHouse query execution failed after " . ($attempt + 1) . " attempt(s): {$e->getMessage()}",
-                    0,
-                    $e
-                );
+                $baseError = "ClickHouse query execution failed after " . ($attempt + 1) . " attempt(s): {$e->getMessage()}";
+                $errorMsg = $this->buildErrorMessage($baseError, null, $sql);
+                throw new Exception($errorMsg, 0, $e);
             }
         }
 
         // Should never reach here, but just in case
-        throw new Exception(
-            "ClickHouse query execution failed after " . ($this->maxRetries + 1) . " attempt(s)",
-            0,
-            $lastException
-        );
+        $baseError = "ClickHouse query execution failed after " . ($this->maxRetries + 1) . " attempt(s)";
+        $errorMsg = $this->buildErrorMessage($baseError, null, $sql);
+        throw new Exception($errorMsg, 0, $lastException);
     }
 
     /**
@@ -783,14 +828,16 @@ class ClickHouse extends SQL
                     $bodyStr = $response->getBody();
                     $bodyStr = is_string($bodyStr) ? $bodyStr : '';
                     $duration = microtime(true) - $startTime;
-                    $errorMsg = "ClickHouse insert failed with HTTP {$httpCode}: {$bodyStr}";
+                    $rowCount = count($data);
+                    $baseError = "ClickHouse insert failed with HTTP {$httpCode}: {$bodyStr}";
+                    $errorMsg = $this->buildErrorMessage($baseError, $table, "INSERT INTO {$table} ({$rowCount} rows)");
                     $this->logQuery($sql, $params, $duration, false, $errorMsg, $attempt);
 
                     // Clean up Content-Type before retry
                     $this->client->removeHeader('Content-Type');
 
                     // Check if error is retryable
-                    if ($attempt < $this->maxRetries && $this->isRetryableError($httpCode, $errorMsg)) {
+                    if ($attempt < $this->maxRetries && $this->isRetryableError($httpCode, $baseError)) {
                         $attempt++;
                         $delay = $this->retryDelay * (2 ** ($attempt - 1)); // Exponential backoff
                         usleep($delay * 1000); // Convert ms to microseconds
@@ -822,20 +869,18 @@ class ClickHouse extends SQL
                     continue;
                 }
 
-                throw new Exception(
-                    "ClickHouse insert execution failed after " . ($attempt + 1) . " attempt(s): {$e->getMessage()}",
-                    0,
-                    $e
-                );
+                $rowCount = count($data);
+                $baseError = "ClickHouse insert execution failed after " . ($attempt + 1) . " attempt(s): {$e->getMessage()}";
+                $errorMsg = $this->buildErrorMessage($baseError, $table, "INSERT INTO {$table} ({$rowCount} rows)");
+                throw new Exception($errorMsg, 0, $e);
             }
         }
 
         // Should never reach here, but just in case
-        throw new Exception(
-            "ClickHouse insert execution failed after " . ($this->maxRetries + 1) . " attempt(s)",
-            0,
-            $lastException
-        );
+        $rowCount = count($data);
+        $baseError = "ClickHouse insert execution failed after " . ($this->maxRetries + 1) . " attempt(s)";
+        $errorMsg = $this->buildErrorMessage($baseError, $table, "INSERT INTO {$table} ({$rowCount} rows)");
+        throw new Exception($errorMsg, 0, $lastException);
     }
 
     /**
@@ -888,6 +933,8 @@ class ClickHouse extends SQL
      */
     public function setup(): void
     {
+        $this->setOperationContext('setup()');
+
         // Create database if not exists
         $escapedDatabase = $this->escapeIdentifier($this->database);
         $createDbSql = "CREATE DATABASE IF NOT EXISTS {$escapedDatabase}";
@@ -1175,6 +1222,8 @@ class ClickHouse extends SQL
             return true;
         }
 
+        $this->setOperationContext('logBatchCounter()');
+
         // Validate all metrics before processing
         $this->validateMetricsBatch($metrics);
 
@@ -1275,6 +1324,8 @@ class ClickHouse extends SQL
         if (empty($metrics)) {
             return true;
         }
+
+        $this->setOperationContext('logBatch()');
 
         // Validate all metrics before processing
         $this->validateMetricsBatch($metrics);
@@ -1393,6 +1444,8 @@ class ClickHouse extends SQL
      */
     public function find(array $queries = []): array
     {
+        $this->setOperationContext('find()');
+
         // Get table references with FINAL clause
         $fromTable = $this->buildTableReference($this->getTableName());
         $fromCounterTable = $this->buildTableReference($this->getCounterTableName());
@@ -1447,6 +1500,8 @@ class ClickHouse extends SQL
      */
     public function count(array $queries = []): int
     {
+        $this->setOperationContext('count()');
+
         // Get table references with FINAL clause
         $fromTable = $this->buildTableReference($this->getTableName());
         $fromCounterTable = $this->buildTableReference($this->getCounterTableName());
@@ -1925,6 +1980,8 @@ class ClickHouse extends SQL
      */
     public function sum(array $queries = [], string $attribute = 'value'): int
     {
+        $this->setOperationContext('sum()');
+
         // Get table references with FINAL clause
         $fromTable = $this->buildTableReference($this->getTableName());
         $fromCounterTable = $this->buildTableReference($this->getCounterTableName());
@@ -2016,6 +2073,8 @@ class ClickHouse extends SQL
      */
     public function purge(string $datetime): bool
     {
+        $this->setOperationContext('purge()');
+
         $tableName = $this->getTableName();
         $counterTableName = $this->getCounterTableName();
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
