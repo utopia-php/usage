@@ -350,6 +350,20 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Build a fully qualified table reference with database, escaping, and optional FINAL clause.
+     *
+     * @param string $tableName The table name (with namespace already applied)
+     * @param bool $useFinal Whether to append FINAL clause (defaults to adapter's useFinal setting)
+     * @return string Fully qualified table reference
+     */
+    private function buildTableReference(string $tableName, ?bool $useFinal = null): string
+    {
+        $useFinal = $useFinal ?? $this->useFinal;
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        return $escapedTable . ($useFinal ? ' FINAL' : '');
+    }
+
+    /**
      * Log a query execution for debugging purposes.
      *
      * @param string $sql SQL query executed
@@ -1064,13 +1078,9 @@ class ClickHouse extends SQL
      */
     public function find(array $queries = []): array
     {
-        $tableName = $this->getTableName();
-        $counterTableName = $this->getCounterTableName();
-        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        $escapedCounterTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
-        // FINAL on both tables (SummingMergeTree and ReplacingMergeTree)
-        $fromTable = $escapedTable . ($this->useFinal ? ' FINAL' : '');
-        $fromCounterTable = $escapedCounterTable . ($this->useFinal ? ' FINAL' : '');
+        // Get table references with FINAL clause
+        $fromTable = $this->buildTableReference($this->getTableName());
+        $fromCounterTable = $this->buildTableReference($this->getCounterTableName());
 
         // Parse queries
         $parsed = $this->parseQueries($queries);
@@ -1122,13 +1132,9 @@ class ClickHouse extends SQL
      */
     public function count(array $queries = []): int
     {
-        $tableName = $this->getTableName();
-        $counterTableName = $this->getCounterTableName();
-        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        $escapedCounterTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
-        // FINAL on both tables (SummingMergeTree and ReplacingMergeTree)
-        $fromTable = $escapedTable . ($this->useFinal ? ' FINAL' : '');
-        $fromCounterTable = $escapedCounterTable . ($this->useFinal ? ' FINAL' : '');
+        // Get table references with FINAL clause
+        $fromTable = $this->buildTableReference($this->getTableName());
+        $fromCounterTable = $this->buildTableReference($this->getCounterTableName());
 
         // Parse queries - we only need filters and params
         $parsed = $this->parseQueries($queries);
@@ -1604,13 +1610,9 @@ class ClickHouse extends SQL
      */
     public function sum(array $queries = [], string $attribute = 'value'): int
     {
-        $tableName = $this->getTableName();
-        $counterTableName = $this->getCounterTableName();
-        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        $escapedCounterTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
-        // FINAL on both tables (SummingMergeTree and ReplacingMergeTree)
-        $fromTable = $escapedTable . ($this->useFinal ? ' FINAL' : '');
-        $fromCounterTable = $escapedCounterTable . ($this->useFinal ? ' FINAL' : '');
+        // Get table references with FINAL clause
+        $fromTable = $this->buildTableReference($this->getTableName());
+        $fromCounterTable = $this->buildTableReference($this->getCounterTableName());
 
         // Validate attribute name
         $this->validateAttributeName($attribute);
