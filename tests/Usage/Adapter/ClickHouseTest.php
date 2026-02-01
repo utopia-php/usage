@@ -79,8 +79,8 @@ class ClickHouseTest extends TestCase
     }
 
     /**
-    * Test logBatch with explicit batch size parameter
-    */
+     * Test logBatch with explicit batch size parameter
+     */
     public function testLogBatchWithBatchSize(): void
     {
         $metrics = [

@@ -1009,17 +1009,21 @@ class ClickHouse extends SQL
         $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
 
         // Query both tables with UNION ALL
+        // Wrap in subquery to ensure ORDER BY, LIMIT, OFFSET apply to the entire UNION result
         $sql = "
-            SELECT {$selectColumns}
-            FROM {$fromTable}{$whereClause}
-            UNION ALL
-            SELECT {$selectColumns}
-            FROM {$fromCounterTable}{$whereClause}
-            {$orderClause}{$limitClause}{$offsetClause}
+            SELECT *
+            FROM (
+                SELECT {$selectColumns}
+                FROM {$fromTable}{$whereClause}
+                UNION ALL
+                SELECT {$selectColumns}
+                FROM {$fromCounterTable}{$whereClause}
+            ){$orderClause}{$limitClause}{$offsetClause}
             FORMAT JSON
         ";
 
         $result = $this->query($sql, $parsed['params']);
+
         return $this->parseResults($result);
     }
 
@@ -1351,6 +1355,9 @@ class ClickHouse extends SQL
             foreach ($row as $key => $value) {
                 if ($key === 'tenant') {
                     // Parse tenant
+                    $document[$key] = $value !== null ? (int) $value : null;
+                } elseif ($key === 'value') {
+                    // Parse value as integer
                     $document[$key] = $value !== null ? (int) $value : null;
                 } elseif ($key === 'time') {
                     // Time comes as string in JSON format, convert to ISO 8601 if needed
