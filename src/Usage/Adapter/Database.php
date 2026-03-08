@@ -98,39 +98,7 @@ class Database extends SQL
         return '';
     }
 
-    public function log(string $metric, int $value, string $period = '1h', array $tags = []): bool
-    {
-        if (! isset(Usage::PERIODS[$period])) {
-            throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
-        }
-
-        $now = new \DateTime();
-        $time = $period === 'inf'
-            ? null
-            : $now->format(Usage::PERIODS[$period]);
-
-        // Sort tags for consistent storage
-        ksort($tags);
-        $id = $this->buildDeterministicId($metric, $period, $time);
-
-        $this->db->getAuthorization()->skip(function () use ($metric, $value, $period, $time, $tags, $id) {
-            $doc = new Document([
-                '$id' => $id,
-                '$permissions' => [],
-                'metric' => $metric,
-                'value' => $value,
-                'period' => $period,
-                'time' => $time,
-                'tags' => $tags,
-            ]);
-
-            $this->db->upsertDocumentsWithIncrease($this->collection, 'value', [$doc]);
-        });
-
-        return true;
-    }
-
-    public function logBatch(array $metrics, int $batchSize = 1000): bool
+    public function incrementBatch(array $metrics, int $batchSize = 1000): bool
     {
         $this->db->getAuthorization()->skip(function () use ($metrics) {
             $documentsById = [];
@@ -180,52 +148,15 @@ class Database extends SQL
     }
 
     /**
-     * Log usage counter metric (upserts document, replaces if ID matches).
+     * Set metrics in batch (replace upsert).
      *
-     * @param  array<string,mixed>  $tags
-     * @return bool
-     * @throws Exception
-     */
-    public function logCounter(string $metric, int $value, string $period = '1h', array $tags = []): bool
-    {
-        if (! isset(Usage::PERIODS[$period])) {
-            throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
-        }
-
-        $now = new \DateTime();
-        $time = $period === 'inf'
-            ? null
-            : $now->format(Usage::PERIODS[$period]);
-
-        // Sort tags for consistent storage
-        ksort($tags);
-        $id = $this->buildDeterministicId($metric, $period, $time);
-
-        $this->db->getAuthorization()->skip(function () use ($metric, $value, $period, $time, $tags, $id) {
-            $doc = new Document([
-                '$id' => $id,
-                '$permissions' => [],
-                'metric' => $metric,
-                'value' => $value,
-                'period' => $period,
-                'time' => $time,
-                'tags' => $tags,
-            ]);
-
-            $this->db->upsertDocument($this->collection, $doc);
-        });
-
-        return true;
-    }
-
-    /**
-     * Log multiple usage counter metrics in batch (upserts documents, replaces if ID matches).
+     * Values with the same deterministic ID are replaced (last write wins).
      *
      * @param array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}> $metrics
      * @return bool
      * @throws Exception
      */
-    public function logBatchCounter(array $metrics, int $batchSize = 1000): bool
+    public function setBatch(array $metrics, int $batchSize = 1000): bool
     {
         $this->db->getAuthorization()->skip(function () use ($metrics) {
             $documentsById = [];
@@ -428,11 +359,27 @@ class Database extends SQL
     public function purge(string $datetime): bool
     {
         $this->db->getAuthorization()->skip(function () use ($datetime) {
+            // Purge documents with time < datetime
             do {
                 $documents = $this->db->find(
                     collection: $this->collection,
                     queries: [
                         DatabaseQuery::lessThan('time', $datetime),
+                        DatabaseQuery::limit(100),
+                    ]
+                );
+
+                foreach ($documents as $document) {
+                    $this->db->deleteDocument($this->collection, $document->getId());
+                }
+            } while (! empty($documents));
+
+            // Purge inf-period documents (time=null, not matched by time < datetime)
+            do {
+                $documents = $this->db->find(
+                    collection: $this->collection,
+                    queries: [
+                        DatabaseQuery::isNull('time'),
                         DatabaseQuery::limit(100),
                     ]
                 );
@@ -521,7 +468,7 @@ class Database extends SQL
      */
     public function setSharedTables(bool $sharedTables): self
     {
-        $this->setSharedTables($sharedTables);
+        $this->db->setSharedTables($sharedTables);
         return $this;
     }
 }

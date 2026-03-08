@@ -10,6 +10,62 @@ abstract class Adapter
     abstract public function getName(): string;
 
     /**
+     * Increment a metric across all periods (1h, 1d, inf).
+     *
+     * Uses additive upsert semantics: if a row with the same deterministic ID exists,
+     * the value is added to the existing value (SummingMergeTree in ClickHouse,
+     * upsertDocumentsWithIncrease in Database).
+     *
+     * @param string $metric Metric name
+     * @param int $value Value to add (must be positive)
+     * @param array<string,mixed> $tags Optional tags
+     * @return bool
+     * @throws \Exception
+     */
+    public function increment(string $metric, int $value, array $tags = []): bool
+    {
+        $metrics = [];
+        foreach (array_keys(Usage::PERIODS) as $period) {
+            $metrics[] = [
+                'metric' => $metric,
+                'value' => $value,
+                'period' => $period,
+                'tags' => $tags,
+            ];
+        }
+
+        return $this->incrementBatch($metrics);
+    }
+
+    /**
+     * Set a metric to an absolute value across all periods (1h, 1d, inf).
+     *
+     * Uses replace upsert semantics: if a row with the same deterministic ID exists,
+     * the value replaces the existing value (ReplacingMergeTree in ClickHouse,
+     * upsertDocuments in Database).
+     *
+     * @param string $metric Metric name
+     * @param int $value Absolute value to set
+     * @param array<string,mixed> $tags Optional tags
+     * @return bool
+     * @throws \Exception
+     */
+    public function set(string $metric, int $value, array $tags = []): bool
+    {
+        $metrics = [];
+        foreach (array_keys(Usage::PERIODS) as $period) {
+            $metrics[] = [
+                'metric' => $metric,
+                'value' => $value,
+                'period' => $period,
+                'tags' => $tags,
+            ];
+        }
+
+        return $this->setBatch($metrics);
+    }
+
+    /**
      * Check adapter health and connection status
      *
      * @return array<string, mixed> Health check result with 'healthy' bool and additional adapter-specific information
@@ -22,34 +78,26 @@ abstract class Adapter
     abstract public function setup(): void;
 
     /**
-     * Log usage metric
+     * Increment metrics in batch (additive upsert).
      *
-     * @param  array<string,mixed>  $tags
-     */
-    abstract public function log(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool;
-
-    /**
-     * Log multiple metrics in batch
+     * Values with the same deterministic ID are summed together
+     * (SummingMergeTree in ClickHouse, upsertDocumentsWithIncrease in Database).
      *
      * @param  array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}>  $metrics
      * @param  int  $batchSize  Maximum number of metrics per INSERT statement
      */
-    abstract public function logBatch(array $metrics, int $batchSize = 1000): bool;
+    abstract public function incrementBatch(array $metrics, int $batchSize = 1000): bool;
 
     /**
-     * Log usage counter metric (individual entry without aggregation)
+     * Set metrics in batch (replace upsert).
      *
-     * @param  array<string,mixed>  $tags
-     */
-    abstract public function logCounter(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool;
-
-    /**
-     * Log multiple counter metrics in batch (individual entries without aggregation)
+     * Values with the same deterministic ID are replaced (last write wins)
+     * (ReplacingMergeTree in ClickHouse, upsertDocuments in Database).
      *
      * @param  array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}>  $metrics
      * @param  int  $batchSize  Maximum number of metrics per INSERT statement
      */
-    abstract public function logBatchCounter(array $metrics, int $batchSize = 1000): bool;
+    abstract public function setBatch(array $metrics, int $batchSize = 1000): bool;
 
     /**
      * Get usage metrics by period

@@ -25,22 +25,33 @@ trait UsageBase
 
     public function createUsageMetrics(): void
     {
-        $this->assertTrue($this->usage->log('requests', 100, '1h', ['region' => 'us-east']));
-        $this->assertTrue($this->usage->log('requests', 150, '1h', ['region' => 'us-west']));
-        $this->assertTrue($this->usage->log('requests', 200, '1d', ['region' => 'us-east']));
-        $this->assertTrue($this->usage->log('bandwidth', 5000, '1h', ['region' => 'us-east']));
-        $this->assertTrue($this->usage->log('storage', 10000, 'inf', ['region' => 'us-east']));
+        $this->assertTrue($this->usage->increment('requests', 100, ['region' => 'us-east']));
+        $this->assertTrue($this->usage->increment('requests', 150, ['region' => 'us-west']));
+        $this->assertTrue($this->usage->increment('bandwidth', 5000, ['region' => 'us-east']));
+        $this->assertTrue($this->usage->increment('storage', 10000, ['region' => 'us-east']));
     }
 
-    public function testLogUsage(): void
+    public function testIncrement(): void
     {
-        $result = $this->usage->log('test-metric', 42, '1h', ['foo' => 'bar']);
-        $this->assertTrue($result);
+        $this->usage->purge(DateTime::now());
+
+        // increment() should auto fan-out to all 3 periods
+        $this->assertTrue($this->usage->increment('inc-metric', 10));
+        $this->assertTrue($this->usage->increment('inc-metric', 5));
+
+        // All periods should have the summed value (10 + 5 = 15)
+        $sum1h = $this->usage->sumByPeriod('inc-metric', '1h');
+        $sum1d = $this->usage->sumByPeriod('inc-metric', '1d');
+        $sumInf = $this->usage->sumByPeriod('inc-metric', 'inf');
+
+        $this->assertEquals(15, $sum1h);
+        $this->assertEquals(15, $sum1d);
+        $this->assertEquals(15, $sumInf);
     }
 
-    public function testLogBatch(): void
+    public function testIncrementBatch(): void
     {
-        // First cleanup existing logs
+        // First cleanup existing data
         $this->usage->purge(DateTime::now());
 
         $metrics = [
@@ -64,7 +75,7 @@ trait UsageBase
             ],
         ];
 
-        $this->assertTrue($this->usage->logBatch($metrics));
+        $this->assertTrue($this->usage->incrementBatch($metrics));
 
         $results = $this->usage->getByPeriod('batch-requests', '1h');
         // Aggregated by deterministic id/hash, entries with same metric/period/time merge
@@ -74,12 +85,10 @@ trait UsageBase
     public function testGetByPeriod(): void
     {
         $results1h = $this->usage->getByPeriod('requests', '1h');
-        $results1d = $this->usage->getByPeriod('requests', '1d');
         $resultsInf = $this->usage->getByPeriod('storage', 'inf');
 
         // SummingMergeTree / upsert-with-increase aggregates by deterministic id
         $this->assertEquals(1, count($results1h));
-        $this->assertEquals(1, count($results1d));
         $this->assertEquals(1, count($resultsInf));
     }
 
@@ -95,12 +104,10 @@ trait UsageBase
     public function testCountByPeriod(): void
     {
         $count1h = $this->usage->countByPeriod('requests', '1h');
-        $count1d = $this->usage->countByPeriod('requests', '1d');
         $countBandwidth = $this->usage->countByPeriod('bandwidth', '1h');
 
-        // Aggregated by deterministic id: multiple logs in same period/time collapse
+        // Aggregated by deterministic id: multiple increments in same period/time collapse
         $this->assertEquals(1, $count1h);
-        $this->assertEquals(1, $count1d);
         $this->assertEquals(1, $countBandwidth);
     }
 
@@ -118,10 +125,10 @@ trait UsageBase
         // Ensure clean state
         $this->usage->purge(\Utopia\Database\DateTime::now());
 
-        // Log the same metric twice with identical period and tags
-        $this->assertTrue($this->usage->log('increment-test', 5, '1h', []));
-        $this->assertTrue($this->usage->log('increment-test', 7, '1h', []));
-        // Because adapters now aggregate by deterministic id/time/period (and tenant where applicable),
+        // Increment the same metric twice
+        $this->assertTrue($this->usage->increment('increment-test', 5));
+        $this->assertTrue($this->usage->increment('increment-test', 7));
+        // Because adapters aggregate by deterministic id/time/period (and tenant where applicable),
         // there should be a single record and the summed value should be 12.
         $results = $this->usage->getByPeriod('increment-test', '1h');
         $this->assertEquals(1, count($results));
@@ -199,7 +206,7 @@ trait UsageBase
         sleep(2);
 
         // Add a metric
-        $this->usage->log('purge-test', 999, '1h');
+        $this->usage->increment('purge-test', 999);
 
         // Wait a bit
         sleep(2);
@@ -211,12 +218,6 @@ trait UsageBase
         // Verify metrics were purged
         $results = $this->usage->getByPeriod('purge-test', '1h');
         $this->assertEquals(0, count($results));
-    }
-
-    public function testInvalidPeriod(): void
-    {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->usage->log('test', 100, 'invalid-period');
     }
 
     public function testPeriodFormats(): void
@@ -232,160 +233,185 @@ trait UsageBase
         $this->assertEquals('0000-00-00 00:00', $periods['inf']);
     }
 
-    public function testLogCounter(): void
+    public function testSet(): void
     {
-        // Clear existing data
         $this->usage->purge(DateTime::now());
 
-        $result = $this->usage->logCounter('counter-metric', 42, '1h', ['foo' => 'bar']);
-        $this->assertTrue($result);
+        // set() should auto fan-out to all 3 periods with replace semantics
+        $this->assertTrue($this->usage->set('set-metric', 100));
+        $this->assertTrue($this->usage->set('set-metric', 200));
 
-        $results = $this->usage->getByPeriod('counter-metric', '1h');
-        $this->assertEquals(1, count($results));
-    }
+        // All periods should have the last value (200), not summed
+        $sum1h = $this->usage->sumByPeriod('set-metric', '1h');
+        $sum1d = $this->usage->sumByPeriod('set-metric', '1d');
+        $sumInf = $this->usage->sumByPeriod('set-metric', 'inf');
 
-    public function testCounterMetricsReplaceOnDuplicate(): void
-    {
-        // Clear existing data
-        $this->usage->purge(DateTime::now());
-
-        // Log the same counter metric twice
-        $this->assertTrue($this->usage->logCounter('counter-replace-test', 10, '1h', []));
-        $this->assertTrue($this->usage->logCounter('counter-replace-test', 20, '1h', []));
-
-        // Counter should have the last value (20), not aggregated (30)
-        $results = $this->usage->getByPeriod('counter-replace-test', '1h');
-        $this->assertEquals(1, count($results));
-
-        $sum = $this->usage->sumByPeriod('counter-replace-test', '1h');
-        $this->assertEquals(20, $sum);
-    }
-
-    public function testLogBatchCounter(): void
-    {
-        // Clear existing data
-        $this->usage->purge(DateTime::now());
-
-        $metrics = [
-            [
-                'metric' => 'batch-counter-1',
-                'value' => 100,
-                'period' => '1h',
-                'tags' => ['region' => 'eu-west'],
-            ],
-            [
-                'metric' => 'batch-counter-2',
-                'value' => 200,
-                'period' => '1d',
-                'tags' => ['region' => 'eu-east'],
-            ],
-            [
-                'metric' => 'batch-counter-3',
-                'value' => 300,
-                'period' => 'inf',
-                'tags' => ['region' => 'us-west'],
-            ],
-        ];
-
-        $this->assertTrue($this->usage->logBatchCounter($metrics));
-
-        // Each metric should be stored as individual entry (counter, no aggregation)
-        $results1h = $this->usage->getByPeriod('batch-counter-1', '1h');
-        $results1d = $this->usage->getByPeriod('batch-counter-2', '1d');
-        $resultsInf = $this->usage->getByPeriod('batch-counter-3', 'inf');
-
-        $this->assertEquals(1, count($results1h));
-        $this->assertEquals(1, count($results1d));
-        $this->assertEquals(1, count($resultsInf));
-    }
-
-    public function testDifferenceBetweenAggregatedAndCounter(): void
-    {
-        // Clear existing data
-        $this->usage->purge(DateTime::now());
-
-        // Log same metric 3 times using aggregated (logBatch)
-        $this->assertTrue($this->usage->log('agg-vs-counter', 10, '1h', []));
-        $this->assertTrue($this->usage->log('agg-vs-counter', 20, '1h', []));
-        $this->assertTrue($this->usage->log('agg-vs-counter', 30, '1h', []));
-
-        $aggSum = $this->usage->sumByPeriod('agg-vs-counter', '1h');
-        $aggCount = $this->usage->countByPeriod('agg-vs-counter', '1h');
-
-        // Clear for counter test
-        $this->usage->purge(DateTime::now());
-
-        // Log same counter metric 3 times (last one wins)
-        $this->assertTrue($this->usage->logCounter('counter-vs-agg', 10, '1h', []));
-        $this->assertTrue($this->usage->logCounter('counter-vs-agg', 20, '1h', []));
-        $this->assertTrue($this->usage->logCounter('counter-vs-agg', 30, '1h', []));
-
-        $counterSum = $this->usage->sumByPeriod('counter-vs-agg', '1h');
-        $counterCount = $this->usage->countByPeriod('counter-vs-agg', '1h');
-
-        // Aggregated: sums to 60 (10 + 20 + 30)
-        $this->assertEquals(60, $aggSum);
-        // Counter: only has last value (30)
-        $this->assertEquals(30, $counterSum);
-    }
-
-    public function testBatchCounterWithMultiplePeriods(): void
-    {
-        // Clear existing data
-        $this->usage->purge(DateTime::now());
-
-        $metrics = [
-            ['metric' => 'multi-period-counter', 'value' => 100, 'period' => '1h', 'tags' => []],
-            ['metric' => 'multi-period-counter', 'value' => 200, 'period' => '1d', 'tags' => []],
-            ['metric' => 'multi-period-counter', 'value' => 300, 'period' => 'inf', 'tags' => []],
-        ];
-
-        $this->assertTrue($this->usage->logBatchCounter($metrics));
-
-        // Each period should have independent counter value
-        $sum1h = $this->usage->sumByPeriod('multi-period-counter', '1h');
-        $sum1d = $this->usage->sumByPeriod('multi-period-counter', '1d');
-        $sumInf = $this->usage->sumByPeriod('multi-period-counter', 'inf');
-
-        $this->assertEquals(100, $sum1h);
+        $this->assertEquals(200, $sum1h);
         $this->assertEquals(200, $sum1d);
+        $this->assertEquals(200, $sumInf);
+    }
+
+    public function testCollectAndFlush(): void
+    {
+        $this->usage->purge(DateTime::now());
+
+        // collect() accumulates in memory, nothing written yet
+        $this->usage->collect('collect-metric', 10);
+        $this->usage->collect('collect-metric', 20);
+        $this->usage->collect('collect-metric', 30);
+
+        // Buffer should have accumulated values
+        $this->assertEquals(3, $this->usage->getBufferCount());
+        // 3 periods per metric, all collapsed to same key = 3 entries
+        $this->assertEquals(3, $this->usage->getBufferSize());
+
+        // Nothing in storage yet
+        $sum = $this->usage->sumByPeriod('collect-metric', '1h');
+        $this->assertEquals(0, $sum);
+
+        // Flush writes to storage
+        $this->assertTrue($this->usage->flush());
+
+        // Buffer should be empty after flush
+        $this->assertEquals(0, $this->usage->getBufferCount());
+        $this->assertEquals(0, $this->usage->getBufferSize());
+
+        // Storage should have accumulated value (10 + 20 + 30 = 60)
+        $sum1h = $this->usage->sumByPeriod('collect-metric', '1h');
+        $sum1d = $this->usage->sumByPeriod('collect-metric', '1d');
+        $sumInf = $this->usage->sumByPeriod('collect-metric', 'inf');
+
+        $this->assertEquals(60, $sum1h);
+        $this->assertEquals(60, $sum1d);
+        $this->assertEquals(60, $sumInf);
+    }
+
+    public function testCollectMultipleMetrics(): void
+    {
+        $this->usage->purge(DateTime::now());
+
+        $this->usage->collect('metric-a', 10);
+        $this->usage->collect('metric-b', 20);
+        $this->usage->collect('metric-a', 5);
+
+        // 2 unique metrics × 3 periods = 6 buffer entries
+        $this->assertEquals(6, $this->usage->getBufferSize());
+        $this->assertEquals(3, $this->usage->getBufferCount());
+
+        $this->assertTrue($this->usage->flush());
+
+        $sumA = $this->usage->sumByPeriod('metric-a', '1h');
+        $sumB = $this->usage->sumByPeriod('metric-b', '1h');
+
+        $this->assertEquals(15, $sumA);
+        $this->assertEquals(20, $sumB);
+    }
+
+    public function testCollectSetAndFlush(): void
+    {
+        $this->usage->purge(DateTime::now());
+
+        // collectSet() uses last-write-wins semantics
+        $this->usage->collectSet('set-collect', 100);
+        $this->usage->collectSet('set-collect', 200);
+        $this->usage->collectSet('set-collect', 300);
+
+        // 1 unique metric × 3 periods = 3 buffer entries (set buffer)
+        $this->assertEquals(3, $this->usage->getBufferSize());
+        $this->assertEquals(3, $this->usage->getBufferCount());
+
+        $this->assertTrue($this->usage->flush());
+
+        // Should have last value (300), not summed
+        $sum1h = $this->usage->sumByPeriod('set-collect', '1h');
+        $sum1d = $this->usage->sumByPeriod('set-collect', '1d');
+        $sumInf = $this->usage->sumByPeriod('set-collect', 'inf');
+
+        $this->assertEquals(300, $sum1h);
+        $this->assertEquals(300, $sum1d);
         $this->assertEquals(300, $sumInf);
     }
 
-    public function testBatchCounterWithDuplicateMetricsInBatch(): void
+    public function testMixedCollectAndCollectSet(): void
     {
-        // Clear existing data
         $this->usage->purge(DateTime::now());
 
-        // Multiple entries of the same metric in batch (last one wins)
-        $metrics = [
-            ['metric' => 'dup-counter', 'value' => 10, 'period' => '1h', 'tags' => []],
-            ['metric' => 'dup-counter', 'value' => 20, 'period' => '1h', 'tags' => []],
-            ['metric' => 'dup-counter', 'value' => 30, 'period' => '1h', 'tags' => []],
-        ];
+        // Mix both types in the same buffer
+        $this->usage->collect('inc-mixed', 10);
+        $this->usage->collect('inc-mixed', 20);
+        $this->usage->collectSet('set-mixed', 100);
+        $this->usage->collectSet('set-mixed', 200);
 
-        $this->assertTrue($this->usage->logBatchCounter($metrics));
+        // inc: 1 metric × 3 periods = 3, counter: 1 metric × 3 periods = 3
+        $this->assertEquals(6, $this->usage->getBufferSize());
+        $this->assertEquals(4, $this->usage->getBufferCount());
 
-        // Should only have the last value (30)
-        $sum = $this->usage->sumByPeriod('dup-counter', '1h');
-        $this->assertEquals(30, $sum);
+        $this->assertTrue($this->usage->flush());
+
+        // Increment: summed (10 + 20 = 30)
+        $this->assertEquals(30, $this->usage->sumByPeriod('inc-mixed', '1h'));
+
+        // Counter: last value (200)
+        $this->assertEquals(200, $this->usage->sumByPeriod('set-mixed', '1h'));
     }
 
-    public function testLogBatchCounterWithTags(): void
+    public function testShouldFlushByThreshold(): void
     {
-        // Clear existing data
-        $this->usage->purge(DateTime::now());
+        $this->usage->setFlushThreshold(3);
 
-        $metrics = [
-            ['metric' => 'tagged-counter', 'value' => 50, 'period' => '1h', 'tags' => ['region' => 'us-east']],
-            ['metric' => 'tagged-counter', 'value' => 75, 'period' => '1h', 'tags' => ['region' => 'us-west']],
-            ['metric' => 'tagged-counter', 'value' => 100, 'period' => '1h', 'tags' => ['region' => 'eu-west']],
-        ];
+        $this->assertFalse($this->usage->shouldFlush());
 
-        $this->assertTrue($this->usage->logBatchCounter($metrics));
+        $this->usage->collect('threshold-test', 1);
+        $this->usage->collect('threshold-test', 1);
 
-        $results = $this->usage->getByPeriod('tagged-counter', '1h');
-        // Each tag variant should be separate entry (deterministic id differs)
-        $this->assertGreaterThanOrEqual(1, count($results));
+        $this->assertFalse($this->usage->shouldFlush());
+
+        $this->usage->collect('threshold-test', 1);
+
+        $this->assertTrue($this->usage->shouldFlush());
+
+        // Clean up
+        $this->usage->flush();
+        $this->usage->setFlushThreshold(10_000); // reset
+    }
+
+    public function testShouldFlushByInterval(): void
+    {
+        $this->usage->setFlushInterval(1);
+
+        $this->usage->collect('interval-test', 1);
+
+        // Right after collect, interval hasn't elapsed
+        $this->assertFalse($this->usage->shouldFlush());
+
+        // Wait for interval to elapse
+        sleep(2);
+
+        $this->assertTrue($this->usage->shouldFlush());
+
+        // Clean up
+        $this->usage->flush();
+        $this->usage->setFlushInterval(20); // reset
+    }
+
+    public function testFlushEmptyBuffer(): void
+    {
+        // Flushing an empty buffer should succeed
+        $this->assertTrue($this->usage->flush());
+        $this->assertEquals(0, $this->usage->getBufferCount());
+        $this->assertEquals(0, $this->usage->getBufferSize());
+    }
+
+    public function testFlushThresholdConfiguration(): void
+    {
+        $this->usage->setFlushThreshold(500);
+        $this->assertEquals(500, $this->usage->getFlushThreshold());
+
+        $this->usage->setFlushInterval(30);
+        $this->assertEquals(30, $this->usage->getFlushInterval());
+
+        // Invalid values
+        $this->expectException(\InvalidArgumentException::class);
+        $this->usage->setFlushThreshold(0);
     }
 }

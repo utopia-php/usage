@@ -14,7 +14,11 @@ Although this library is part of the [Utopia Framework](https://github.com/utopi
 - **Database Adapter**: Store metrics in any SQL database via utopia-php/database
 - **ClickHouse Adapter**: High-performance analytics storage for massive scale
 - **Flexible Periods**: Hourly (1h), Daily (1d), and Infinite (inf) periods
-- **Batch Operations**: Log multiple metrics efficiently
+- **Dual Upsert Semantics**: Additive (`increment`) and replace (`set`) upserts
+- **In-Memory Buffering**: Collect metrics and flush in batch for high-throughput scenarios
+- **Auto Period Fan-Out**: `increment()`, `set()`, `collect()`, `collectSet()` automatically write to all periods
+- **Batch Operations**: `incrementBatch()` and `setBatch()` for efficient bulk writes
+- **Async Inserts**: ClickHouse adapter supports server-side async inserts
 - **Rich Queries**: Filter, limit, offset, and aggregate metrics
 - **Tag Support**: Add custom tags for multi-dimensional analytics
 
@@ -104,66 +108,94 @@ $adapter = new Database($database);
 $usage = Usage::withAdapter($adapter);
 $usage->setup();
 ```
-**Log Usage**
 
-A simple example for logging a usage metric.
+## Metric Types
 
-```php
-$metric = 'requests';
-$value = 100;
-$period = '1h'; // Supported periods: '1h', '1d', 'inf'
-$tags = ['region' => 'us-east', 'method' => 'GET'];
+The library supports two types of metrics with different upsert semantics:
 
-$usage->log($metric, $value, $period, $tags);
-```
+### Increment (Additive Upsert)
 
-**Log Batch Usage**
-
-Log multiple metrics in batch for better performance.
+Values are **summed** when the same metric/period/time bucket already exists. Use for event-driven counters like request counts, bandwidth, etc.
 
 ```php
-$metrics = [
-    [
-        'metric' => 'requests',
-        'value' => 100,
-        'period' => '1h',
-        'tags' => ['region' => 'us-east'],
-    ],
-    [
-        'metric' => 'bandwidth',
-        'value' => 50000,
-        'period' => '1h',
-        'tags' => ['region' => 'us-east'],
-    ],
-];
+// Single metric, auto fan-out to all periods (1h, 1d, inf)
+$usage->increment('requests', 1);
+$usage->increment('bandwidth', 5000, ['region' => 'us-east']);
 
-$usage->logBatch($metrics);
+// Batch with explicit periods
+$usage->incrementBatch([
+    ['metric' => 'requests', 'value' => 100, 'period' => '1h', 'tags' => ['method' => 'GET']],
+    ['metric' => 'bandwidth', 'value' => 50000, 'period' => '1h', 'tags' => ['region' => 'us-east']],
+]);
 ```
+
+### Set (Replace Upsert)
+
+Values **replace** the existing value when the same metric/period/time bucket already exists. Use for periodic recounts or resource gauges (e.g., current storage size, active user count).
+
+```php
+// Single metric, auto fan-out to all periods (1h, 1d, inf)
+$usage->set('storage.size', 1048576);
+$usage->set('users.active', 42, ['plan' => 'pro']);
+
+// Batch with explicit periods
+$usage->setBatch([
+    ['metric' => 'storage.size', 'value' => 1048576, 'period' => '1h', 'tags' => []],
+    ['metric' => 'users.active', 'value' => 42, 'period' => '1d', 'tags' => []],
+]);
+```
+
+## In-Memory Buffering
+
+For high-throughput scenarios (e.g., inside a request loop or worker), use `collect()` / `collectSet()` to accumulate metrics in memory and `flush()` to write them in batch.
+
+```php
+// Accumulate increment metrics (values are summed in-memory)
+$usage->collect('requests', 1);
+$usage->collect('requests', 1);
+$usage->collect('bandwidth', 5000);
+
+// Accumulate set metrics (last-write-wins in-memory)
+$usage->collectSet('storage.size', 1048576);
+
+// Check if flush is recommended (threshold or interval reached)
+if ($usage->shouldFlush()) {
+    $usage->flush();
+}
+
+// Or flush explicitly
+$usage->flush();
+```
+
+### Flush Configuration
+
+```php
+// Flush when 5000 collect() calls have been made (default: 10,000)
+$usage->setFlushThreshold(5000);
+
+// Flush when 10 seconds have elapsed since last flush (default: 20)
+$usage->setFlushInterval(10);
+```
+
+## Querying Metrics
 
 **Get Usage By Period**
 
-Fetch all usage metrics by period.
-
 ```php
 $metrics = $usage->getByPeriod('requests', '1h');
-// Returns an array of all usage metrics for specific period
+// Returns an array of Metric objects
 ```
 
 **Get Usage Between Dates**
-
-Fetch all usage metrics between two dates.
 
 ```php
 $start = '2024-01-01 00:00:00';
 $end = '2024-01-31 23:59:59';
 
 $metrics = $usage->getBetweenDates('requests', $start, $end);
-// Returns an array of usage metrics within the date range
 ```
 
 **Count and Sum Usage**
-
-Get counts and sums of usage metrics.
 
 ```php
 // Count total records
@@ -173,9 +205,24 @@ $count = $usage->countByPeriod('requests', '1h');
 $sum = $usage->sumByPeriod('requests', '1h');
 ```
 
-**Purge Old Usage**
+**Find with Query Objects**
 
-Delete old usage metrics.
+```php
+use Utopia\Usage\Query;
+
+$metrics = $usage->find([
+    Query::equal('metric', ['requests', 'bandwidth']),
+    Query::greaterThan('value', 100),
+    Query::orderDesc('time'),
+    Query::limit(10),
+]);
+
+$count = $usage->count([
+    Query::equal('period', ['1h']),
+]);
+```
+
+**Purge Old Usage**
 
 ```php
 use Utopia\Database\DateTime;
@@ -202,23 +249,21 @@ The Database adapter uses [utopia-php/database](https://github.com/utopia-php/da
 - Works with MySQL, MariaDB, PostgreSQL, SQLite
 - Full query support (filters, sorting, pagination)
 - ACID compliance for data consistency
-- Easy migration from existing databases
-
-**Example**:
-```php
-$usage = Usage::withDatabase($database);
-```
+- Additive upsert via `upsertDocumentsWithIncrease`
+- Replace upsert via `upsertDocuments`
 
 ### ClickHouse Adapter
 
 The ClickHouse adapter uses the HTTP interface to store metrics in ClickHouse for high-performance analytics.
 
 **Features**:
-- Optimized for analytical queries
-- Handles millions of metrics per second
+- SummingMergeTree for additive upserts (`usage` table)
+- ReplacingMergeTree for replace upserts (`usage_snapshot` table)
 - Automatic partitioning by month
 - Efficient compression and storage
 - Bloom filter indexes for fast lookups
+- Async insert support for server-side batching
+- Deterministic IDs for correct merge behavior
 
 **Example**:
 ```php
@@ -230,10 +275,9 @@ $usage = Usage::withClickHouse(
     secure: true  // Use HTTPS
 );
 
-// Configure database and table (optional)
+// Enable async inserts (server-side batching)
 $adapter = $usage->getAdapter();
-$adapter->setDatabase('analytics');
-$adapter->setTable('metrics');
+$adapter->setAsyncInserts(true, waitForConfirmation: true);
 
 $usage->setup();
 ```
@@ -244,13 +288,16 @@ Extend the `Utopia\Usage\Adapter` abstract class and implement these methods:
 
 - `getName(): string` - Return adapter name
 - `setup(): void` - Initialize storage structure
-- `log(string $metric, int $value, string $period, array $tags): bool` - Log single metric
-- `logBatch(array $metrics): bool` - Log multiple metrics
+- `healthCheck(): array` - Check adapter health
+- `incrementBatch(array $metrics, int $batchSize): bool` - Additive upsert batch
+- `setBatch(array $metrics, int $batchSize): bool` - Replace upsert batch
 - `getByPeriod(string $metric, string $period, array $queries): array` - Get metrics by period
 - `getBetweenDates(string $metric, string $startDate, string $endDate, array $queries): array` - Get metrics in date range
 - `countByPeriod(string $metric, string $period, array $queries): int` - Count metrics
 - `sumByPeriod(string $metric, string $period, array $queries): int` - Sum metric values
 - `purge(string $datetime): bool` - Delete old metrics
+- `find(array $queries): array` - Find metrics with query objects
+- `count(array $queries): int` - Count metrics with query objects
 
 ## System Requirements
 

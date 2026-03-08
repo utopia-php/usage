@@ -33,7 +33,7 @@ class ClickHouse extends SQL
 
     private const DEFAULT_TABLE = self::COLLECTION;
 
-    private const DEFAULT_COUNTER_TABLE = self::COLLECTION . '_counter';
+    private const DEFAULT_SNAPSHOT_TABLE = self::COLLECTION . '_snapshot';
 
     private const INSERT_BATCH_SIZE = 1_000;
 
@@ -86,6 +86,12 @@ class ClickHouse extends SQL
 
     /** @var string|null Current operation context for better error messages */
     private ?string $operationContext = null;
+
+    /** @var bool Whether to enable ClickHouse async inserts (server-side batching) */
+    private bool $asyncInserts = false;
+
+    /** @var bool Whether to wait for async insert confirmation before returning */
+    private bool $asyncInsertWait = true;
 
     /**
      * @param  string  $host  ClickHouse host
@@ -217,9 +223,28 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Enable or disable ClickHouse async inserts (server-side batching).
+     *
+     * When enabled, ClickHouse buffers small inserts server-side and flushes them
+     * together, significantly improving throughput for high-frequency small inserts.
+     *
+     * @param bool $enable Whether to enable async inserts
+     * @param bool $waitForConfirmation Whether to wait for server-side flush before returning (default: true).
+     *   - true: INSERT returns after data is flushed to storage (durable, recommended for production)
+     *   - false: INSERT returns immediately (fire-and-forget, risk of data loss on crash)
+     * @return self
+     */
+    public function setAsyncInserts(bool $enable, bool $waitForConfirmation = true): self
+    {
+        $this->asyncInserts = $enable;
+        $this->asyncInsertWait = $waitForConfirmation;
+        return $this;
+    }
+
+    /**
      * Get connection statistics for monitoring.
      *
-     * @return array{request_count: int, keep_alive_enabled: bool, compression_enabled: bool, query_logging_enabled: bool, max_retries: int, retry_delay: int}
+     * @return array{request_count: int, keep_alive_enabled: bool, compression_enabled: bool, query_logging_enabled: bool, max_retries: int, retry_delay: int, async_inserts: bool, async_insert_wait: bool}
      */
     public function getConnectionStats(): array
     {
@@ -230,6 +255,8 @@ class ClickHouse extends SQL
             'query_logging_enabled' => $this->enableQueryLogging,
             'max_retries' => $this->maxRetries,
             'retry_delay' => $this->retryDelay,
+            'async_inserts' => $this->asyncInserts,
+            'async_insert_wait' => $this->asyncInsertWait,
         ];
     }
 
@@ -498,14 +525,14 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Get the counter table name with namespace prefix.
-     * Counter table stores logs as individual entries without aggregation.
+     * Get the snapshot table name with namespace prefix.
+     * Snapshot table uses ReplacingMergeTree for replace-upsert semantics.
      *
      * @return string
      */
-    private function getCounterTableName(): string
+    private function getSnapshotTableName(): string
     {
-        $tableName = self::DEFAULT_COUNTER_TABLE;
+        $tableName = self::DEFAULT_SNAPSHOT_TABLE;
 
         if (!empty($this->namespace)) {
             $tableName = $this->namespace . '_' . $tableName;
@@ -610,7 +637,7 @@ class ClickHouse extends SQL
     /**
      * Set the current operation context for better error messages.
      *
-     * @param string|null $context Operation context (e.g., "find()", "log()", "setup()")
+     * @param string|null $context Operation context (e.g., "find()", "incrementBatch()", "setup()")
      * @return void
      */
     private function setOperationContext(?string $context): void
@@ -820,7 +847,14 @@ class ClickHouse extends SQL
                 $startTime = microtime(true);
                 $scheme = $this->secure ? 'https' : 'http';
                 $escapedTable = $this->escapeIdentifier($table);
-                $url = "{$scheme}://{$this->host}:{$this->port}/?query=INSERT+INTO+{$escapedTable}+FORMAT+JSONEachRow";
+
+                // Build URL with query and optional async insert settings
+                $queryParams = ['query' => "INSERT INTO {$escapedTable} FORMAT JSONEachRow"];
+                if ($this->asyncInserts) {
+                    $queryParams['async_insert'] = '1';
+                    $queryParams['wait_for_async_insert'] = $this->asyncInsertWait ? '1' : '0';
+                }
+                $url = "{$scheme}://{$this->host}:{$this->port}/?" . http_build_query($queryParams);
 
                 // Update the database header
                 $this->client->addHeader('X-ClickHouse-Database', $this->database);
@@ -1022,12 +1056,12 @@ class ClickHouse extends SQL
 
         $this->query($createTableSql);
 
-        // Create counter table with ReplacingMergeTree engine (replaces on duplicate ORDER BY key)
-        $counterTableName = $this->getCounterTableName();
-        $escapedCounterDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
+        // Create snapshot table with ReplacingMergeTree engine (replaces on duplicate ORDER BY key)
+        $snapshotTableName = $this->getSnapshotTableName();
+        $escapedSnapshotDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($snapshotTableName);
 
         $createCounterTableSql = "
-            CREATE TABLE IF NOT EXISTS {$escapedCounterDatabaseAndTable} (
+            CREATE TABLE IF NOT EXISTS {$escapedSnapshotDatabaseAndTable} (
                 {$columnDefs}{$indexDefs}
             )
             ENGINE = ReplacingMergeTree()
@@ -1195,58 +1229,23 @@ class ClickHouse extends SQL
 
 
     /**
-     * Log a usage metric.
+     * Set metrics in batch (replace upsert).
      *
-     * @param  array<string,mixed>  $tags
-     *
-     * @throws Exception
-     */
-    public function log(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool
-    {
-        return $this->logBatch([
-            [
-                'metric' => $metric,
-                'value' => $value,
-                'period' => $period,
-                'tags' => $tags,
-            ]
-        ]);
-    }
-
-    /**
-     * Log a usage counter metric (uses deterministic ID, replaces if ID matches).
-     *
-     * @param  array<string,mixed>  $tags
-     *
-     * @throws Exception
-     */
-    public function logCounter(string $metric, int $value, string $period = Usage::PERIOD_1H, array $tags = []): bool
-    {
-        return $this->logBatchCounter([
-            [
-                'metric' => $metric,
-                'value' => $value,
-                'period' => $period,
-                'tags' => $tags,
-            ]
-        ]);
-    }
-
-    /**
-     * Log multiple usage counter metrics in batch (individual entries without aggregation).
+     * Values with the same deterministic ID are replaced (last write wins).
+     * Uses ReplacingMergeTree engine in ClickHouse.
      *
      * @param  array<int,array<string,mixed>>  $metrics
      * @param  int  $batchSize  Maximum number of metrics per INSERT statement
      *
      * @throws Exception
      */
-    public function logBatchCounter(array $metrics, int $batchSize = self::INSERT_BATCH_SIZE): bool
+    public function setBatch(array $metrics, int $batchSize = self::INSERT_BATCH_SIZE): bool
     {
         if (empty($metrics)) {
             return true;
         }
 
-        $this->setOperationContext('logBatchCounter()');
+        $this->setOperationContext('setBatch()');
 
         // Validate all metrics before processing
         $this->validateMetricsBatch($metrics);
@@ -1254,7 +1253,7 @@ class ClickHouse extends SQL
         // Ensure batch size is within acceptable range
         $batchSize = \min(self::INSERT_BATCH_SIZE, \max(1, $batchSize));
 
-        $counterTableName = $this->getCounterTableName();
+        $snapshotTableName = $this->getSnapshotTableName();
 
         // Process metrics in batches
         foreach (\array_chunk($metrics, $batchSize) as $metricsBatch) {
@@ -1273,7 +1272,7 @@ class ClickHouse extends SQL
             }
 
             if (!empty($rows)) {
-                $this->insert($counterTableName, $rows);
+                $this->insert($snapshotTableName, $rows);
             }
         }
 
@@ -1336,20 +1335,23 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Log multiple usage metrics in batch.
+     * Increment metrics in batch (additive upsert).
+     *
+     * Values with the same deterministic ID are summed together.
+     * Uses SummingMergeTree engine in ClickHouse.
      *
      * @param  array<int,array<string,mixed>>  $metrics
      * @param  int  $batchSize  Maximum number of metrics per INSERT statement
      *
      * @throws Exception
      */
-    public function logBatch(array $metrics, int $batchSize = self::INSERT_BATCH_SIZE): bool
+    public function incrementBatch(array $metrics, int $batchSize = self::INSERT_BATCH_SIZE): bool
     {
         if (empty($metrics)) {
             return true;
         }
 
-        $this->setOperationContext('logBatch()');
+        $this->setOperationContext('incrementBatch()');
 
         // Validate all metrics before processing
         $this->validateMetricsBatch($metrics);
@@ -1460,7 +1462,7 @@ class ClickHouse extends SQL
 
     /**
      * Find metrics using Query objects.
-     * Queries both aggregated and counter tables and combines results.
+     * Queries both aggregated and snapshot tables and combines results.
      *
      * @param array<Query> $queries
      * @return array<Metric>
@@ -1472,7 +1474,7 @@ class ClickHouse extends SQL
 
         // Get table references with FINAL clause
         $fromTable = $this->buildTableReference($this->getTableName());
-        $fromCounterTable = $this->buildTableReference($this->getCounterTableName());
+        $fromSnapshotTable = $this->buildTableReference($this->getSnapshotTableName());
 
         // Parse queries
         $parsed = $this->parseQueries($queries);
@@ -1504,7 +1506,7 @@ class ClickHouse extends SQL
                 FROM {$fromTable}{$whereClause}
                 UNION ALL
                 SELECT {$selectColumns}
-                FROM {$fromCounterTable}{$whereClause}
+                FROM {$fromSnapshotTable}{$whereClause}
             ){$orderClause}{$limitClause}{$offsetClause}
             FORMAT JSON
         ";
@@ -1516,7 +1518,7 @@ class ClickHouse extends SQL
 
     /**
      * Count metrics using Query objects.
-     * Counts from both aggregated and counter tables.
+     * Counts from both aggregated and snapshot tables.
      *
      * @param array<Query> $queries
      * @return int
@@ -1528,7 +1530,7 @@ class ClickHouse extends SQL
 
         // Get table references with FINAL clause
         $fromTable = $this->buildTableReference($this->getTableName());
-        $fromCounterTable = $this->buildTableReference($this->getCounterTableName());
+        $fromSnapshotTable = $this->buildTableReference($this->getSnapshotTableName());
 
         // Parse queries - we only need filters and params
         $parsed = $this->parseQueries($queries);
@@ -1548,7 +1550,7 @@ class ClickHouse extends SQL
             FROM (
                 SELECT COUNT(*) as cnt FROM {$fromTable}{$whereClause}
                 UNION ALL
-                SELECT COUNT(*) as cnt FROM {$fromCounterTable}{$whereClause}
+                SELECT COUNT(*) as cnt FROM {$fromSnapshotTable}{$whereClause}
             )
             FORMAT JSON
         ";
@@ -1874,7 +1876,7 @@ class ClickHouse extends SQL
                     // ClickHouse JSON output for Map/Array might vary, but for String it's a string
                     // If we store tags as String (serialized JSON), we need to decode it.
                     // The schema says tags is String? Let's check getColumnType.
-                    // Ah, tags is usually String in ClickHouse adapter (checked log/logBatch).
+                    // Ah, tags is usually String in ClickHouse adapter (checked incrementBatch).
                     // So it comes as a string, we need to decode it.
                     if (is_string($value)) {
                         $document[$key] = json_decode($value, true) ?? [];
@@ -1995,7 +1997,7 @@ class ClickHouse extends SQL
 
     /**
      * Sum metric values using Query objects.
-     * Sums from both aggregated and counter tables.
+     * Sums from both aggregated and snapshot tables.
      *
      * @param array<Query> $queries
      * @param string $attribute Attribute to sum (default: 'value')
@@ -2008,7 +2010,7 @@ class ClickHouse extends SQL
 
         // Get table references with FINAL clause
         $fromTable = $this->buildTableReference($this->getTableName());
-        $fromCounterTable = $this->buildTableReference($this->getCounterTableName());
+        $fromSnapshotTable = $this->buildTableReference($this->getSnapshotTableName());
 
         // Validate attribute name
         $this->validateAttributeName($attribute);
@@ -2028,7 +2030,7 @@ class ClickHouse extends SQL
             FROM (
                 SELECT sum({$escapedAttribute}) as total FROM {$fromTable}{$whereClause}
                 UNION ALL
-                SELECT sum({$escapedAttribute}) as total FROM {$fromCounterTable}{$whereClause}
+                SELECT sum({$escapedAttribute}) as total FROM {$fromSnapshotTable}{$whereClause}
             )
             FORMAT JSON
         ";
@@ -2068,7 +2070,7 @@ class ClickHouse extends SQL
 
     /**
      * Sum usage metric values by period.
-     * Sums from both aggregated and counter tables.
+     * Sums from both aggregated and snapshot tables.
      *
      * @param  array<int,Query>  $queries
      *
@@ -2091,7 +2093,7 @@ class ClickHouse extends SQL
 
     /**
      * Purge usage metrics older than the specified datetime.
-     * Purges from both aggregated and counter tables.
+     * Purges from both aggregated and snapshot tables.
      *
      * @throws Exception
      */
@@ -2100,9 +2102,9 @@ class ClickHouse extends SQL
         $this->setOperationContext('purge()');
 
         $tableName = $this->getTableName();
-        $counterTableName = $this->getCounterTableName();
+        $snapshotTableName = $this->getSnapshotTableName();
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        $escapedCounterTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($counterTableName);
+        $escapedSnapshotTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($snapshotTableName);
         $tenantFilter = $this->getTenantFilter();
 
         $params = ['datetime' => $datetime];
@@ -2117,9 +2119,9 @@ class ClickHouse extends SQL
         ";
         $this->query($sql, $params);
 
-        // Purge from counter table
+        // Purge from snapshot table
         $sql = "
-            DELETE FROM {$escapedCounterTable}
+            DELETE FROM {$escapedSnapshotTable}
             WHERE time < {datetime:DateTime64(3)}{$tenantFilter}
         ";
         $this->query($sql, $params);
