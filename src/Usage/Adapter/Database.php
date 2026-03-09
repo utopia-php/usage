@@ -99,7 +99,7 @@ class Database extends SQL
 
     public function incrementBatch(array $metrics, int $batchSize = 1000): bool
     {
-        $this->db->getAuthorization()->skip(function () use ($metrics) {
+        $this->db->getAuthorization()->skip(function () use ($metrics, $batchSize) {
             $documentsById = [];
             foreach ($metrics as $metric) {
                 $period = $metric['period'] ?? '1h';
@@ -133,13 +133,13 @@ class Database extends SQL
                 }
             }
 
-            $documents = [];
-            foreach ($documentsById as $doc) {
-                $documents[] = new Document($doc);
-            }
+            $documents = array_values(array_map(
+                static fn (array $doc) => new Document($doc),
+                $documentsById
+            ));
 
-            if (!empty($documents)) {
-                $this->db->upsertDocumentsWithIncrease($this->collection, 'value', $documents);
+            foreach (array_chunk($documents, max(1, $batchSize)) as $chunk) {
+                $this->db->upsertDocumentsWithIncrease($this->collection, 'value', $chunk);
             }
         });
 
@@ -157,7 +157,7 @@ class Database extends SQL
      */
     public function setBatch(array $metrics, int $batchSize = 1000): bool
     {
-        $this->db->getAuthorization()->skip(function () use ($metrics) {
+        $this->db->getAuthorization()->skip(function () use ($metrics, $batchSize) {
             $documentsById = [];
             foreach ($metrics as $metric) {
                 $period = $metric['period'] ?? '1h';
@@ -176,7 +176,7 @@ class Database extends SQL
 
                 $id = $this->buildDeterministicId($metric['metric'], $period, $time);
 
-                // Last one wins for the same ID (counter behavior, not aggregating)
+                // Last one wins for the same ID (replace behavior, not aggregating)
                 $documentsById[$id] = [
                     '$id' => $id,
                     '$permissions' => [],
@@ -188,13 +188,13 @@ class Database extends SQL
                 ];
             }
 
-            $documents = [];
-            foreach ($documentsById as $doc) {
-                $documents[] = new Document($doc);
-            }
+            $documents = array_values(array_map(
+                static fn (array $doc) => new Document($doc),
+                $documentsById
+            ));
 
-            if (!empty($documents)) {
-                $this->db->upsertDocuments($this->collection, $documents);
+            foreach (array_chunk($documents, max(1, $batchSize)) as $chunk) {
+                $this->db->upsertDocuments($this->collection, $chunk);
             }
         });
 
