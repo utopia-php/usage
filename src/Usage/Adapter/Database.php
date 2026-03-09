@@ -6,7 +6,6 @@ use Utopia\Database\Database as UtopiaDatabase;
 use Utopia\Database\Document;
 use Utopia\Database\Exception\Duplicate as DuplicateException;
 use Utopia\Database\Query as DatabaseQuery;
-use Utopia\Exception;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Query;
 use Utopia\Usage\Usage;
@@ -71,7 +70,7 @@ class Database extends SQL
     {
         $this->collection = 'usage';
         if (! $this->db->exists($this->db->getDatabase())) {
-            throw new Exception('You need to create the database before running Usage setup');
+            throw new \Exception('You need to create the database before running Usage setup');
         }
 
         // Use column and index definitions from parent SQL adapter
@@ -154,7 +153,7 @@ class Database extends SQL
      *
      * @param array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}> $metrics
      * @return bool
-     * @throws Exception
+     * @throws \Exception
      */
     public function setBatch(array $metrics, int $batchSize = 1000): bool
     {
