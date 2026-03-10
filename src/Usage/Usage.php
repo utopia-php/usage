@@ -124,7 +124,7 @@ class Usage
     /**
      * Get usage metrics by period.
      *
-     * @param  array<\Utopia\Usage\Query>  $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      * @return array<Metric>
      *
      * @throws \Exception
@@ -137,7 +137,7 @@ class Usage
     /**
      * Get usage metrics between dates.
      *
-     * @param  array<\Utopia\Usage\Query>  $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      * @return array<Metric>
      *
      * @throws \Exception
@@ -150,7 +150,7 @@ class Usage
     /**
      * Count usage metrics by period.
      *
-     * @param  array<\Utopia\Usage\Query>  $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      *
      * @throws \Exception
      */
@@ -162,7 +162,7 @@ class Usage
     /**
      * Sum usage metric values by period.
      *
-     * @param  array<\Utopia\Usage\Query>  $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      *
      * @throws \Exception
      */
@@ -177,7 +177,7 @@ class Usage
      * Collapses N sumByPeriod() calls into 1 query using WHERE metric IN (...).
      *
      * @param  array<string>  $metrics  List of metric names
-     * @param  array<\Utopia\Usage\Query>  $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      * @return array<string, int>
      *
      * @throws \Exception
@@ -193,7 +193,7 @@ class Usage
      * Collapses N getByPeriod() calls into 1 query using WHERE metric IN (...).
      *
      * @param  array<string>  $metrics  List of metric names
-     * @param  array<\Utopia\Usage\Query>  $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      * @return array<string, array<Metric>>
      *
      * @throws \Exception
@@ -207,7 +207,7 @@ class Usage
      * Purge usage metrics matching the given queries.
      * When no queries are provided, all metrics are deleted.
      *
-     * @param array<\Utopia\Usage\Query> $queries
+     * @param array<\Utopia\Query\Query> $queries
      * @throws \Exception
      */
     public function purge(array $queries = []): bool
@@ -218,7 +218,7 @@ class Usage
     /**
      * Find metrics using Query objects.
      *
-     * @param array<\Utopia\Usage\Query> $queries
+     * @param array<\Utopia\Query\Query> $queries
      * @return array<Metric>
      * @throws \Exception
      */
@@ -230,7 +230,7 @@ class Usage
     /**
      * Count metrics using Query objects.
      *
-     * @param array<\Utopia\Usage\Query> $queries
+     * @param array<\Utopia\Query\Query> $queries
      * @return int
      * @throws \Exception
      */

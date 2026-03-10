@@ -7,7 +7,7 @@ use Utopia\Database\Document;
 use Utopia\Database\Exception\Duplicate as DuplicateException;
 use Utopia\Database\Query as DatabaseQuery;
 use Utopia\Usage\Metric;
-use Utopia\Usage\Query;
+use Utopia\Query\Query;
 use Utopia\Usage\Usage;
 
 class Database extends SQL
@@ -202,7 +202,7 @@ class Database extends SQL
     }
 
     /**
-     * Convert Utopia\Usage\Query to Utopia\Database\Query for use with the Database class.
+     * Convert Utopia\Query\Query to Utopia\Database\Query for use with the Database class.
      *
      * @param array<Query> $queries
      * @return array<DatabaseQuery>
