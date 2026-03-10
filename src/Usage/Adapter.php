@@ -153,9 +153,12 @@ abstract class Adapter
     abstract public function getByPeriodBatch(array $metrics, string $period, array $queries = []): array;
 
     /**
-     * Purge old usage metrics
+     * Purge usage metrics matching the given queries.
+     * When no queries are provided, all metrics are deleted.
+     *
+     * @param array<\Utopia\Usage\Query> $queries
      */
-    abstract public function purge(string $datetime): bool;
+    abstract public function purge(array $queries = []): bool;
 
     /**
      * Find metrics using Query objects.

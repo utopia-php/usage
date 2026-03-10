@@ -20,7 +20,7 @@ trait UsageBase
 
     public function tearDown(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
     }
 
     public function createUsageMetrics(): void
@@ -33,7 +33,7 @@ trait UsageBase
 
     public function testIncrement(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         // increment() should auto fan-out to all 3 periods
         $this->assertTrue($this->usage->increment('inc-metric', 10));
@@ -52,7 +52,7 @@ trait UsageBase
     public function testIncrementBatch(): void
     {
         // First cleanup existing data
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         $metrics = [
             [
@@ -123,7 +123,7 @@ trait UsageBase
     public function testIncrementingDefaultBehavior(): void
     {
         // Ensure clean state
-        $this->usage->purge(\Utopia\Database\DateTime::now());
+        $this->usage->purge();
 
         // Increment the same metric twice
         $this->assertTrue($this->usage->increment('increment-test', 5));
@@ -211,13 +211,60 @@ trait UsageBase
         // Wait a bit
         sleep(2);
 
-        // Purge all metrics
-        $status = $this->usage->purge(DateTime::now());
+        // Purge all metrics (no queries = delete everything)
+        $status = $this->usage->purge();
         $this->assertTrue($status);
 
         // Verify metrics were purged
         $results = $this->usage->getByPeriod('purge-test', '1h');
         $this->assertEquals(0, count($results));
+    }
+
+    public function testPurgeWithQueries(): void
+    {
+        $this->usage->purge();
+
+        $this->assertTrue($this->usage->increment('purge-keep', 10));
+        $this->assertTrue($this->usage->increment('purge-remove', 20));
+
+        // Purge only the 'purge-remove' metric
+        $status = $this->usage->purge([
+            Query::equal('metric', ['purge-remove']),
+        ]);
+        $this->assertTrue($status);
+
+        // 'purge-remove' should be gone
+        $sum = $this->usage->sumByPeriod('purge-remove', '1h');
+        $this->assertEquals(0, $sum);
+
+        // 'purge-keep' should still exist
+        $sum = $this->usage->sumByPeriod('purge-keep', '1h');
+        $this->assertEquals(10, $sum);
+    }
+
+    public function testPurgeByPeriod(): void
+    {
+        $this->usage->purge();
+
+        // Insert into specific periods
+        $this->assertTrue($this->usage->incrementBatch([
+            ['metric' => 'purge-period', 'value' => 10, 'period' => '1h', 'tags' => []],
+            ['metric' => 'purge-period', 'value' => 20, 'period' => '1d', 'tags' => []],
+        ]));
+
+        // Purge only 1h period
+        $this->assertTrue($this->usage->purge([
+            Query::equal('metric', ['purge-period']),
+            Query::equal('period', ['1h']),
+        ]));
+
+        // 1h should be gone
+        $sum1h = $this->usage->sumByPeriod('purge-period', '1h');
+        $this->assertEquals(0, $sum1h);
+
+        // 1d should still exist
+        $sum1d = $this->usage->sumByPeriod('purge-period', '1d');
+        $this->assertEquals(20, $sum1d);
     }
 
     public function testPeriodFormats(): void
@@ -235,7 +282,7 @@ trait UsageBase
 
     public function testSet(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         // set() should auto fan-out to all 3 periods with replace semantics
         $this->assertTrue($this->usage->set('set-metric', 100));
@@ -253,7 +300,7 @@ trait UsageBase
 
     public function testCollectAndFlush(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         // collect() accumulates in memory, nothing written yet
         $this->usage->collect('collect-metric', 10);
@@ -288,7 +335,7 @@ trait UsageBase
 
     public function testCollectMultipleMetrics(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         $this->usage->collect('metric-a', 10);
         $this->usage->collect('metric-b', 20);
@@ -309,7 +356,7 @@ trait UsageBase
 
     public function testCollectSetAndFlush(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         // collectSet() uses last-write-wins semantics
         $this->usage->collectSet('set-collect', 100);
@@ -334,7 +381,7 @@ trait UsageBase
 
     public function testMixedCollectAndCollectSet(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         // Mix both types in the same buffer
         $this->usage->collect('inc-mixed', 10);
@@ -417,7 +464,7 @@ trait UsageBase
 
     public function testSumByPeriodBatch(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         // Insert known metrics
         $this->assertTrue($this->usage->increment('batch-sum-a', 10));
@@ -440,7 +487,7 @@ trait UsageBase
 
     public function testSumByPeriodBatchWithMissingMetric(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         $this->assertTrue($this->usage->increment('batch-exists', 42));
 
@@ -460,7 +507,7 @@ trait UsageBase
 
     public function testGetByPeriodBatch(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         $this->assertTrue($this->usage->increment('batch-get-a', 10));
         $this->assertTrue($this->usage->increment('batch-get-b', 20));
@@ -482,7 +529,7 @@ trait UsageBase
 
     public function testGetByPeriodBatchWithMissingMetric(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         $this->assertTrue($this->usage->increment('batch-get-exists', 99));
 
@@ -501,7 +548,7 @@ trait UsageBase
 
     public function testSumByPeriodBatchConsistencyWithSumByPeriod(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         $this->assertTrue($this->usage->increment('consistency-a', 15));
         $this->assertTrue($this->usage->increment('consistency-b', 25));
@@ -517,7 +564,7 @@ trait UsageBase
 
     public function testSumByPeriodBatchAcrossPeriods(): void
     {
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         // increment() fans out to all periods
         $this->assertTrue($this->usage->increment('period-batch', 77));

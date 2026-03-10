@@ -204,13 +204,15 @@ class Usage
     }
 
     /**
-     * Purge usage metrics older than the specified datetime.
+     * Purge usage metrics matching the given queries.
+     * When no queries are provided, all metrics are deleted.
      *
+     * @param array<\Utopia\Usage\Query> $queries
      * @throws \Exception
      */
-    public function purge(string $datetime): bool
+    public function purge(array $queries = []): bool
     {
-        return $this->adapter->purge($datetime);
+        return $this->adapter->purge($queries);
     }
 
     /**

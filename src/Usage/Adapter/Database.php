@@ -409,32 +409,16 @@ class Database extends SQL
         return $grouped;
     }
 
-    public function purge(string $datetime): bool
+    public function purge(array $queries = []): bool
     {
-        $this->db->getAuthorization()->skip(function () use ($datetime) {
-            // Purge documents with time < datetime
+        $this->db->getAuthorization()->skip(function () use ($queries) {
+            $dbQueries = $this->convertQueriesToDatabase($queries);
+            $dbQueries[] = DatabaseQuery::limit(100);
+
             do {
                 $documents = $this->db->find(
                     collection: $this->collection,
-                    queries: [
-                        DatabaseQuery::lessThan('time', $datetime),
-                        DatabaseQuery::limit(100),
-                    ]
-                );
-
-                foreach ($documents as $document) {
-                    $this->db->deleteDocument($this->collection, $document->getId());
-                }
-            } while (! empty($documents));
-
-            // Purge inf-period documents (time=null, not matched by time < datetime)
-            do {
-                $documents = $this->db->find(
-                    collection: $this->collection,
-                    queries: [
-                        DatabaseQuery::isNull('time'),
-                        DatabaseQuery::limit(100),
-                    ]
+                    queries: $dbQueries,
                 );
 
                 foreach ($documents as $document) {

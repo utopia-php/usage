@@ -3,7 +3,6 @@
 namespace Utopia\Tests\Adapter;
 
 use PHPUnit\Framework\TestCase;
-use Utopia\Database\DateTime;
 use Utopia\Tests\Usage\UsageBase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 use Utopia\Usage\Usage;
@@ -53,7 +52,7 @@ class ClickHouseTest extends TestCase
 
         $usage = new Usage($adapter);
         $usage->setup();
-        $usage->purge(DateTime::now());
+        $usage->purge();
 
         $metrics = [
             [
@@ -75,7 +74,7 @@ class ClickHouseTest extends TestCase
         $this->assertCount(1, $results);
         $this->assertEquals(2, $results[0]->getTenant());
 
-        $usage->purge(DateTime::now());
+        $usage->purge();
     }
 
     /**
@@ -313,10 +312,9 @@ class ClickHouseTest extends TestCase
     public function testFind(): void
     {
         // Cleanup
-        $this->usage->purge(DateTime::now());
+        $this->usage->purge();
 
         // Setup test data
-        $now = DateTime::now();
         // metric A: value 10, time NOW
         $this->usage->incrementBatch([['metric' => 'metric-A', 'value' => 10, 'period' => '1h', 'tags' => ['category' => 'cat1']]]);
         // metric B: value 20, time NOW
@@ -820,7 +818,7 @@ class ClickHouseTest extends TestCase
         // Verify it works with async inserts enabled
         $usage = new Usage($adapter);
         $usage->setup();
-        $usage->purge(\Utopia\Database\DateTime::now());
+        $usage->purge();
 
         $this->assertTrue($usage->increment('async-test', 42));
 
@@ -837,6 +835,6 @@ class ClickHouseTest extends TestCase
         $stats = $adapter->getConnectionStats();
         $this->assertFalse($stats['async_inserts']);
 
-        $usage->purge(\Utopia\Database\DateTime::now());
+        $usage->purge();
     }
 }

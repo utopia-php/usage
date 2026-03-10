@@ -2214,7 +2214,7 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    public function purge(string $datetime): bool
+    public function purge(array $queries = []): bool
     {
         $this->setOperationContext('purge()');
 
@@ -2222,25 +2222,24 @@ class ClickHouse extends SQL
         $snapshotTableName = $this->getSnapshotTableName();
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
         $escapedSnapshotTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($snapshotTableName);
-        $tenantFilter = $this->getTenantFilter();
 
-        $params = ['datetime' => $datetime];
-        if ($this->sharedTables) {
-            $params['tenant'] = $this->tenant;
+        // Parse queries into WHERE clause
+        $parsed = $this->parseQueries($queries);
+        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+        $whereClause = $whereData['clause'];
+        $params = $whereData['params'];
+
+        // When no queries provided, delete everything (WHERE 1=1 for tenant filter support)
+        if (empty($whereClause)) {
+            $whereClause = ' WHERE 1=1';
         }
 
         // Purge from aggregated table
-        $sql = "
-            DELETE FROM {$escapedTable}
-            WHERE time < {datetime:DateTime64(3)}{$tenantFilter}
-        ";
+        $sql = "DELETE FROM {$escapedTable}{$whereClause}";
         $this->query($sql, $params);
 
         // Purge from snapshot table
-        $sql = "
-            DELETE FROM {$escapedSnapshotTable}
-            WHERE time < {datetime:DateTime64(3)}{$tenantFilter}
-        ";
+        $sql = "DELETE FROM {$escapedSnapshotTable}{$whereClause}";
         $this->query($sql, $params);
 
         return true;
