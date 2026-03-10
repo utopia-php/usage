@@ -414,4 +414,120 @@ trait UsageBase
         $this->expectException(\InvalidArgumentException::class);
         $this->usage->setFlushThreshold(0);
     }
+
+    public function testSumByPeriodBatch(): void
+    {
+        $this->usage->purge(DateTime::now());
+
+        // Insert known metrics
+        $this->assertTrue($this->usage->increment('batch-sum-a', 10));
+        $this->assertTrue($this->usage->increment('batch-sum-a', 20));
+        $this->assertTrue($this->usage->increment('batch-sum-b', 50));
+        $this->assertTrue($this->usage->increment('batch-sum-c', 100));
+
+        // Fetch all sums in a single batch call
+        $sums = $this->usage->sumByPeriodBatch(['batch-sum-a', 'batch-sum-b', 'batch-sum-c'], '1h');
+
+        $this->assertIsArray($sums);
+        $this->assertArrayHasKey('batch-sum-a', $sums);
+        $this->assertArrayHasKey('batch-sum-b', $sums);
+        $this->assertArrayHasKey('batch-sum-c', $sums);
+
+        $this->assertEquals(30, $sums['batch-sum-a']); // 10 + 20
+        $this->assertEquals(50, $sums['batch-sum-b']);
+        $this->assertEquals(100, $sums['batch-sum-c']);
+    }
+
+    public function testSumByPeriodBatchWithMissingMetric(): void
+    {
+        $this->usage->purge(DateTime::now());
+
+        $this->assertTrue($this->usage->increment('batch-exists', 42));
+
+        // Request a metric that exists and one that doesn't
+        $sums = $this->usage->sumByPeriodBatch(['batch-exists', 'batch-missing'], '1h');
+
+        $this->assertEquals(42, $sums['batch-exists']);
+        $this->assertEquals(0, $sums['batch-missing']);
+    }
+
+    public function testSumByPeriodBatchEmpty(): void
+    {
+        $sums = $this->usage->sumByPeriodBatch([], '1h');
+        $this->assertIsArray($sums);
+        $this->assertEmpty($sums);
+    }
+
+    public function testGetByPeriodBatch(): void
+    {
+        $this->usage->purge(DateTime::now());
+
+        $this->assertTrue($this->usage->increment('batch-get-a', 10));
+        $this->assertTrue($this->usage->increment('batch-get-b', 20));
+
+        $results = $this->usage->getByPeriodBatch(['batch-get-a', 'batch-get-b'], '1h');
+
+        $this->assertIsArray($results);
+        $this->assertArrayHasKey('batch-get-a', $results);
+        $this->assertArrayHasKey('batch-get-b', $results);
+
+        // Each metric should have at least one result
+        $this->assertGreaterThanOrEqual(1, count($results['batch-get-a']));
+        $this->assertGreaterThanOrEqual(1, count($results['batch-get-b']));
+
+        // Verify returned objects are Metric instances with correct metric names
+        $this->assertEquals('batch-get-a', $results['batch-get-a'][0]->getMetric());
+        $this->assertEquals('batch-get-b', $results['batch-get-b'][0]->getMetric());
+    }
+
+    public function testGetByPeriodBatchWithMissingMetric(): void
+    {
+        $this->usage->purge(DateTime::now());
+
+        $this->assertTrue($this->usage->increment('batch-get-exists', 99));
+
+        $results = $this->usage->getByPeriodBatch(['batch-get-exists', 'batch-get-missing'], '1h');
+
+        $this->assertGreaterThanOrEqual(1, count($results['batch-get-exists']));
+        $this->assertEmpty($results['batch-get-missing']);
+    }
+
+    public function testGetByPeriodBatchEmpty(): void
+    {
+        $results = $this->usage->getByPeriodBatch([], '1h');
+        $this->assertIsArray($results);
+        $this->assertEmpty($results);
+    }
+
+    public function testSumByPeriodBatchConsistencyWithSumByPeriod(): void
+    {
+        $this->usage->purge(DateTime::now());
+
+        $this->assertTrue($this->usage->increment('consistency-a', 15));
+        $this->assertTrue($this->usage->increment('consistency-b', 25));
+
+        // Compare batch vs individual calls
+        $batchSums = $this->usage->sumByPeriodBatch(['consistency-a', 'consistency-b'], '1h');
+        $individualA = $this->usage->sumByPeriod('consistency-a', '1h');
+        $individualB = $this->usage->sumByPeriod('consistency-b', '1h');
+
+        $this->assertEquals($individualA, $batchSums['consistency-a']);
+        $this->assertEquals($individualB, $batchSums['consistency-b']);
+    }
+
+    public function testSumByPeriodBatchAcrossPeriods(): void
+    {
+        $this->usage->purge(DateTime::now());
+
+        // increment() fans out to all periods
+        $this->assertTrue($this->usage->increment('period-batch', 77));
+
+        $sums1h = $this->usage->sumByPeriodBatch(['period-batch'], '1h');
+        $sums1d = $this->usage->sumByPeriodBatch(['period-batch'], '1d');
+        $sumsInf = $this->usage->sumByPeriodBatch(['period-batch'], 'inf');
+
+        $this->assertEquals(77, $sums1h['period-batch']);
+        $this->assertEquals(77, $sums1d['period-batch']);
+        $this->assertEquals(77, $sumsInf['period-batch']);
+    }
 }
