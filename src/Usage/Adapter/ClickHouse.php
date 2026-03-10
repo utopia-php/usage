@@ -3,7 +3,7 @@
 namespace Utopia\Usage\Adapter;
 
 use Exception;
-use Utopia\Usage\Query;
+use Utopia\Query\Query;
 use Utopia\Fetch\Client;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;

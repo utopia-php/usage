@@ -3,7 +3,7 @@
 namespace Utopia\Tests\Usage;
 
 use Utopia\Database\DateTime;
-use Utopia\Usage\Query;
+use Utopia\Query\Query;
 use Utopia\Usage\Usage;
 
 trait UsageBase

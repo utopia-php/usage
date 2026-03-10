@@ -297,7 +297,7 @@ class ClickHouseTest extends TestCase
         $this->assertTrue($this->usage->incrementBatch([['metric' => 'special-metric', 'value' => 1, 'period' => '1h', 'tags' => ['s' => $specialVal]]]));
 
         $results = $this->usage->find([
-            \Utopia\Usage\Query::equal('metric', ['special-metric']),
+            \Utopia\Query\Query::equal('metric', ['special-metric']),
         ]);
 
         $this->assertEquals(1, count($results));
@@ -325,51 +325,51 @@ class ClickHouseTest extends TestCase
 
         // 1. Array Equal (IN)
         $results = $this->usage->find([
-            \Utopia\Usage\Query::equal('metric', ['metric-A', 'metric-B']),
+            \Utopia\Query\Query::equal('metric', ['metric-A', 'metric-B']),
         ]);
         $this->assertGreaterThanOrEqual(2, count($results));
 
         // 2. Scalar Equal
         $results = $this->usage->find([
-            \Utopia\Usage\Query::equal('value', [20]),
+            \Utopia\Query\Query::equal('value', [20]),
         ]);
         $this->assertGreaterThanOrEqual(1, count($results));
         $this->assertEquals(20, $results[0]->getValue());
 
         // 3. Less Than
         $results = $this->usage->find([
-            \Utopia\Usage\Query::lessThan('value', 20),
-            \Utopia\Usage\Query::equal('metric', ['metric-A']),
+            \Utopia\Query\Query::lessThan('value', 20),
+            \Utopia\Query\Query::equal('metric', ['metric-A']),
         ]);
         $this->assertGreaterThanOrEqual(1, count($results));
         $this->assertEquals(10, $results[0]->getValue());
 
         // 4. Greater Than
         $results = $this->usage->find([
-            \Utopia\Usage\Query::greaterThan('value', 10),
-            \Utopia\Usage\Query::equal('metric', ['metric-B']),
+            \Utopia\Query\Query::greaterThan('value', 10),
+            \Utopia\Query\Query::equal('metric', ['metric-B']),
         ]);
         $this->assertGreaterThanOrEqual(1, count($results));
         $this->assertEquals(20, $results[0]->getValue());
 
         // 5. Between
         $results = $this->usage->find([
-            \Utopia\Usage\Query::between('value', 5, 25),
-            \Utopia\Usage\Query::equal('metric', ['metric-A', 'metric-B']),
+            \Utopia\Query\Query::between('value', 5, 25),
+            \Utopia\Query\Query::equal('metric', ['metric-A', 'metric-B']),
         ]);
         $this->assertGreaterThanOrEqual(2, count($results));
 
         // 6. Contains (IN alias for non-array input logic in Query class)
         $results = $this->usage->find([
-            \Utopia\Usage\Query::contains('metric', ['metric-A']),
+            \Utopia\Query\Query::contains('metric', ['metric-A']),
         ]);
         $this->assertGreaterThanOrEqual(1, count($results));
 
         // 7. Order Desc
         $results = $this->usage->find([
-            \Utopia\Usage\Query::equal('metric', ['metric-A', 'metric-B']),
-            \Utopia\Usage\Query::orderDesc('value'),
-            \Utopia\Usage\Query::limit(2),
+            \Utopia\Query\Query::equal('metric', ['metric-A', 'metric-B']),
+            \Utopia\Query\Query::orderDesc('value'),
+            \Utopia\Query\Query::limit(2),
         ]);
         $this->assertGreaterThanOrEqual(2, count($results));
         // First should be B (20), Second A (10)
@@ -377,9 +377,9 @@ class ClickHouseTest extends TestCase
 
         // 8. Order Asc
         $results = $this->usage->find([
-            \Utopia\Usage\Query::equal('metric', ['metric-A', 'metric-B']),
-            \Utopia\Usage\Query::orderAsc('value'),
-            \Utopia\Usage\Query::limit(2),
+            \Utopia\Query\Query::equal('metric', ['metric-A', 'metric-B']),
+            \Utopia\Query\Query::orderAsc('value'),
+            \Utopia\Query\Query::limit(2),
         ]);
         $this->assertGreaterThanOrEqual(2, count($results));
         // First should be A (10), Second B (20)

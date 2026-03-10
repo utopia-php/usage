@@ -102,7 +102,7 @@ abstract class Adapter
     /**
      * Get usage metrics by period
      *
-     * @param  array<\Utopia\Usage\Query>  $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      * @return array<Metric>
      */
     abstract public function getByPeriod(string $metric, string $period, array $queries = []): array;
@@ -110,7 +110,7 @@ abstract class Adapter
     /**
      * Get usage metrics between dates
      *
-     * @param  array<\Utopia\Usage\Query>  $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      * @return array<Metric>
      */
     abstract public function getBetweenDates(string $metric, string $startDate, string $endDate, array $queries = []): array;
@@ -118,14 +118,14 @@ abstract class Adapter
     /**
      * Count usage metrics by period
      *
-     * @param  array<\Utopia\Usage\Query>  $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      */
     abstract public function countByPeriod(string $metric, string $period, array $queries = []): int;
 
     /**
      * Sum usage metrics by period
      *
-     * @param  array<\Utopia\Usage\Query>  $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      */
     abstract public function sumByPeriod(string $metric, string $period, array $queries = []): int;
 
@@ -136,7 +136,7 @@ abstract class Adapter
      * Metrics not found will have a value of 0.
      *
      * @param  array<string>  $metrics  List of metric names
-     * @param  array<\Utopia\Usage\Query>  $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      * @return array<string, int>
      */
     abstract public function sumByPeriodBatch(array $metrics, string $period, array $queries = []): array;
@@ -147,7 +147,7 @@ abstract class Adapter
      * Returns an associative array keyed by metric name with arrays of Metric objects as values.
      *
      * @param  array<string>  $metrics  List of metric names
-     * @param  array<\Utopia\Usage\Query>  $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      * @return array<string, array<Metric>>
      */
     abstract public function getByPeriodBatch(array $metrics, string $period, array $queries = []): array;
@@ -156,14 +156,14 @@ abstract class Adapter
      * Purge usage metrics matching the given queries.
      * When no queries are provided, all metrics are deleted.
      *
-     * @param array<\Utopia\Usage\Query> $queries
+     * @param array<\Utopia\Query\Query> $queries
      */
     abstract public function purge(array $queries = []): bool;
 
     /**
      * Find metrics using Query objects.
      *
-     * @param array<\Utopia\Usage\Query> $queries
+     * @param array<\Utopia\Query\Query> $queries
      * @return array<Metric>
      */
     abstract public function find(array $queries = []): array;
@@ -171,7 +171,7 @@ abstract class Adapter
     /**
      * Count metrics using Query objects.
      *
-     * @param array<\Utopia\Usage\Query> $queries
+     * @param array<\Utopia\Query\Query> $queries
      * @return int
      */
     abstract public function count(array $queries = []): int;
