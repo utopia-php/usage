@@ -130,6 +130,29 @@ abstract class Adapter
     abstract public function sumByPeriod(string $metric, string $period, array $queries = []): int;
 
     /**
+     * Sum usage metrics by period for multiple metrics in a single query.
+     *
+     * Returns an associative array keyed by metric name with the sum as value.
+     * Metrics not found will have a value of 0.
+     *
+     * @param  array<string>  $metrics  List of metric names
+     * @param  array<\Utopia\Usage\Query>  $queries
+     * @return array<string, int>
+     */
+    abstract public function sumByPeriodBatch(array $metrics, string $period, array $queries = []): array;
+
+    /**
+     * Get usage metrics by period for multiple metrics in a single query.
+     *
+     * Returns an associative array keyed by metric name with arrays of Metric objects as values.
+     *
+     * @param  array<string>  $metrics  List of metric names
+     * @param  array<\Utopia\Usage\Query>  $queries
+     * @return array<string, array<Metric>>
+     */
+    abstract public function getByPeriodBatch(array $metrics, string $period, array $queries = []): array;
+
+    /**
      * Purge old usage metrics
      */
     abstract public function purge(string $datetime): bool;

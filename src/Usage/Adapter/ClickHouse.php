@@ -2092,6 +2092,123 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Sum usage metrics by period for multiple metrics in a single query.
+     *
+     * Uses GROUP BY metric to get per-metric sums in one ClickHouse roundtrip
+     * instead of N separate queries.
+     *
+     * @param  array<string>  $metrics  List of metric names
+     * @param  array<int,Query>  $queries
+     * @return array<string, int>
+     *
+     * @throws Exception
+     */
+    public function sumByPeriodBatch(array $metrics, string $period, array $queries = []): array
+    {
+        if (empty($metrics)) {
+            return [];
+        }
+
+        // Initialize all metrics to 0
+        $sums = \array_fill_keys($metrics, 0);
+
+        $this->setOperationContext('sumByPeriodBatch()');
+
+        $allQueries = [
+            Query::equal('metric', $metrics),
+            Query::equal('period', [$period]),
+        ];
+
+        foreach ($queries as $query) {
+            $allQueries[] = $query;
+        }
+
+        // Get table references with FINAL clause
+        $fromTable = $this->buildTableReference($this->getTableName());
+        $fromSnapshotTable = $this->buildTableReference($this->getSnapshotTableName());
+
+        // Parse queries
+        $parsed = $this->parseQueries($allQueries);
+
+        // Build WHERE clause
+        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+        $whereClause = $whereData['clause'];
+        $params = $whereData['params'];
+
+        $escapedMetric = $this->escapeIdentifier('metric');
+        $escapedValue = $this->escapeIdentifier('value');
+
+        // Single query with GROUP BY metric across both tables
+        $sql = "
+            SELECT {$escapedMetric}, SUM(total) as grand_total
+            FROM (
+                SELECT {$escapedMetric}, sum({$escapedValue}) as total FROM {$fromTable}{$whereClause} GROUP BY {$escapedMetric}
+                UNION ALL
+                SELECT {$escapedMetric}, sum({$escapedValue}) as total FROM {$fromSnapshotTable}{$whereClause} GROUP BY {$escapedMetric}
+            )
+            GROUP BY {$escapedMetric}
+            FORMAT JSON
+        ";
+
+        $result = $this->query($sql, $params);
+        $json = json_decode($result, true);
+
+        if (is_array($json) && isset($json['data']) && is_array($json['data'])) {
+            foreach ($json['data'] as $row) {
+                $metricName = $row['metric'] ?? '';
+                if (isset($sums[$metricName])) {
+                    $sums[$metricName] = (int) ($row['grand_total'] ?? 0);
+                }
+            }
+        }
+
+        return $sums;
+    }
+
+    /**
+     * Get usage metrics by period for multiple metrics in a single query.
+     *
+     * Uses WHERE metric IN (...) to fetch all metrics in one ClickHouse roundtrip.
+     *
+     * @param  array<string>  $metrics  List of metric names
+     * @param  array<int,Query>  $queries
+     * @return array<string, array<Metric>>
+     *
+     * @throws Exception
+     */
+    public function getByPeriodBatch(array $metrics, string $period, array $queries = []): array
+    {
+        if (empty($metrics)) {
+            return [];
+        }
+
+        // Initialize result array
+        $grouped = \array_fill_keys($metrics, []);
+
+        $allQueries = [
+            Query::equal('metric', $metrics),
+            Query::equal('period', [$period]),
+        ];
+
+        foreach ($queries as $query) {
+            $allQueries[] = $query;
+        }
+
+        $allQueries[] = Query::orderDesc('time');
+
+        $results = $this->find($allQueries);
+
+        foreach ($results as $metricObj) {
+            $metricName = $metricObj->getMetric();
+            if (isset($grouped[$metricName])) {
+                $grouped[$metricName][] = $metricObj;
+            }
+        }
+
+        return $grouped;
+    }
+
+    /**
      * Purge usage metrics older than the specified datetime.
      * Purges from both aggregated and snapshot tables.
      *

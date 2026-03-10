@@ -355,6 +355,60 @@ class Database extends SQL
         return $sum;
     }
 
+    public function sumByPeriodBatch(array $metrics, string $period, array $queries = []): array
+    {
+        if (empty($metrics)) {
+            return [];
+        }
+
+        // Initialize all metrics to 0
+        $sums = \array_fill_keys($metrics, 0);
+
+        /** @var array<string, array<Metric>> $results */
+        $results = $this->getByPeriodBatch($metrics, $period, $queries);
+
+        foreach ($results as $metricName => $metricResults) {
+            foreach ($metricResults as $result) {
+                $sums[$metricName] += (int) ($result->getValue(0) ?? 0);
+            }
+        }
+
+        return $sums;
+    }
+
+    public function getByPeriodBatch(array $metrics, string $period, array $queries = []): array
+    {
+        if (empty($metrics)) {
+            return [];
+        }
+
+        // Initialize result array
+        $grouped = \array_fill_keys($metrics, []);
+
+        /** @var array<Document> $result */
+        $result = $this->db->getAuthorization()->skip(function () use ($queries, $metrics, $period) {
+            $dbQueries = $this->convertQueriesToDatabase($queries);
+            $dbQueries[] = DatabaseQuery::equal('metric', $metrics);
+            $dbQueries[] = DatabaseQuery::equal('period', [$period]);
+            $dbQueries[] = DatabaseQuery::orderDesc();
+
+            return $this->db->find(
+                collection: $this->collection,
+                queries: $dbQueries,
+            );
+        });
+
+        foreach ($result as $doc) {
+            $metricObj = new Metric($doc->getArrayCopy());
+            $metricName = $metricObj->getMetric();
+            if (isset($grouped[$metricName])) {
+                $grouped[$metricName][] = $metricObj;
+            }
+        }
+
+        return $grouped;
+    }
+
     public function purge(string $datetime): bool
     {
         $this->db->getAuthorization()->skip(function () use ($datetime) {

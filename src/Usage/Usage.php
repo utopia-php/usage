@@ -172,6 +172,38 @@ class Usage
     }
 
     /**
+     * Sum usage metrics by period for multiple metrics in a single query.
+     *
+     * Collapses N sumByPeriod() calls into 1 query using WHERE metric IN (...).
+     *
+     * @param  array<string>  $metrics  List of metric names
+     * @param  array<\Utopia\Usage\Query>  $queries
+     * @return array<string, int>
+     *
+     * @throws \Exception
+     */
+    public function sumByPeriodBatch(array $metrics, string $period, array $queries = []): array
+    {
+        return $this->adapter->sumByPeriodBatch($metrics, $period, $queries);
+    }
+
+    /**
+     * Get usage metrics by period for multiple metrics in a single query.
+     *
+     * Collapses N getByPeriod() calls into 1 query using WHERE metric IN (...).
+     *
+     * @param  array<string>  $metrics  List of metric names
+     * @param  array<\Utopia\Usage\Query>  $queries
+     * @return array<string, array<Metric>>
+     *
+     * @throws \Exception
+     */
+    public function getByPeriodBatch(array $metrics, string $period, array $queries = []): array
+    {
+        return $this->adapter->getByPeriodBatch($metrics, $period, $queries);
+    }
+
+    /**
      * Purge usage metrics older than the specified datetime.
      *
      * @throws \Exception
