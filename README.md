@@ -43,6 +43,7 @@ use Utopia\Cache\Adapter\None as NoCache;
 use Utopia\Database\Adapter\MySQL;
 use Utopia\Database\Database;
 use Utopia\Usage\Usage;
+use Utopia\Usage\Adapter\Database as DatabaseAdapter;
 
 $dbHost = '127.0.0.1';
 $dbUser = 'root';
@@ -63,7 +64,8 @@ $database = new Database(new MySQL($pdo), $cache);
 $database->setNamespace('namespace');
 
 // Create Usage instance with Database adapter
-$usage = Usage::withDatabase($database);
+$adapter = new DatabaseAdapter($database);
+$usage = new Usage($adapter);
 $usage->setup();
 ```
 
@@ -77,15 +79,17 @@ The ClickHouse adapter provides high-performance analytics storage for massive s
 require_once __DIR__ . '/../../vendor/autoload.php';
 
 use Utopia\Usage\Usage;
+use Utopia\Usage\Adapter\ClickHouse;
 
 // Create Usage instance with ClickHouse adapter
-$usage = Usage::withClickHouse(
+$adapter = new ClickHouse(
     host: 'clickhouse-server',
     username: 'default',
     password: '',
     port: 8123,
     secure: false
 );
+$usage = new Usage($adapter);
 
 $usage->setup();
 ```
@@ -104,7 +108,7 @@ use Utopia\Usage\Adapter\Database;
 $adapter = new Database($database);
 
 // Use with Usage
-$usage = Usage::withAdapter($adapter);
+$usage = new Usage($adapter);
 $usage->setup();
 ```
 
@@ -207,7 +211,7 @@ $sum = $usage->sumByPeriod('requests', '1h');
 **Find with Query Objects**
 
 ```php
-use Utopia\Usage\Query;
+use Utopia\Query\Query;
 
 $metrics = $usage->find([
     Query::equal('metric', ['requests', 'bandwidth']),
@@ -224,10 +228,13 @@ $count = $usage->count([
 **Purge Old Usage**
 
 ```php
+use Utopia\Query\Query;
 use Utopia\Database\DateTime;
 
 $datetime = DateTime::addSeconds(new \DateTime(), -86400); // Delete metrics older than 24 hours
-$usage->purge($datetime);
+$usage->purge([
+    Query::lessThan('time', $datetime),
+]);
 ```
 
 ## Periods
@@ -266,7 +273,10 @@ The ClickHouse adapter uses the HTTP interface to store metrics in ClickHouse fo
 
 **Example**:
 ```php
-$usage = Usage::withClickHouse(
+use Utopia\Usage\Usage;
+use Utopia\Usage\Adapter\ClickHouse;
+
+$adapter = new ClickHouse(
     host: 'clickhouse.example.com',
     username: 'metrics_user',
     password: 'secure_password',
@@ -275,9 +285,9 @@ $usage = Usage::withClickHouse(
 );
 
 // Enable async inserts (server-side batching)
-$adapter = $usage->getAdapter();
 $adapter->setAsyncInserts(true, waitForConfirmation: true);
 
+$usage = new Usage($adapter);
 $usage->setup();
 ```
 
@@ -294,7 +304,7 @@ Extend the `Utopia\Usage\Adapter` abstract class and implement these methods:
 - `getBetweenDates(string $metric, string $startDate, string $endDate, array $queries): array` - Get metrics in date range
 - `countByPeriod(string $metric, string $period, array $queries): int` - Count metrics
 - `sumByPeriod(string $metric, string $period, array $queries): int` - Sum metric values
-- `purge(string $datetime): bool` - Delete old metrics
+- `purge(array $queries = []): bool` - Delete old metrics
 - `find(array $queries): array` - Find metrics with query objects
 - `count(array $queries): int` - Count metrics with query objects
 
