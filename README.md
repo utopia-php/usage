@@ -1,6 +1,5 @@
 # Utopia Usage
 
-[![Build Status](https://travis-ci.org/utopia-php/usage.svg?branch=master)](https://travis-ci.com/utopia-php/usage)
 ![Total Downloads](https://img.shields.io/packagist/dt/utopia-php/usage.svg)
 [![Discord](https://img.shields.io/discord/564160730845151244)](https://appwrite.io/discord)
 
