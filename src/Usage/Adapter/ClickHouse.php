@@ -1317,7 +1317,7 @@ class ClickHouse extends SQL
 
             // Validate tenant when provided (metric-level tenant overrides adapter tenant)
             if (array_key_exists('tenant', $metricData)) {
-                $tenantValue = $metricData['$tenant'];
+                $tenantValue = $metricData['tenant'];
 
                 if ($tenantValue !== null) {
                     if (is_int($tenantValue)) {
@@ -1753,6 +1753,7 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $paramName = 'param_' . $paramCounter++;
+                    $singleValue = null;
                     if ($attribute === 'time') {
                         if (is_array($values)) {
                             /** @var \DateTime|string|null $singleValue */
@@ -1774,6 +1775,7 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $paramName = 'param_' . $paramCounter++;
+                    $singleValue = null;
                     if ($attribute === 'time') {
                         if (is_array($values)) {
                             /** @var \DateTime|string|null $singleValue */

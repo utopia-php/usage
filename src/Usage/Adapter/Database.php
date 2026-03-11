@@ -45,11 +45,12 @@ class Database extends SQL
 
             // Check if collection exists
             $collectionName = $this->collection ?? 'usage';
-            if (!$this->db->getCollection($collectionName)->isEmpty()) {
+            if ($this->db->getCollection($collectionName)->isEmpty()) {
                 return [
-                    'healthy' => true,
+                    'healthy' => false,
                     'database' => $databaseName,
-                    'collection' => $collectionName
+                    'collection' => $collectionName,
+                    'error' => "Collection '{$collectionName}' is missing or empty in database '{$databaseName}'"
                 ];
             }
 
