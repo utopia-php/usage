@@ -134,6 +134,15 @@ abstract class Adapter
     abstract public function sumDaily(array $queries = [], string $attribute = 'value'): int;
 
     /**
+     * Sum multiple event metrics from the pre-aggregated daily table in one query.
+     *
+     * @param array<string> $metrics List of metric names
+     * @param array<\Utopia\Query\Query> $queries Additional filters (e.g. date range)
+     * @return array<string, int> Metric name => sum value
+     */
+    abstract public function sumDailyBatch(array $metrics, array $queries = []): array;
+
+    /**
      * Set the namespace prefix for table names.
      *
      * @param string $namespace

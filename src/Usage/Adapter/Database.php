@@ -285,6 +285,22 @@ class Database extends SQL
     }
 
     /**
+     * Sum multiple metrics from daily table — falls back to individual sumDaily calls.
+     *
+     * @param array<\Utopia\Query\Query> $queries
+     * @return array<string, int>
+     */
+    public function sumDailyBatch(array $metrics, array $queries = []): array
+    {
+        $totals = \array_fill_keys($metrics, 0);
+        foreach ($metrics as $metric) {
+            $metricQueries = array_merge($queries, [Query::equal('metric', [$metric])]);
+            $totals[$metric] = $this->sumDaily($metricQueries);
+        }
+        return $totals;
+    }
+
+    /**
      * Sum from daily table — Database adapter falls back to regular sum for events.
      *
      * @param array<Query> $queries

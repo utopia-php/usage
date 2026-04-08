@@ -1649,6 +1649,70 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Sum multiple event metrics from the pre-aggregated daily table in one query.
+     *
+     * @param array<string> $metrics
+     * @param array<Query> $queries
+     * @return array<string, int>
+     * @throws Exception
+     */
+    public function sumDailyBatch(array $metrics, array $queries = []): array
+    {
+        if (empty($metrics)) {
+            return [];
+        }
+
+        $this->setOperationContext('sumDailyBatch()');
+
+        $totals = \array_fill_keys($metrics, 0);
+
+        $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
+
+        // Build metric IN params
+        $metricParams = [];
+        $metricPlaceholders = [];
+        foreach ($metrics as $i => $metric) {
+            $paramName = 'metric_' . $i;
+            $metricParams[$paramName] = $metric;
+            $metricPlaceholders[] = "{{$paramName}:String}";
+        }
+        $metricInClause = implode(', ', $metricPlaceholders);
+
+        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
+        $params = array_merge($metricParams, $parsed['params']);
+
+        $whereData = $this->buildWhereClause($parsed['filters'], $params);
+        $whereClause = $whereData['clause'];
+        $params = $whereData['params'];
+
+        $metricFilter = $this->escapeIdentifier('metric') . " IN ({$metricInClause})";
+        $whereClause = !empty($whereClause)
+            ? $whereClause . ' AND ' . $metricFilter
+            : ' WHERE ' . $metricFilter;
+
+        $sql = "
+            SELECT metric, SUM(value) as total
+            FROM {$fromTable}{$whereClause}
+            GROUP BY metric
+            FORMAT JSON
+        ";
+
+        $result = $this->query($sql, $params);
+        $json = json_decode($result, true);
+
+        if (is_array($json) && isset($json['data']) && is_array($json['data'])) {
+            foreach ($json['data'] as $row) {
+                $metricName = $row['metric'] ?? '';
+                if (isset($totals[$metricName])) {
+                    $totals[$metricName] = (int) ($row['total'] ?? 0);
+                }
+            }
+        }
+
+        return $totals;
+    }
+
+    /**
      * Get time series data for metrics with query-time aggregation.
      *
      * Uses SUM for event metrics and argMax for gauge metrics.
