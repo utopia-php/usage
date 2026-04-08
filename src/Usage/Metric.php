@@ -163,7 +163,7 @@ class Metric extends ArrayObject
             return null;
         }
 
-        return (string) $tenant;
+        return is_string($tenant) ? $tenant : (is_numeric($tenant) ? (string) $tenant : null);
     }
 
     /**

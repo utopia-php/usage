@@ -61,7 +61,7 @@ class ClickHouse extends SQL
     private Client $client;
 
     /** @var bool Whether to use FINAL in SELECT queries to force merge-on-read (tests) */
-    private bool $useFinal = true;
+    private bool $useFinal = false;
 
     protected ?string $tenant = null;
 
@@ -523,9 +523,8 @@ class ClickHouse extends SQL
      */
     private function buildTableReference(string $tableName, ?bool $useFinal = null): string
     {
-        $useFinal = $useFinal ?? $this->useFinal;
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        return $escapedTable . ($useFinal ? ' FINAL' : '');
+        return $escapedTable;
     }
 
     /**
@@ -1307,7 +1306,7 @@ class ClickHouse extends SQL
                 $rows[] = $encoded;
             }
 
-            if (!empty($rows)) {
+            if (count($rows) > 0) {
                 $this->insert($tableName, $rows);
             }
         }
@@ -1332,7 +1331,7 @@ class ClickHouse extends SQL
             return $tenant;
         }
 
-        return (string) $tenant;
+        return is_numeric($tenant) ? (string) $tenant : (string) ($tenant ?? '');
     }
 
     /**

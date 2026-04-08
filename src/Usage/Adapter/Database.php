@@ -108,7 +108,7 @@ class Database extends SQL
         $this->db->getAuthorization()->skip(function () use ($metrics, $batchSize) {
             $documents = [];
             foreach ($metrics as $metric) {
-                $type = $metric['type'] ?? 'event';
+                $type = $metric['type'];
 
                 if ($type !== 'event' && $type !== 'gauge') {
                     throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: event, gauge");
@@ -164,7 +164,7 @@ class Database extends SQL
     /**
      * Get total value for a single metric.
      *
-     * Stub implementation for Database adapter.
+     * Returns SUM for event metrics, latest value for gauge metrics.
      *
      * @param string $metric
      * @param array<Query> $queries
@@ -172,14 +172,39 @@ class Database extends SQL
      */
     public function getTotal(string $metric, array $queries = []): int
     {
-        // Stub: not yet implemented
-        return 0;
+        $allQueries = array_merge($queries, [
+            Query::equal('metric', [$metric]),
+        ]);
+
+        /** @var array<Metric> $results */
+        $results = $this->find($allQueries);
+
+        if (empty($results)) {
+            return 0;
+        }
+
+        // Determine type from first result
+        $type = $results[0]->getType();
+
+        if ($type === 'gauge') {
+            // For gauge, return the last (most recently inserted) value
+            $lastResult = end($results);
+            return $lastResult !== false ? ($lastResult->getValue(0) ?? 0) : 0;
+        }
+
+        // For events, SUM all values
+        $sum = 0;
+        foreach ($results as $result) {
+            $sum += (int) ($result->getValue(0) ?? 0);
+        }
+
+        return $sum;
     }
 
     /**
      * Get totals for multiple metrics.
      *
-     * Stub implementation for Database adapter.
+     * Returns SUM for event metrics, latest value for gauge metrics.
      *
      * @param array<string> $metrics
      * @param array<Query> $queries
@@ -187,7 +212,17 @@ class Database extends SQL
      */
     public function getTotalBatch(array $metrics, array $queries = []): array
     {
-        return \array_fill_keys($metrics, 0);
+        if (empty($metrics)) {
+            return [];
+        }
+
+        $totals = \array_fill_keys($metrics, 0);
+
+        foreach ($metrics as $metric) {
+            $totals[$metric] = $this->getTotal($metric, $queries);
+        }
+
+        return $totals;
     }
 
     /**
@@ -377,7 +412,7 @@ class Database extends SQL
      */
     public function setTenant(?string $tenant): self
     {
-        $this->db->setTenant($tenant);
+        $this->db->setTenant($tenant !== null ? (int) $tenant : null);
         return $this;
     }
 
