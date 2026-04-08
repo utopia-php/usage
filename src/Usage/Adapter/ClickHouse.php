@@ -6,6 +6,7 @@ use Exception;
 use Utopia\Query\Query;
 use Utopia\Fetch\Client;
 use Utopia\Usage\Metric;
+use Utopia\Usage\Usage;
 use Utopia\Validator\Hostname;
 
 /**
@@ -1006,6 +1007,49 @@ class ClickHouse extends SQL
         ";
 
         $this->query($createBillingMvSql);
+
+        // Create daily aggregation target table (SummingMergeTree) for events
+        $dailyTableName = $tableName . '_daily';
+        $escapedDailyTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyTableName);
+
+        $dailyColumns = [
+            'metric String',
+            'tenant Nullable(UInt64)',
+            'value Int64',
+            'time DateTime64(3)',
+        ];
+
+        $dailyColumnDefs = implode(",\n                ", $dailyColumns);
+
+        $createDailyTableSql = "
+            CREATE TABLE IF NOT EXISTS {$escapedDailyTable} (
+                {$dailyColumnDefs}
+            )
+            ENGINE = SummingMergeTree()
+            ORDER BY (tenant, metric, time)
+            SETTINGS allow_nullable_key = 1
+        ";
+
+        $this->query($createDailyTableSql);
+
+        // Create materialized view for daily event aggregation
+        $dailyMvName = $tableName . '_daily_mv';
+        $escapedDailyMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyMvName);
+
+        $createDailyMvSql = "
+            CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedDailyMv}
+            TO {$escapedDailyTable}
+            AS SELECT
+                metric,
+                {$tenantSelect},
+                sum(value) as value,
+                toStartOfDay(time) as time
+            FROM {$escapedDatabaseAndTable}
+            WHERE type = 'event'
+            GROUP BY metric, tenant, time
+        ";
+
+        $this->query($createDailyMvSql);
     }
 
     /**
@@ -1127,8 +1171,8 @@ class ClickHouse extends SQL
             throw new Exception($prefix . 'Value cannot be negative');
         }
 
-        if ($type !== 'event' && $type !== 'gauge') {
-            throw new \InvalidArgumentException($prefix . "Invalid type '{$type}'. Allowed: event, gauge");
+        if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
+            throw new \InvalidArgumentException($prefix . "Invalid type '{$type}'. Allowed: " . Usage::TYPE_EVENT . ', ' . Usage::TYPE_GAUGE);
         }
 
         if (!is_array($tags)) {
@@ -1501,7 +1545,7 @@ class ClickHouse extends SQL
                 $metricName = $row['metric'] ?? '';
                 $type = $row['type'] ?? 'event';
                 $bucketTime = $row['bucket'] ?? '';
-                $value = ($type === 'event') ? (int) ($row['sum_value'] ?? 0) : (int) ($row['last_value'] ?? 0);
+                $value = ($type === Usage::TYPE_EVENT) ? (int) ($row['sum_value'] ?? 0) : (int) ($row['last_value'] ?? 0);
 
                 if (!isset($output[$metricName])) {
                     continue;
@@ -1630,9 +1674,9 @@ class ClickHouse extends SQL
 
         foreach ($json['data'] as $row) {
             $type = $row['type'] ?? 'event';
-            if ($type === 'event') {
+            if ($type === Usage::TYPE_EVENT) {
                 return (int) ($row['sum_val'] ?? 0);
-            } elseif ($type === 'gauge') {
+            } elseif ($type === Usage::TYPE_GAUGE) {
                 return (int) ($row['last_val'] ?? 0);
             }
         }
@@ -1709,9 +1753,9 @@ class ClickHouse extends SQL
                     continue;
                 }
 
-                if ($type === 'event') {
+                if ($type === Usage::TYPE_EVENT) {
                     $totals[$metricName] = (int) ($row['sum_val'] ?? 0);
-                } elseif ($type === 'gauge') {
+                } elseif ($type === Usage::TYPE_GAUGE) {
                     $totals[$metricName] = (int) ($row['last_val'] ?? 0);
                 }
             }

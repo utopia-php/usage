@@ -13,6 +13,9 @@ namespace Utopia\Usage;
  */
 class Usage
 {
+    public const TYPE_EVENT = 'event';
+    public const TYPE_GAUGE = 'gauge';
+
     private const DEFAULT_FLUSH_THRESHOLD = 10_000;
     private const DEFAULT_FLUSH_INTERVAL = 20;
 
@@ -234,8 +237,8 @@ class Usage
      */
     public function collect(string $metric, int $value, string $type, array $tags = []): self
     {
-        if ($type !== 'event' && $type !== 'gauge') {
-            throw new \InvalidArgumentException("Invalid metric type '{$type}'. Allowed: event, gauge");
+        if ($type !== self::TYPE_EVENT && $type !== self::TYPE_GAUGE) {
+            throw new \InvalidArgumentException("Invalid metric type '{$type}'. Allowed: " . self::TYPE_EVENT . ', ' . self::TYPE_GAUGE);
         }
 
         $key = $metric . ':' . $type;
