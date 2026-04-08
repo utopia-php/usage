@@ -1028,8 +1028,8 @@ class ClickHouse extends SQL
     /**
      * Create the events daily SummingMergeTree table.
      *
-     * Minimal schema: only metric, value, time, resource, resourceId, tenant.
-     * No path/status/userAgent/country/tags — those don't aggregate.
+     * Minimal schema: metric, value, time, tenant.
+     * Resource-level breakdown uses the raw events table.
      *
      * @throws Exception
      */
@@ -1042,8 +1042,6 @@ class ClickHouse extends SQL
             'metric String',
             'value Int64',
             'time DateTime64(3)',
-            'resource Nullable(String)',
-            'resourceId Nullable(String)',
         ];
 
         if ($this->sharedTables) {
@@ -1053,14 +1051,12 @@ class ClickHouse extends SQL
         $indexes = [
             'INDEX index_metric (metric) TYPE bloom_filter GRANULARITY 1',
             'INDEX index_time (time) TYPE bloom_filter GRANULARITY 1',
-            'INDEX index_resource (resource) TYPE bloom_filter GRANULARITY 1',
-            'INDEX index_resourceId (resourceId) TYPE bloom_filter GRANULARITY 1',
         ];
 
         $columnDefs = implode(",\n                ", $columns);
         $indexDefsStr = ",\n                " . implode(",\n                ", $indexes);
 
-        $dailyOrderBy = $this->sharedTables ? '(tenant, metric, resource, resourceId, time)' : '(metric, resource, resourceId, time)';
+        $dailyOrderBy = $this->sharedTables ? '(tenant, metric, time)' : '(metric, time)';
 
         $createDailyTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDailyTable} (
@@ -1091,13 +1087,13 @@ class ClickHouse extends SQL
         $escapedDailyMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyMvName);
 
         if ($this->sharedTables) {
-            $innerSelect = "metric, resource, resourceId, tenant, sum(value) as value, toStartOfDay(time) as d";
-            $innerGroupBy = "metric, resource, resourceId, tenant, d";
-            $outerSelect = "metric, value, d as time, resource, resourceId, tenant";
+            $innerSelect = "metric, tenant, sum(value) as value, toStartOfDay(time) as d";
+            $innerGroupBy = "metric, tenant, d";
+            $outerSelect = "metric, value, d as time, tenant";
         } else {
-            $innerSelect = "metric, resource, resourceId, sum(value) as value, toStartOfDay(time) as d";
-            $innerGroupBy = "metric, resource, resourceId, d";
-            $outerSelect = "metric, value, d as time, resource, resourceId";
+            $innerSelect = "metric, sum(value) as value, toStartOfDay(time) as d";
+            $innerGroupBy = "metric, d";
+            $outerSelect = "metric, value, d as time";
         }
 
         $createDailyMvSql = "
@@ -1610,7 +1606,7 @@ class ClickHouse extends SQL
         $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
-        $dailyColumns = ['metric', 'value', 'time', 'resource', 'resourceId'];
+        $dailyColumns = ['metric', 'value', 'time'];
         if ($this->sharedTables) {
             $dailyColumns[] = 'tenant';
         }
