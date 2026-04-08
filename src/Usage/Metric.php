@@ -19,19 +19,29 @@ use ArrayObject;
  *     '$id' => 'unique-id',
  *     'metric' => 'bandwidth',
  *     'value' => 1024,
- *     'type' => 'event',
  *     'time' => '2025-12-09 10:00:00',
- *     'tags' => ['region' => 'us-east', 'project' => 'my-app']
+ *     'path' => '/v1/storage/files',
+ *     'method' => 'POST',
+ *     'status' => '201',
+ *     'resource' => 'bucket',
+ *     'resourceId' => 'abc123',
+ *     'tags' => ['region' => 'us-east', 'country' => 'US']
  * ]);
  *
  * echo $metric->getMetric(); // 'bandwidth'
  * echo $metric->getValue();  // 1024
+ * echo $metric->getPath();   // '/v1/storage/files'
  * ```
  *
  * @extends ArrayObject<string, mixed>
  */
 class Metric extends ArrayObject
 {
+    /**
+     * Event-specific column names that are extracted from tags into dedicated columns.
+     */
+    public const EVENT_COLUMNS = ['path', 'method', 'status', 'resource', 'resourceId'];
+
     /**
      * Construct a new metric object.
      *
@@ -40,8 +50,12 @@ class Metric extends ArrayObject
      * - $id: Unique identifier for the metric
      * - metric: Name/type of the metric being tracked
      * - value: Numeric value of the metric
-     * - type: Metric type ('event' or 'gauge')
      * - time: Timestamp when the metric was recorded
+     * - path: API endpoint path (events only)
+     * - method: HTTP method (events only)
+     * - status: HTTP status code (events only)
+     * - resource: Resource type (events only)
+     * - resourceId: Resource ID (events only)
      * - tags: Additional metadata as key-value pairs
      * - tenant: Tenant ID for multi-tenant environments
      *
@@ -98,10 +112,14 @@ class Metric extends ArrayObject
     /**
      * Get metric type.
      *
-     * Returns the type of this metric.
+     * Returns the type of this metric based on which table it was stored in.
      * Values:
      * - 'event': Additive metrics (bandwidth, requests, etc.) aggregated with SUM
      * - 'gauge': Point-in-time metrics (storage, user count, etc.) aggregated with argMax
+     *
+     * Note: The type is no longer stored in the table schema (since table choice implies type),
+     * but this method is kept for backward compatibility. It reads from the 'type' attribute
+     * which callers may still set.
      *
      * @return string The type identifier, defaults to 'event'
      */
@@ -127,6 +145,61 @@ class Metric extends ArrayObject
     }
 
     /**
+     * Get API endpoint path (event metrics only).
+     *
+     * @return string|null The path, or null if not set
+     */
+    public function getPath(): ?string
+    {
+        $path = $this->getAttribute('path', null);
+        return is_string($path) ? $path : null;
+    }
+
+    /**
+     * Get HTTP method (event metrics only).
+     *
+     * @return string|null The HTTP method (GET, POST, etc.), or null if not set
+     */
+    public function getMethod(): ?string
+    {
+        $method = $this->getAttribute('method', null);
+        return is_string($method) ? $method : null;
+    }
+
+    /**
+     * Get HTTP status code (event metrics only).
+     *
+     * @return string|null The status code as string, or null if not set
+     */
+    public function getStatus(): ?string
+    {
+        $status = $this->getAttribute('status', null);
+        return is_string($status) ? $status : null;
+    }
+
+    /**
+     * Get resource type (event metrics only).
+     *
+     * @return string|null The resource type, or null if not set
+     */
+    public function getResource(): ?string
+    {
+        $resource = $this->getAttribute('resource', null);
+        return is_string($resource) ? $resource : null;
+    }
+
+    /**
+     * Get resource ID (event metrics only).
+     *
+     * @return string|null The resource ID, or null if not set
+     */
+    public function getResourceId(): ?string
+    {
+        $resourceId = $this->getAttribute('resourceId', null);
+        return is_string($resourceId) ? $resourceId : null;
+    }
+
+    /**
      * Get tags.
      *
      * Returns additional metadata associated with this metric as key-value pairs.
@@ -134,9 +207,12 @@ class Metric extends ArrayObject
      *
      * Common tag examples:
      * - region: Geographic region (us-east, eu-west)
-     * - project: Project or application identifier
-     * - environment: dev, staging, production
-     * - resource: Specific resource being measured
+     * - userAgent: Client user agent
+     * - country: Country code
+     *
+     * Note: For event metrics, path/method/status/resource/resourceId are stored
+     * as dedicated columns, not in tags. Remaining metadata (region, userAgent, etc.)
+     * stays in the tags JSON.
      *
      * @return array<string, mixed> Associative array of tags
      */
@@ -290,24 +366,15 @@ class Metric extends ArrayObject
     }
 
     /**
-     * Get metric schema definition.
+     * Get event table schema definition.
      *
-     * Returns the attribute schema that defines the structure of metric data.
-     * This is used by adapters to understand the metric structure and create
-     * appropriate database tables/collections.
-     *
-     * Each attribute definition includes:
-     * - $id: string (attribute identifier)
-     * - type: string (attribute data type: string, integer, datetime)
-     * - size: int (max size for strings, 0 for others)
-     * - required: bool (whether the attribute is required)
-     * - signed: bool (for numeric types)
-     * - array: bool (whether value is an array)
-     * - filters: array<string> (data filters/validation rules)
+     * Returns the attribute schema for the events table which stores
+     * raw request events with metadata columns for path, method, status,
+     * resource, and resourceId.
      *
      * @return array<int, array<string, mixed>>
      */
-    public static function getSchema(): array
+    public static function getEventSchema(): array
     {
         return [
             [
@@ -329,9 +396,96 @@ class Metric extends ArrayObject
                 'filters' => [],
             ],
             [
-                '$id' => 'type',
+                '$id' => 'time',
+                'type' => 'datetime',
+                'format' => '',
+                'size' => 0,
+                'signed' => true,
+                'required' => false,
+                'array' => false,
+                'filters' => ['datetime'],
+            ],
+            [
+                '$id' => 'path',
+                'type' => 'string',
+                'size' => 1024,
+                'required' => false,
+                'signed' => true,
+                'array' => false,
+                'filters' => [],
+            ],
+            [
+                '$id' => 'method',
                 'type' => 'string',
                 'size' => 16,
+                'required' => false,
+                'signed' => true,
+                'array' => false,
+                'filters' => [],
+            ],
+            [
+                '$id' => 'status',
+                'type' => 'string',
+                'size' => 16,
+                'required' => false,
+                'signed' => true,
+                'array' => false,
+                'filters' => [],
+            ],
+            [
+                '$id' => 'resource',
+                'type' => 'string',
+                'size' => 255,
+                'required' => false,
+                'signed' => true,
+                'array' => false,
+                'filters' => [],
+            ],
+            [
+                '$id' => 'resourceId',
+                'type' => 'string',
+                'size' => 255,
+                'required' => false,
+                'signed' => true,
+                'array' => false,
+                'filters' => [],
+            ],
+            [
+                '$id' => 'tags',
+                'type' => 'string',
+                'size' => 16777216,
+                'required' => false,
+                'signed' => true,
+                'array' => false,
+                'filters' => ['json'],
+            ],
+        ];
+    }
+
+    /**
+     * Get gauge table schema definition.
+     *
+     * Returns the attribute schema for the gauges table which stores
+     * simple resource snapshots (metric, value, time, tags).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function getGaugeSchema(): array
+    {
+        return [
+            [
+                '$id' => 'metric',
+                'type' => 'string',
+                'size' => 255,
+                'required' => true,
+                'signed' => true,
+                'array' => false,
+                'filters' => [],
+            ],
+            [
+                '$id' => 'value',
+                'type' => 'integer',
+                'size' => 0,
                 'required' => true,
                 'signed' => true,
                 'array' => false,
@@ -360,14 +514,24 @@ class Metric extends ArrayObject
     }
 
     /**
-     * Get metric indexes definition.
+     * Get combined schema (backward compat).
      *
-     * Returns the index definitions that should be created on the metric table.
-     * Indexes are used to optimize query performance for common filter operations.
+     * Returns the event schema which is a superset. This preserves
+     * backward compatibility with code that calls Metric::getSchema().
      *
      * @return array<int, array<string, mixed>>
      */
-    public static function getIndexes(): array
+    public static function getSchema(): array
+    {
+        return self::getEventSchema();
+    }
+
+    /**
+     * Get event table indexes.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function getEventIndexes(): array
     {
         return [
             [
@@ -376,9 +540,50 @@ class Metric extends ArrayObject
                 'attributes' => ['metric'],
             ],
             [
-                '$id' => 'index-type',
+                '$id' => 'index-time',
                 'type' => 'key',
-                'attributes' => ['type'],
+                'attributes' => ['time'],
+            ],
+            [
+                '$id' => 'index-path',
+                'type' => 'key',
+                'attributes' => ['path'],
+            ],
+            [
+                '$id' => 'index-method',
+                'type' => 'key',
+                'attributes' => ['method'],
+            ],
+            [
+                '$id' => 'index-status',
+                'type' => 'key',
+                'attributes' => ['status'],
+            ],
+            [
+                '$id' => 'index-resource',
+                'type' => 'key',
+                'attributes' => ['resource'],
+            ],
+            [
+                '$id' => 'index-resourceId',
+                'type' => 'key',
+                'attributes' => ['resourceId'],
+            ],
+        ];
+    }
+
+    /**
+     * Get gauge table indexes.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function getGaugeIndexes(): array
+    {
+        return [
+            [
+                '$id' => 'index-metric',
+                'type' => 'key',
+                'attributes' => ['metric'],
             ],
             [
                 '$id' => 'index-time',
@@ -386,6 +591,19 @@ class Metric extends ArrayObject
                 'attributes' => ['time'],
             ],
         ];
+    }
+
+    /**
+     * Get combined indexes (backward compat).
+     *
+     * Returns the event indexes. This preserves backward compatibility
+     * with code that calls Metric::getIndexes().
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function getIndexes(): array
+    {
+        return self::getEventIndexes();
     }
 
     /**
@@ -399,17 +617,18 @@ class Metric extends ArrayObject
      * - Values are in valid ranges
      *
      * @param  array<string, mixed>  $data  The metric data to validate
+     * @param  string  $type  The metric type ('event' or 'gauge') to validate against
      * @throws \Exception If validation fails
      */
-    public static function validate(array $data): void
+    public static function validate(array $data, string $type = 'event'): void
     {
-        $schema = self::getSchema();
+        $schema = $type === 'gauge' ? self::getGaugeSchema() : self::getEventSchema();
 
         foreach ($schema as $attribute) {
             /** @var string $attrId */
             $attrId = $attribute['$id'];
             $required = $attribute['required'] ?? false;
-            $type = $attribute['type'] ?? 'string';
+            $attrType = $attribute['type'] ?? 'string';
             /** @var int $size */
             $size = $attribute['size'] ?? 0;
 
@@ -434,7 +653,7 @@ class Metric extends ArrayObject
             }
 
             // Validate based on attribute type
-            match ($type) {
+            match ($attrType) {
                 'string' => self::validateStringAttribute($attrId, $value, $size),
                 'integer' => self::validateIntegerAttribute($attrId, $value),
                 'datetime' => self::validateDatetimeAttribute($attrId, $value),

@@ -24,13 +24,15 @@ abstract class Adapter
     /**
      * Add metrics in batch (raw append).
      *
-     * Appends rows to the single MergeTree table. Each row must include
-     * a 'type' field ('event' or 'gauge') and a 'metric' name.
+     * Routes rows to the correct table based on the $type parameter.
+     * For events, path/method/status/resource/resourceId are extracted from tags
+     * into dedicated columns; remaining tags stay in the tags JSON.
      *
      * @param  array<array{metric: string, value: int, type: string, tags?: array<string,mixed>}>  $metrics
+     * @param  string  $type  Metric type: 'event' or 'gauge' — determines which table to write to
      * @param  int  $batchSize  Maximum number of metrics per INSERT statement
      */
-    abstract public function addBatch(array $metrics, int $batchSize = 1000): bool;
+    abstract public function addBatch(array $metrics, string $type, int $batchSize = 1000): bool;
 
     /**
      * Get time series data for metrics with query-time aggregation.
@@ -44,21 +46,23 @@ abstract class Adapter
      * @param  string  $endDate  End datetime string
      * @param  array<\Utopia\Query\Query>  $queries  Additional query filters
      * @param  bool  $zeroFill  Whether to fill gaps with zero values
+     * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
      */
-    abstract public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true): array;
+    abstract public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array;
 
     /**
      * Get total value for a single metric.
      *
      * Returns sum for event metrics, latest value for gauge metrics.
-     * Auto-detects type from stored data.
+     * When $type is null, queries both tables.
      *
      * @param  string  $metric  Metric name
      * @param  array<\Utopia\Query\Query>  $queries  Additional query filters
+     * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      * @return int
      */
-    abstract public function getTotal(string $metric, array $queries = []): int;
+    abstract public function getTotal(string $metric, array $queries = [], ?string $type = null): int;
 
     /**
      * Get totals for multiple metrics in a single query.
@@ -67,42 +71,47 @@ abstract class Adapter
      *
      * @param  array<string>  $metrics  List of metric names
      * @param  array<\Utopia\Query\Query>  $queries  Additional query filters
+     * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      * @return array<string, int>
      */
-    abstract public function getTotalBatch(array $metrics, array $queries = []): array;
+    abstract public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array;
 
     /**
      * Purge usage metrics matching the given queries.
      * When no queries are provided, all metrics are deleted.
      *
      * @param array<\Utopia\Query\Query> $queries
+     * @param string|null $type Metric type: 'event', 'gauge', or null (purge both)
      */
-    abstract public function purge(array $queries = []): bool;
+    abstract public function purge(array $queries = [], ?string $type = null): bool;
 
     /**
      * Find metrics using Query objects.
      *
      * @param array<\Utopia\Query\Query> $queries
+     * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
      * @return array<Metric>
      */
-    abstract public function find(array $queries = []): array;
+    abstract public function find(array $queries = [], ?string $type = null): array;
 
     /**
      * Count metrics using Query objects.
      *
      * @param array<\Utopia\Query\Query> $queries
+     * @param string|null $type Metric type: 'event', 'gauge', or null (count both)
      * @return int
      */
-    abstract public function count(array $queries = []): int;
+    abstract public function count(array $queries = [], ?string $type = null): int;
 
     /**
      * Sum metric values using Query objects.
      *
      * @param array<\Utopia\Query\Query> $queries
      * @param string $attribute Attribute to sum (default: 'value')
+     * @param string|null $type Metric type: 'event', 'gauge', or null (sum both)
      * @return int
      */
-    abstract public function sum(array $queries = [], string $attribute = 'value'): int;
+    abstract public function sum(array $queries = [], string $attribute = 'value', ?string $type = null): int;
 
     /**
      * Set the namespace prefix for table names.

@@ -7,6 +7,7 @@ use Utopia\Database\Document;
 use Utopia\Database\Exception\Duplicate as DuplicateException;
 use Utopia\Database\Query as DatabaseQuery;
 use Utopia\Usage\Metric;
+use Utopia\Usage\Usage;
 use Utopia\Query\Query;
 
 class Database extends SQL
@@ -71,8 +72,9 @@ class Database extends SQL
             throw new \Exception('You need to create the database before running Usage setup');
         }
 
-        $attributes = $this->getAttributeDocuments();
-        $indexDocs = $this->getIndexDocuments();
+        // Use event attributes which is a superset (includes path/method/status/resource/resourceId)
+        $attributes = $this->getAttributeDocuments('event');
+        $indexDocs = $this->getIndexDocuments('event');
 
         try {
             $this->db->createCollection(
@@ -88,7 +90,7 @@ class Database extends SQL
     /**
      * Get column definition for Database adapter (not used, but required by SQL parent)
      */
-    protected function getColumnDefinition(string $id): string
+    protected function getColumnDefinition(string $id, string $type = 'event'): string
     {
         return '';
     }
@@ -96,36 +98,44 @@ class Database extends SQL
     /**
      * Add metrics in batch (raw append).
      *
-     * Stub implementation for Database adapter — inserts documents with UUID IDs.
+     * Database adapter uses a single collection for both types. The $type parameter
+     * is stored as a field in each document for query-time differentiation.
      *
-     * @param array<array{metric: string, value: int, type: string, tags?: array<string,mixed>}> $metrics
+     * @param array<array{metric: string, value: int, type?: string, tags?: array<string,mixed>}> $metrics
+     * @param string $type Metric type: 'event' or 'gauge'
      * @param int $batchSize
      * @return bool
      * @throws \Exception
      */
-    public function addBatch(array $metrics, int $batchSize = 1000): bool
+    public function addBatch(array $metrics, string $type = Usage::TYPE_EVENT, int $batchSize = 1000): bool
     {
-        $this->db->getAuthorization()->skip(function () use ($metrics, $batchSize) {
+        $this->db->getAuthorization()->skip(function () use ($metrics, $type, $batchSize) {
             $documents = [];
             foreach ($metrics as $metric) {
-                $type = $metric['type'];
-
-                if ($type !== 'event' && $type !== 'gauge') {
+                if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
                     throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: event, gauge");
                 }
 
                 $tags = $metric['tags'] ?? [];
                 ksort($tags);
 
-                $documents[] = new Document([
+                $docData = [
                     '$id' => $this->generateId(),
                     '$permissions' => [],
                     'metric' => $metric['metric'],
                     'value' => $metric['value'],
-                    'type' => $type,
                     'time' => (new \DateTime())->format('Y-m-d H:i:s.v'),
                     'tags' => $tags,
-                ]);
+                ];
+
+                // For events, extract event-specific columns from tags
+                if ($type === Usage::TYPE_EVENT) {
+                    foreach (Metric::EVENT_COLUMNS as $col) {
+                        $docData[$col] = $tags[$col] ?? null;
+                    }
+                }
+
+                $documents[] = new Document($docData);
             }
 
             foreach (array_chunk($documents, max(1, $batchSize)) as $chunk) {
@@ -149,9 +159,10 @@ class Database extends SQL
      * @param string $endDate
      * @param array<Query> $queries
      * @param bool $zeroFill
+     * @param string|null $type
      * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
      */
-    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true): array
+    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
     {
         // Stub: Database adapter time series not yet implemented
         $output = [];
@@ -168,31 +179,48 @@ class Database extends SQL
      *
      * @param string $metric
      * @param array<Query> $queries
+     * @param string|null $type
      * @return int
      */
-    public function getTotal(string $metric, array $queries = []): int
+    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
     {
         $allQueries = array_merge($queries, [
             Query::equal('metric', [$metric]),
         ]);
 
+        // If type is specified, query only that type
+        $queryType = $type;
         /** @var array<Metric> $results */
-        $results = $this->find($allQueries);
+        $results = $this->find($allQueries, $queryType);
 
         if (empty($results)) {
             return 0;
         }
 
-        // Determine type from first result
-        $type = $results[0]->getType();
-
-        if ($type === 'gauge') {
+        if ($type === Usage::TYPE_GAUGE) {
             // For gauge, return the last (most recently inserted) value
             $lastResult = end($results);
             return $lastResult->getValue(0) ?? 0;
         }
 
-        // For events, SUM all values
+        if ($type === Usage::TYPE_EVENT) {
+            // For events, SUM all values
+            $sum = 0;
+            foreach ($results as $result) {
+                $sum += (int) ($result->getValue(0) ?? 0);
+            }
+            return $sum;
+        }
+
+        // Type is null — try to detect from results
+        $firstType = $results[0]->getType();
+
+        if ($firstType === 'gauge') {
+            $lastResult = end($results);
+            return $lastResult->getValue(0) ?? 0;
+        }
+
+        // Default to SUM for events
         $sum = 0;
         foreach ($results as $result) {
             $sum += (int) ($result->getValue(0) ?? 0);
@@ -204,13 +232,12 @@ class Database extends SQL
     /**
      * Get totals for multiple metrics.
      *
-     * Returns SUM for event metrics, latest value for gauge metrics.
-     *
      * @param array<string> $metrics
      * @param array<Query> $queries
+     * @param string|null $type
      * @return array<string, int>
      */
-    public function getTotalBatch(array $metrics, array $queries = []): array
+    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
     {
         if (empty($metrics)) {
             return [];
@@ -219,7 +246,7 @@ class Database extends SQL
         $totals = \array_fill_keys($metrics, 0);
 
         foreach ($metrics as $metric) {
-            $totals[$metric] = $this->getTotal($metric, $queries);
+            $totals[$metric] = $this->getTotal($metric, $queries, $type);
         }
 
         return $totals;
@@ -230,12 +257,13 @@ class Database extends SQL
      *
      * @param array<Query> $queries
      * @param string $attribute
+     * @param string|null $type
      * @return int
      */
-    public function sum(array $queries = [], string $attribute = 'value'): int
+    public function sum(array $queries = [], string $attribute = 'value', ?string $type = null): int
     {
         /** @var array<Metric> $results */
-        $results = $this->find($queries);
+        $results = $this->find($queries, $type);
 
         $sum = 0;
         foreach ($results as $result) {
@@ -331,7 +359,11 @@ class Database extends SQL
         return $dbQueries;
     }
 
-    public function purge(array $queries = []): bool
+    /**
+     * @param array<Query> $queries
+     * @param string|null $type
+     */
+    public function purge(array $queries = [], ?string $type = null): bool
     {
         $this->db->getAuthorization()->skip(function () use ($queries) {
             $dbQueries = $this->convertQueriesToDatabase($queries);
@@ -356,9 +388,10 @@ class Database extends SQL
      * Find metrics using Query objects.
      *
      * @param array<Query> $queries
+     * @param string|null $type
      * @return array<Metric>
      */
-    public function find(array $queries = []): array
+    public function find(array $queries = [], ?string $type = null): array
     {
         /** @var array<Document> $result */
         $result = $this->db->getAuthorization()->skip(function () use ($queries) {
@@ -376,9 +409,10 @@ class Database extends SQL
      * Count metrics using Query objects.
      *
      * @param array<Query> $queries
+     * @param string|null $type
      * @return int
      */
-    public function count(array $queries = []): int
+    public function count(array $queries = [], ?string $type = null): int
     {
         /** @var int $count */
         $count = $this->db->getAuthorization()->skip(function () use ($queries) {

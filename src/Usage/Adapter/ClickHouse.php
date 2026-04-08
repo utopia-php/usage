@@ -13,14 +13,18 @@ use Utopia\Validator\Hostname;
  * ClickHouse Adapter for Usage
  *
  * This adapter stores usage metrics in ClickHouse using HTTP interface.
- * Uses a single MergeTree table with a 'type' column ('event' or 'gauge')
- * and query-time aggregation (SUM for events, argMax for gauges).
+ * Uses two separate tables:
+ * - Events table (MergeTree): raw request events with metadata columns
+ *   (path, method, status, resource, resourceId)
+ * - Gauges table (MergeTree): simple resource snapshots (metric, value, time, tags)
  *
- * A SummingMergeTree materialized view pre-aggregates events by day for fast billing/analytics queries.
+ * A SummingMergeTree materialized view pre-aggregates events by day for fast
+ * billing/analytics queries.
  *
  * Features:
- * - Single MergeTree table for all metrics (no period fan-out)
- * - Type-based aggregation at query time
+ * - Two-table architecture (events + gauges)
+ * - Event-specific columns extracted from tags
+ * - SUM aggregation for events, argMax for gauges
  * - Safe SQL injection prevention using ClickHouse parameter binding
  * - Multi-tenant support with optional shared tables
  * - Namespace support for table name prefixes
@@ -487,7 +491,7 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Get the table name with namespace prefix.
+     * Get the base table name with namespace prefix.
      *
      * @return string
      */
@@ -503,7 +507,48 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Build a fully qualified table reference with database, escaping, and optional FINAL clause.
+     * Get the events table name.
+     *
+     * @return string
+     */
+    private function getEventsTableName(): string
+    {
+        return $this->getTableName() . '_events';
+    }
+
+    /**
+     * Get the gauges table name.
+     *
+     * @return string
+     */
+    private function getGaugesTableName(): string
+    {
+        return $this->getTableName() . '_gauges';
+    }
+
+    /**
+     * Get the events daily table name.
+     *
+     * @return string
+     */
+    private function getEventsDailyTableName(): string
+    {
+        return $this->getTableName() . '_events_daily';
+    }
+
+    /**
+     * Get the appropriate table name for a given type.
+     *
+     * @param string $type 'event' or 'gauge'
+     * @return string
+     */
+    private function getTableForType(string $type): string
+    {
+        return $type === Usage::TYPE_GAUGE ? $this->getGaugesTableName() : $this->getEventsTableName();
+    }
+
+    /**
+     * Build a fully qualified table reference with database and escaping.
      *
      * @param string $tableName The table name (with namespace already applied)
      * @return string Fully qualified table reference
@@ -881,7 +926,11 @@ class ClickHouse extends SQL
     /**
      * Setup ClickHouse table structure.
      *
-     * Creates a single MergeTree table and a SummingMergeTree daily materialized view for events.
+     * Creates:
+     * 1. Events table (MergeTree) with event-specific columns
+     * 2. Events daily table (SummingMergeTree) for pre-aggregation
+     * 3. Events daily materialized view
+     * 4. Gauges table (MergeTree) with simple schema
      *
      * @throws Exception
      */
@@ -894,19 +943,47 @@ class ClickHouse extends SQL
         $createDbSql = "CREATE DATABASE IF NOT EXISTS {$escapedDatabase}";
         $this->query($createDbSql);
 
-        // Build column definitions from schema
-        $columns = [
-            'id String',
-        ];
+        // --- Events table ---
+        $this->createTable(
+            $this->getEventsTableName(),
+            'event',
+            $this->getEventIndexes()
+        );
 
-        foreach ($this->getAttributes() as $attribute) {
+        // --- Events daily table (SummingMergeTree) ---
+        $this->createDailyTable();
+
+        // --- Events daily materialized view ---
+        $this->createDailyMaterializedView();
+
+        // --- Gauges table ---
+        $this->createTable(
+            $this->getGaugesTableName(),
+            'gauge',
+            $this->getGaugeIndexes()
+        );
+    }
+
+    /**
+     * Create a MergeTree table for the given type.
+     *
+     * @param string $tableName
+     * @param string $type 'event' or 'gauge'
+     * @param array<int, array<string, mixed>> $indexes
+     * @throws Exception
+     */
+    private function createTable(string $tableName, string $type, array $indexes): void
+    {
+        $columns = ['id String'];
+
+        foreach ($this->getAttributes($type) as $attribute) {
             /** @var string $id */
             $id = $attribute['$id'];
 
             if ($id === 'time') {
                 $columns[] = 'time DateTime64(3)';
             } else {
-                $columns[] = $this->getColumnDefinition($id);
+                $columns[] = $this->getColumnDefinition($id, $type);
             }
         }
 
@@ -915,9 +992,69 @@ class ClickHouse extends SQL
             $columns[] = 'tenant Nullable(String)';
         }
 
-        // Build indexes from schema
+        // Build indexes
+        $indexDefs = [];
+        foreach ($indexes as $index) {
+            /** @var string $indexName */
+            $indexName = $index['$id'];
+            /** @var array<string> $attributes */
+            $attributes = $index['attributes'];
+            $escapedIndexName = $this->escapeIdentifier($indexName);
+            $escapedAttributes = array_map(fn ($attr) => $this->escapeIdentifier($attr), $attributes);
+            $attributeList = implode(', ', $escapedAttributes);
+            $indexDefs[] = "INDEX {$escapedIndexName} ({$attributeList}) TYPE bloom_filter GRANULARITY 1";
+        }
+
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+
+        $columnDefs = implode(",\n                ", $columns);
+        $indexDefsStr = !empty($indexDefs) ? ",\n                " . implode(",\n                ", $indexDefs) : '';
+
+        $orderByExpr = $this->sharedTables ? '(tenant, id)' : '(id)';
+
+        $createTableSql = "
+            CREATE TABLE IF NOT EXISTS {$escapedDatabaseAndTable} (
+                {$columnDefs}{$indexDefsStr}
+            )
+            ENGINE = MergeTree()
+            ORDER BY {$orderByExpr}
+            PARTITION BY toYYYYMM(time)
+            SETTINGS index_granularity = 8192, allow_nullable_key = 1
+        ";
+
+        $this->query($createTableSql);
+    }
+
+    /**
+     * Create the events daily SummingMergeTree table.
+     *
+     * @throws Exception
+     */
+    private function createDailyTable(): void
+    {
+        $dailyTableName = $this->getEventsDailyTableName();
+        $escapedDailyTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyTableName);
+
+        // Daily table has same schema as events table
+        $columns = ['id String'];
+
+        foreach ($this->getAttributes('event') as $attribute) {
+            /** @var string $id */
+            $id = $attribute['$id'];
+
+            if ($id === 'time') {
+                $columns[] = 'time DateTime64(3)';
+            } else {
+                $columns[] = $this->getColumnDefinition($id, 'event');
+            }
+        }
+
+        if ($this->sharedTables) {
+            $columns[] = 'tenant Nullable(String)';
+        }
+
         $indexes = [];
-        foreach ($this->getIndexes() as $index) {
+        foreach ($this->getEventIndexes() as $index) {
             /** @var string $indexName */
             $indexName = $index['$id'];
             /** @var array<string> $attributes */
@@ -928,37 +1065,14 @@ class ClickHouse extends SQL
             $indexes[] = "INDEX {$escapedIndexName} ({$attributeList}) TYPE bloom_filter GRANULARITY 1";
         }
 
-        $tableName = $this->getTableName();
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-
-        // Create single MergeTree table (plain MergeTree, not Summing/Replacing)
         $columnDefs = implode(",\n                ", $columns);
-        $indexDefs = !empty($indexes) ? ",\n                " . implode(",\n                ", $indexes) : '';
-
-        $orderByExpr = $this->sharedTables ? '(tenant, id)' : '(id)';
-
-        $createTableSql = "
-            CREATE TABLE IF NOT EXISTS {$escapedDatabaseAndTable} (
-                {$columnDefs}{$indexDefs}
-            )
-            ENGINE = MergeTree()
-            ORDER BY {$orderByExpr}
-            PARTITION BY toYYYYMM(time)
-            SETTINGS index_granularity = 8192, allow_nullable_key = 1
-        ";
-
-        $this->query($createTableSql);
-
-        // Create daily aggregation target table (SummingMergeTree) for events
-        // Same column definitions as source table — just pre-aggregated by day
-        $dailyTableName = $tableName . '_daily';
-        $escapedDailyTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyTableName);
+        $indexDefsStr = !empty($indexes) ? ",\n                " . implode(",\n                ", $indexes) : '';
 
         $dailyOrderBy = $this->sharedTables ? '(tenant, metric, time)' : '(metric, time)';
 
         $createDailyTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDailyTable} (
-                {$columnDefs}{$indexDefs}
+                {$columnDefs}{$indexDefsStr}
             )
             ENGINE = SummingMergeTree()
             ORDER BY {$dailyOrderBy}
@@ -967,21 +1081,32 @@ class ClickHouse extends SQL
         ";
 
         $this->query($createDailyTableSql);
+    }
 
-        // Create materialized view for daily event aggregation
-        $dailyMvName = $tableName . '_daily_mv';
+    /**
+     * Create the materialized view for daily event aggregation.
+     *
+     * @throws Exception
+     */
+    private function createDailyMaterializedView(): void
+    {
+        $eventsTable = $this->getEventsTableName();
+        $dailyTableName = $this->getEventsDailyTableName();
+        $dailyMvName = $this->getTableName() . '_events_daily_mv';
+
+        $escapedEventsTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($eventsTable);
+        $escapedDailyTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyTableName);
         $escapedDailyMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyMvName);
 
-        $tenantSelect = $this->sharedTables ? 'tenant' : "'' as tenant";
-        $innerGroupBy = $this->sharedTables ? 'metric, tenant, d' : 'metric, d';
-
-        $innerSelect = $this->sharedTables
-            ? "metric, {$tenantSelect}, sum(value) as value, toStartOfDay(time) as d"
-            : "metric, sum(value) as value, toStartOfDay(time) as d";
-
-        $outerSelect = $this->sharedTables
-            ? "generateUUIDv4() as id, metric, tenant, value, 'event' as type, d as time, '{}' as tags"
-            : "generateUUIDv4() as id, metric, value, 'event' as type, d as time, '{}' as tags";
+        if ($this->sharedTables) {
+            $innerSelect = "metric, resource, resourceId, tenant, sum(value) as value, toStartOfDay(time) as d";
+            $innerGroupBy = "metric, resource, resourceId, tenant, d";
+            $outerSelect = "generateUUIDv4() as id, metric, value, d as time, '' as path, '' as method, '' as status, resource, resourceId, '{}' as tags, tenant";
+        } else {
+            $innerSelect = "metric, resource, resourceId, sum(value) as value, toStartOfDay(time) as d";
+            $innerGroupBy = "metric, resource, resourceId, d";
+            $outerSelect = "generateUUIDv4() as id, metric, value, d as time, '' as path, '' as method, '' as status, resource, resourceId, '{}' as tags";
+        }
 
         $createDailyMvSql = "
             CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedDailyMv}
@@ -989,8 +1114,7 @@ class ClickHouse extends SQL
             AS SELECT {$outerSelect}
             FROM (
                 SELECT {$innerSelect}
-                FROM {$escapedDatabaseAndTable}
-                WHERE type = 'event'
+                FROM {$escapedEventsTable}
                 GROUP BY {$innerGroupBy}
             )
         ";
@@ -999,13 +1123,14 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Validate that an attribute name exists in the schema.
+     * Validate that an attribute name exists in the schema for a given type.
      *
      * @param string $attributeName
+     * @param string $type 'event' or 'gauge'
      * @return bool
      * @throws Exception
      */
-    private function validateAttributeName(string $attributeName): bool
+    private function validateAttributeName(string $attributeName, string $type = 'event'): bool
     {
         if ($attributeName === 'id') {
             return true;
@@ -1015,11 +1140,15 @@ class ClickHouse extends SQL
             return true;
         }
 
-        if ($attributeName === 'type') {
-            return true;
+        foreach ($this->getAttributes($type) as $attribute) {
+            if ($attribute['$id'] === $attributeName) {
+                return true;
+            }
         }
 
-        foreach ($this->getAttributes() as $attribute) {
+        // Also check the other type's attributes for cross-table queries
+        $otherType = $type === 'event' ? 'gauge' : 'event';
+        foreach ($this->getAttributes($otherType) as $attribute) {
             if ($attribute['$id'] === $attributeName) {
                 return true;
             }
@@ -1062,14 +1191,15 @@ class ClickHouse extends SQL
      * Get ClickHouse type for an attribute.
      *
      * @param string $id Attribute identifier
+     * @param string $type 'event' or 'gauge'
      * @return string ClickHouse type
      * @throws Exception
      */
-    private function getColumnType(string $id): string
+    private function getColumnType(string $id, string $type = 'event'): string
     {
-        $attribute = $this->getAttribute($id);
+        $attribute = $this->getAttribute($id, $type);
         if (!$attribute) {
-            throw new Exception("Attribute {$id} not found");
+            throw new Exception("Attribute {$id} not found in {$type} schema");
         }
 
         $attributeType = is_string($attribute['type'] ?? null) ? $attribute['type'] : 'string';
@@ -1084,11 +1214,11 @@ class ClickHouse extends SQL
         return !$attribute['required'] ? 'Nullable(' . $baseType . ')' : $baseType;
     }
 
-    protected function getColumnDefinition(string $id): string
+    protected function getColumnDefinition(string $id, string $type = 'event'): string
     {
-        $type = $this->getColumnType($id);
+        $chType = $this->getColumnType($id, $type);
         $escapedId = $this->escapeIdentifier($id);
-        return "{$escapedId} {$type}";
+        return "{$escapedId} {$chType}";
     }
 
     /**
@@ -1124,23 +1254,16 @@ class ClickHouse extends SQL
         if (!is_array($tags)) {
             throw new Exception($prefix . 'Tags must be an array');
         }
-
-        $data = [
-            'metric' => $metric,
-            'value' => $value,
-            'type' => $type,
-            'tags' => $tags,
-        ];
-        Metric::validate($data);
     }
 
     /**
      * Validate all metrics in a batch before processing.
      *
      * @param array<int,array<string,mixed>> $metrics
+     * @param string $type The target table type
      * @throws Exception
      */
-    private function validateMetricsBatch(array $metrics): void
+    private function validateMetricsBatch(array $metrics, string $type): void
     {
         foreach ($metrics as $index => $metricData) {
             if (!isset($metricData['metric'])) {
@@ -1149,22 +1272,15 @@ class ClickHouse extends SQL
             if (!isset($metricData['value'])) {
                 throw new Exception("Metric #{$index}: 'value' is required");
             }
-            if (!isset($metricData['type'])) {
-                throw new Exception("Metric #{$index}: 'type' is required");
-            }
 
             $metric = $metricData['metric'];
             $value = $metricData['value'];
-            $type = $metricData['type'];
 
             if (!is_string($metric)) {
                 throw new Exception("Metric #{$index}: 'metric' must be a string, got " . gettype($metric));
             }
             if (!is_int($value)) {
                 throw new Exception("Metric #{$index}: 'value' must be an integer, got " . gettype($value));
-            }
-            if (!is_string($type)) {
-                throw new Exception("Metric #{$index}: 'type' must be a string, got " . gettype($type));
             }
 
             /** @var array<string, mixed> */
@@ -1182,15 +1298,18 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Add metrics in batch (raw append to MergeTree table).
+     * Add metrics in batch (raw append to appropriate table).
      *
-     * Each row gets a UUID, no deterministic IDs, no period fan-out.
+     * For events: extracts path/method/status/resource/resourceId from tags into
+     * dedicated columns; remaining tags stay in the tags JSON column.
+     * For gauges: simple metric/value/time/tags insert.
      *
      * @param  array<int,array<string,mixed>>  $metrics
+     * @param  string  $type  Metric type: 'event' or 'gauge'
      * @param  int  $batchSize  Maximum number of metrics per INSERT statement
      * @throws Exception
      */
-    public function addBatch(array $metrics, int $batchSize = self::INSERT_BATCH_SIZE): bool
+    public function addBatch(array $metrics, string $type = Usage::TYPE_EVENT, int $batchSize = self::INSERT_BATCH_SIZE): bool
     {
         if (empty($metrics)) {
             return true;
@@ -1199,11 +1318,11 @@ class ClickHouse extends SQL
         $this->setOperationContext('addBatch()');
 
         // Validate all metrics before processing
-        $this->validateMetricsBatch($metrics);
+        $this->validateMetricsBatch($metrics, $type);
 
         $batchSize = \min(self::INSERT_BATCH_SIZE, \max(1, $batchSize));
 
-        $tableName = $this->getTableName();
+        $tableName = $this->getTableForType($type);
 
         foreach (\array_chunk($metrics, $batchSize) as $metricsBatch) {
             $rows = [];
@@ -1213,23 +1332,66 @@ class ClickHouse extends SQL
                 $metric = $metricData['metric'];
                 /** @var int $value */
                 $value = $metricData['value'];
-                /** @var string $type */
-                $type = $metricData['type'];
                 /** @var array<string, mixed> $tags */
                 $tags = $metricData['tags'] ?? [];
 
-                ksort($tags);
-
                 $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
 
-                $row = [
-                    'id' => $this->generateId(),
-                    'metric' => $metric,
-                    'value' => $value,
-                    'type' => $type,
-                    'time' => $this->formatDateTime(null), // NOW()
-                    'tags' => $tags,
-                ];
+                if ($type === Usage::TYPE_EVENT) {
+                    // Extract event-specific columns from tags
+                    $path = null;
+                    $method = null;
+                    $status = null;
+                    $resource = null;
+                    $resourceId = null;
+
+                    if (isset($tags['path'])) {
+                        $path = (string) $tags['path'];
+                        unset($tags['path']);
+                    }
+                    if (isset($tags['method'])) {
+                        $method = (string) $tags['method'];
+                        unset($tags['method']);
+                    }
+                    if (isset($tags['status'])) {
+                        $status = (string) $tags['status'];
+                        unset($tags['status']);
+                    }
+                    if (isset($tags['resource'])) {
+                        $resource = (string) $tags['resource'];
+                        unset($tags['resource']);
+                    }
+                    if (isset($tags['resourceId'])) {
+                        $resourceId = (string) $tags['resourceId'];
+                        unset($tags['resourceId']);
+                    }
+
+                    ksort($tags);
+
+                    $row = [
+                        'id' => $this->generateId(),
+                        'metric' => $metric,
+                        'value' => $value,
+                        'time' => $this->formatDateTime(null),
+                        'path' => $path,
+                        'method' => $method,
+                        'status' => $status,
+                        'resource' => $resource,
+                        'resourceId' => $resourceId,
+                        'tags' => $tags,
+                    ];
+                } else {
+                    // Gauge: simple schema
+                    ksort($tags);
+
+                    $row = [
+                        'id' => $this->generateId(),
+                        'metric' => $metric,
+                        'value' => $value,
+                        'time' => $this->formatDateTime(null),
+                        'tags' => $tags,
+                    ];
+                }
 
                 if ($this->sharedTables) {
                     $row['tenant'] = $tenant;
@@ -1274,21 +1436,44 @@ class ClickHouse extends SQL
 
     /**
      * Find metrics using Query objects.
-     * Queries the single MergeTree table.
+     * When $type is null, queries both tables with UNION ALL.
      *
      * @param array<Query> $queries
+     * @param string|null $type 'event', 'gauge', or null (both)
      * @return array<Metric>
      * @throws Exception
      */
-    public function find(array $queries = []): array
+    public function find(array $queries = [], ?string $type = null): array
     {
         $this->setOperationContext('find()');
 
-        $fromTable = $this->buildTableReference($this->getTableName());
+        if ($type !== null) {
+            return $this->findFromTable($queries, $type);
+        }
 
-        $parsed = $this->parseQueries($queries);
+        // Query both tables with UNION ALL
+        $events = $this->findFromTable($queries, Usage::TYPE_EVENT);
+        $gauges = $this->findFromTable($queries, Usage::TYPE_GAUGE);
 
-        $selectColumns = $this->getSelectColumns();
+        return array_merge($events, $gauges);
+    }
+
+    /**
+     * Find metrics from a specific table.
+     *
+     * @param array<Query> $queries
+     * @param string $type 'event' or 'gauge'
+     * @return array<Metric>
+     * @throws Exception
+     */
+    private function findFromTable(array $queries, string $type): array
+    {
+        $tableName = $this->getTableForType($type);
+        $fromTable = $this->buildTableReference($tableName);
+
+        $parsed = $this->parseQueries($queries, $type);
+
+        $selectColumns = $this->getSelectColumns($type);
 
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
         $whereClause = $whereData['clause'];
@@ -1310,23 +1495,44 @@ class ClickHouse extends SQL
 
         $result = $this->query($sql, $parsed['params']);
 
-        return $this->parseResults($result);
+        return $this->parseResults($result, $type);
     }
 
     /**
      * Count metrics using Query objects.
      *
      * @param array<Query> $queries
+     * @param string|null $type 'event', 'gauge', or null (both)
      * @return int
      * @throws Exception
      */
-    public function count(array $queries = []): int
+    public function count(array $queries = [], ?string $type = null): int
     {
         $this->setOperationContext('count()');
 
-        $fromTable = $this->buildTableReference($this->getTableName());
+        if ($type !== null) {
+            return $this->countFromTable($queries, $type);
+        }
 
-        $parsed = $this->parseQueries($queries);
+        // Count from both tables
+        return $this->countFromTable($queries, Usage::TYPE_EVENT)
+             + $this->countFromTable($queries, Usage::TYPE_GAUGE);
+    }
+
+    /**
+     * Count metrics from a specific table.
+     *
+     * @param array<Query> $queries
+     * @param string $type
+     * @return int
+     * @throws Exception
+     */
+    private function countFromTable(array $queries, string $type): int
+    {
+        $tableName = $this->getTableForType($type);
+        $fromTable = $this->buildTableReference($tableName);
+
+        $parsed = $this->parseQueries($queries, $type);
 
         $params = $parsed['params'];
         unset($params['limit'], $params['offset']);
@@ -1355,19 +1561,41 @@ class ClickHouse extends SQL
      *
      * @param array<Query> $queries
      * @param string $attribute Attribute to sum (default: 'value')
+     * @param string|null $type 'event', 'gauge', or null (both)
      * @return int
      * @throws Exception
      */
-    public function sum(array $queries = [], string $attribute = 'value'): int
+    public function sum(array $queries = [], string $attribute = 'value', ?string $type = null): int
     {
         $this->setOperationContext('sum()');
 
-        $fromTable = $this->buildTableReference($this->getTableName());
+        if ($type !== null) {
+            return $this->sumFromTable($queries, $attribute, $type);
+        }
 
-        $this->validateAttributeName($attribute);
+        // Sum from both tables
+        return $this->sumFromTable($queries, $attribute, Usage::TYPE_EVENT)
+             + $this->sumFromTable($queries, $attribute, Usage::TYPE_GAUGE);
+    }
+
+    /**
+     * Sum metric values from a specific table.
+     *
+     * @param array<Query> $queries
+     * @param string $attribute
+     * @param string $type
+     * @return int
+     * @throws Exception
+     */
+    private function sumFromTable(array $queries, string $attribute, string $type): int
+    {
+        $tableName = $this->getTableForType($type);
+        $fromTable = $this->buildTableReference($tableName);
+
+        $this->validateAttributeName($attribute, $type);
         $escapedAttribute = $this->escapeIdentifier($attribute);
 
-        $parsed = $this->parseQueries($queries);
+        $parsed = $this->parseQueries($queries, $type);
 
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
         $whereClause = $whereData['clause'];
@@ -1393,7 +1621,7 @@ class ClickHouse extends SQL
      * Get time series data for metrics with query-time aggregation.
      *
      * Uses SUM for event metrics and argMax for gauge metrics.
-     * Detects type from stored data automatically.
+     * When $type is null, queries both tables and merges results.
      *
      * @param  array<string>  $metrics
      * @param  string  $interval  '1h' or '1d'
@@ -1401,10 +1629,11 @@ class ClickHouse extends SQL
      * @param  string  $endDate
      * @param  array<Query>  $queries
      * @param  bool  $zeroFill
+     * @param  string|null  $type  'event', 'gauge', or null (both)
      * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
      * @throws Exception
      */
-    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true): array
+    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
     {
         if (empty($metrics)) {
             return [];
@@ -1416,8 +1645,70 @@ class ClickHouse extends SQL
 
         $this->setOperationContext('getTimeSeries()');
 
+        // Initialize result structure
+        $output = [];
+        foreach ($metrics as $metric) {
+            $output[$metric] = ['total' => 0, 'data' => []];
+        }
+
+        $typesToQuery = [];
+        if ($type === Usage::TYPE_EVENT || $type === null) {
+            $typesToQuery[] = Usage::TYPE_EVENT;
+        }
+        if ($type === Usage::TYPE_GAUGE || $type === null) {
+            $typesToQuery[] = Usage::TYPE_GAUGE;
+        }
+
+        foreach ($typesToQuery as $queryType) {
+            $typeResult = $this->getTimeSeriesFromTable($metrics, $interval, $startDate, $endDate, $queries, $queryType);
+
+            // Merge results
+            foreach ($typeResult as $metricName => $metricData) {
+                if (!isset($output[$metricName])) {
+                    continue;
+                }
+
+                $output[$metricName]['total'] += $metricData['total'];
+                $output[$metricName]['data'] = array_merge(
+                    $output[$metricName]['data'],
+                    $metricData['data']
+                );
+            }
+        }
+
+        // Zero-fill gaps if requested
+        if ($zeroFill) {
+            foreach ($output as $metricName => &$metricData) {
+                $metricData['data'] = $this->zeroFillTimeSeries(
+                    $metricData['data'],
+                    $interval,
+                    $startDate,
+                    $endDate
+                );
+            }
+            unset($metricData);
+        }
+
+        return $output;
+    }
+
+    /**
+     * Get time series data from a specific table.
+     *
+     * @param  array<string>  $metrics
+     * @param  string  $interval
+     * @param  string  $startDate
+     * @param  string  $endDate
+     * @param  array<Query>  $queries
+     * @param  string  $type
+     * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
+     * @throws Exception
+     */
+    private function getTimeSeriesFromTable(array $metrics, string $interval, string $startDate, string $endDate, array $queries, string $type): array
+    {
         $timeFunction = self::INTERVAL_FUNCTIONS[$interval];
-        $fromTable = $this->buildTableReference($this->getTableName());
+        $tableName = $this->getTableForType($type);
+        $fromTable = $this->buildTableReference($tableName);
 
         // Build metric IN params
         $metricParams = [];
@@ -1431,7 +1722,7 @@ class ClickHouse extends SQL
         $metricInClause = implode(', ', $metricPlaceholders);
 
         // Build additional WHERE conditions from queries
-        $parsed = $this->parseQueries($queries);
+        $parsed = $this->parseQueries($queries, $type);
         $additionalFilters = $parsed['filters'];
         $params = array_merge($metricParams, $parsed['params']);
 
@@ -1450,19 +1741,23 @@ class ClickHouse extends SQL
             $additionalWhere = ' AND ' . implode(' AND ', $additionalFilters);
         }
 
-        // Single query that computes both SUM and argMax, grouped by metric, type, bucket
+        // Use appropriate aggregation based on type
+        if ($type === Usage::TYPE_EVENT) {
+            $valueExpr = 'SUM(value) as agg_value';
+        } else {
+            $valueExpr = 'argMax(value, time) as agg_value';
+        }
+
         $sql = "
             SELECT
                 metric,
-                type,
                 {$timeFunction}(time) as bucket,
-                SUM(value) as sum_value,
-                argMax(value, time) as last_value
+                {$valueExpr}
             FROM {$fromTable}
             WHERE metric IN ({$metricInClause})
                 AND time BETWEEN {start_date:DateTime64(3)} AND {end_date:DateTime64(3)}
                 {$tenantFilter}{$additionalWhere}
-            GROUP BY metric, type, bucket
+            GROUP BY metric, bucket
             ORDER BY bucket ASC
             FORMAT JSON
         ";
@@ -1479,9 +1774,8 @@ class ClickHouse extends SQL
         if (is_array($json) && isset($json['data']) && is_array($json['data'])) {
             foreach ($json['data'] as $row) {
                 $metricName = $row['metric'] ?? '';
-                $type = $row['type'] ?? 'event';
                 $bucketTime = $row['bucket'] ?? '';
-                $value = ($type === Usage::TYPE_EVENT) ? (int) ($row['sum_value'] ?? 0) : (int) ($row['last_value'] ?? 0);
+                $value = (int) ($row['agg_value'] ?? 0);
 
                 if (!isset($output[$metricName])) {
                     continue;
@@ -1499,19 +1793,6 @@ class ClickHouse extends SQL
                     'date' => $formattedDate,
                 ];
             }
-        }
-
-        // Zero-fill gaps if requested
-        if ($zeroFill) {
-            foreach ($output as $metricName => &$metricData) {
-                $metricData['data'] = $this->zeroFillTimeSeries(
-                    $metricData['data'],
-                    $interval,
-                    $startDate,
-                    $endDate
-                );
-            }
-            unset($metricData);
         }
 
         return $output;
@@ -1563,19 +1844,55 @@ class ClickHouse extends SQL
      * Get total value for a single metric.
      *
      * Returns sum for event metrics, latest value for gauge metrics.
+     * When $type is null, queries both tables.
      *
      * @param  string  $metric
      * @param  array<Query>  $queries
+     * @param  string|null  $type  'event', 'gauge', or null (both)
      * @return int
      * @throws Exception
      */
-    public function getTotal(string $metric, array $queries = []): int
+    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
     {
         $this->setOperationContext('getTotal()');
 
-        $fromTable = $this->buildTableReference($this->getTableName());
+        if ($type === Usage::TYPE_EVENT) {
+            return $this->getTotalFromEvents($metric, $queries);
+        }
 
-        $parsed = $this->parseQueries($queries);
+        if ($type === Usage::TYPE_GAUGE) {
+            return $this->getTotalFromGauges($metric, $queries);
+        }
+
+        // Query both tables — event uses SUM, gauge uses argMax
+        $eventTotal = $this->getTotalFromEvents($metric, $queries);
+        $gaugeTotal = $this->getTotalFromGauges($metric, $queries);
+
+        // If we got data from both, prioritize event (they don't overlap in practice)
+        // If only one has data, return that
+        if ($eventTotal > 0 && $gaugeTotal > 0) {
+            // A metric shouldn't be in both tables; return whichever is nonzero
+            // In practice, callers specify type for ambiguous cases
+            return $eventTotal + $gaugeTotal;
+        }
+
+        return $eventTotal > 0 ? $eventTotal : $gaugeTotal;
+    }
+
+    /**
+     * Get total from events table (SUM).
+     *
+     * @param string $metric
+     * @param array<Query> $queries
+     * @return int
+     * @throws Exception
+     */
+    private function getTotalFromEvents(string $metric, array $queries): int
+    {
+        $tableName = $this->getEventsTableName();
+        $fromTable = $this->buildTableReference($tableName);
+
+        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
         $params = $parsed['params'];
         $params['metric_name'] = $metric;
 
@@ -1592,32 +1909,64 @@ class ClickHouse extends SQL
         }
 
         $sql = "
-            SELECT
-                type,
-                SUM(value) as sum_val,
-                argMax(value, time) as last_val
+            SELECT SUM(value) as total
             FROM {$fromTable}{$whereClause}
-            GROUP BY type
             FORMAT JSON
         ";
 
         $result = $this->query($sql, $params);
         $json = json_decode($result, true);
 
-        if (!is_array($json) || !isset($json['data']) || !is_array($json['data'])) {
+        if (!is_array($json) || !isset($json['data'][0]['total'])) {
             return 0;
         }
 
-        foreach ($json['data'] as $row) {
-            $type = $row['type'] ?? 'event';
-            if ($type === Usage::TYPE_EVENT) {
-                return (int) ($row['sum_val'] ?? 0);
-            } elseif ($type === Usage::TYPE_GAUGE) {
-                return (int) ($row['last_val'] ?? 0);
-            }
+        return (int) $json['data'][0]['total'];
+    }
+
+    /**
+     * Get total from gauges table (argMax).
+     *
+     * @param string $metric
+     * @param array<Query> $queries
+     * @return int
+     * @throws Exception
+     */
+    private function getTotalFromGauges(string $metric, array $queries): int
+    {
+        $tableName = $this->getGaugesTableName();
+        $fromTable = $this->buildTableReference($tableName);
+
+        $parsed = $this->parseQueries($queries, Usage::TYPE_GAUGE);
+        $params = $parsed['params'];
+        $params['metric_name'] = $metric;
+
+        $whereData = $this->buildWhereClause($parsed['filters'], $params);
+        $whereClause = $whereData['clause'];
+        $params = $whereData['params'];
+
+        // Add metric filter
+        $metricFilter = $this->escapeIdentifier('metric') . ' = {metric_name:String}';
+        if (!empty($whereClause)) {
+            $whereClause .= ' AND ' . $metricFilter;
+        } else {
+            $whereClause = ' WHERE ' . $metricFilter;
         }
 
-        return 0;
+        $sql = "
+            SELECT argMax(value, time) as total
+            FROM {$fromTable}{$whereClause}
+            FORMAT JSON
+        ";
+
+        $result = $this->query($sql, $params);
+        $json = json_decode($result, true);
+
+        if (!is_array($json) || !isset($json['data'][0]['total'])) {
+            return 0;
+        }
+
+        return (int) $json['data'][0]['total'];
     }
 
     /**
@@ -1625,10 +1974,11 @@ class ClickHouse extends SQL
      *
      * @param  array<string>  $metrics
      * @param  array<Query>  $queries
+     * @param  string|null  $type  'event', 'gauge', or null (both)
      * @return array<string, int>
      * @throws Exception
      */
-    public function getTotalBatch(array $metrics, array $queries = []): array
+    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
     {
         if (empty($metrics)) {
             return [];
@@ -1639,60 +1989,71 @@ class ClickHouse extends SQL
         // Initialize all metrics to 0
         $totals = \array_fill_keys($metrics, 0);
 
-        $fromTable = $this->buildTableReference($this->getTableName());
-
-        // Build metric IN params
-        $metricParams = [];
-        $metricPlaceholders = [];
-        foreach ($metrics as $i => $metric) {
-            $paramName = 'metric_' . $i;
-            $metricParams[$paramName] = $metric;
-            $metricPlaceholders[] = "{{$paramName}:String}";
+        $typesToQuery = [];
+        if ($type === Usage::TYPE_EVENT || $type === null) {
+            $typesToQuery[] = Usage::TYPE_EVENT;
         }
-        $metricInClause = implode(', ', $metricPlaceholders);
-
-        $parsed = $this->parseQueries($queries);
-        $params = array_merge($metricParams, $parsed['params']);
-
-        $whereData = $this->buildWhereClause($parsed['filters'], $params);
-        $whereClause = $whereData['clause'];
-        $params = $whereData['params'];
-
-        $escapedMetric = $this->escapeIdentifier('metric');
-        $metricFilter = "{$escapedMetric} IN ({$metricInClause})";
-        if (!empty($whereClause)) {
-            $whereClause .= ' AND ' . $metricFilter;
-        } else {
-            $whereClause = ' WHERE ' . $metricFilter;
+        if ($type === Usage::TYPE_GAUGE || $type === null) {
+            $typesToQuery[] = Usage::TYPE_GAUGE;
         }
 
-        $sql = "
-            SELECT
-                metric,
-                type,
-                SUM(value) as sum_val,
-                argMax(value, time) as last_val
-            FROM {$fromTable}{$whereClause}
-            GROUP BY metric, type
-            FORMAT JSON
-        ";
+        foreach ($typesToQuery as $queryType) {
+            $tableName = $this->getTableForType($queryType);
+            $fromTable = $this->buildTableReference($tableName);
 
-        $result = $this->query($sql, $params);
-        $json = json_decode($result, true);
+            // Build metric IN params
+            $metricParams = [];
+            $metricPlaceholders = [];
+            foreach ($metrics as $i => $metric) {
+                $paramName = 'metric_' . $i;
+                $metricParams[$paramName] = $metric;
+                $metricPlaceholders[] = "{{$paramName}:String}";
+            }
+            $metricInClause = implode(', ', $metricPlaceholders);
 
-        if (is_array($json) && isset($json['data']) && is_array($json['data'])) {
-            foreach ($json['data'] as $row) {
-                $metricName = $row['metric'] ?? '';
-                $type = $row['type'] ?? 'event';
+            $parsed = $this->parseQueries($queries, $queryType);
+            $params = array_merge($metricParams, $parsed['params']);
 
-                if (!isset($totals[$metricName])) {
-                    continue;
-                }
+            $whereData = $this->buildWhereClause($parsed['filters'], $params);
+            $whereClause = $whereData['clause'];
+            $params = $whereData['params'];
 
-                if ($type === Usage::TYPE_EVENT) {
-                    $totals[$metricName] = (int) ($row['sum_val'] ?? 0);
-                } elseif ($type === Usage::TYPE_GAUGE) {
-                    $totals[$metricName] = (int) ($row['last_val'] ?? 0);
+            $escapedMetric = $this->escapeIdentifier('metric');
+            $metricFilter = "{$escapedMetric} IN ({$metricInClause})";
+            if (!empty($whereClause)) {
+                $whereClause .= ' AND ' . $metricFilter;
+            } else {
+                $whereClause = ' WHERE ' . $metricFilter;
+            }
+
+            // Use appropriate aggregation
+            if ($queryType === Usage::TYPE_EVENT) {
+                $valueExpr = 'SUM(value) as agg_val';
+            } else {
+                $valueExpr = 'argMax(value, time) as agg_val';
+            }
+
+            $sql = "
+                SELECT
+                    metric,
+                    {$valueExpr}
+                FROM {$fromTable}{$whereClause}
+                GROUP BY metric
+                FORMAT JSON
+            ";
+
+            $result = $this->query($sql, $params);
+            $json = json_decode($result, true);
+
+            if (is_array($json) && isset($json['data']) && is_array($json['data'])) {
+                foreach ($json['data'] as $row) {
+                    $metricName = $row['metric'] ?? '';
+
+                    if (!isset($totals[$metricName])) {
+                        continue;
+                    }
+
+                    $totals[$metricName] += (int) ($row['agg_val'] ?? 0);
                 }
             }
         }
@@ -1746,10 +2107,11 @@ class ClickHouse extends SQL
      * Parse Query objects into SQL clauses.
      *
      * @param array<Query> $queries
+     * @param string $type 'event' or 'gauge' — used for attribute validation
      * @return array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int}
      * @throws Exception
      */
-    private function parseQueries(array $queries): array
+    private function parseQueries(array $queries, string $type = 'event'): array
     {
         $filters = [];
         $params = [];
@@ -1765,7 +2127,7 @@ class ClickHouse extends SQL
 
             switch ($method) {
                 case Query::TYPE_EQUAL:
-                    $this->validateAttributeName($attribute);
+                    $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
 
@@ -1811,7 +2173,7 @@ class ClickHouse extends SQL
                     break;
 
                 case Query::TYPE_LESSER:
-                    $this->validateAttributeName($attribute);
+                    $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
                     $paramName = 'param_' . $paramCounter++;
@@ -1826,7 +2188,7 @@ class ClickHouse extends SQL
                     break;
 
                 case Query::TYPE_GREATER:
-                    $this->validateAttributeName($attribute);
+                    $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
                     $paramName = 'param_' . $paramCounter++;
@@ -1841,7 +2203,7 @@ class ClickHouse extends SQL
                     break;
 
                 case Query::TYPE_BETWEEN:
-                    $this->validateAttributeName($attribute);
+                    $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
                     $paramName1 = 'param_' . $paramCounter++;
@@ -1861,19 +2223,19 @@ class ClickHouse extends SQL
                     break;
 
                 case Query::TYPE_ORDER_DESC:
-                    $this->validateAttributeName($attribute);
+                    $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $orderBy[] = "{$escapedAttr} DESC";
                     break;
 
                 case Query::TYPE_ORDER_ASC:
-                    $this->validateAttributeName($attribute);
+                    $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $orderBy[] = "{$escapedAttr} ASC";
                     break;
 
                 case Query::TYPE_CONTAINS:
-                    $this->validateAttributeName($attribute);
+                    $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
                     $inParams = [];
@@ -1897,7 +2259,7 @@ class ClickHouse extends SQL
                     break;
 
                 case Query::TYPE_LESSER_EQUAL:
-                    $this->validateAttributeName($attribute);
+                    $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
                     $paramName = 'param_' . $paramCounter++;
@@ -1920,7 +2282,7 @@ class ClickHouse extends SQL
                     break;
 
                 case Query::TYPE_GREATER_EQUAL:
-                    $this->validateAttributeName($attribute);
+                    $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
                     $paramName = 'param_' . $paramCounter++;
@@ -1985,9 +2347,11 @@ class ClickHouse extends SQL
     /**
      * Parse ClickHouse JSON results into Metric array.
      *
+     * @param string $result
+     * @param string $type 'event' or 'gauge' — used to set the type attribute on parsed metrics
      * @return array<Metric>
      */
-    private function parseResults(string $result): array
+    private function parseResults(string $result, string $type = 'event'): array
     {
         if (empty(trim($result))) {
             return [];
@@ -2035,6 +2399,9 @@ class ClickHouse extends SQL
                 unset($document['id']);
             }
 
+            // Set the type based on which table we queried
+            $document['type'] = $type;
+
             $metrics[] = new Metric($document);
         }
 
@@ -2044,15 +2411,16 @@ class ClickHouse extends SQL
     /**
      * Get the SELECT column list for queries.
      *
+     * @param string $type 'event' or 'gauge'
      * @return string
      */
-    private function getSelectColumns(): string
+    private function getSelectColumns(string $type = 'event'): string
     {
         $columns = [];
 
         $columns[] = $this->escapeIdentifier('id');
 
-        foreach ($this->getAttributes() as $attribute) {
+        foreach ($this->getAttributes($type) as $attribute) {
             $id = $attribute['$id'];
             if (is_string($id)) {
                 $columns[] = $this->escapeIdentifier($id);
@@ -2082,28 +2450,40 @@ class ClickHouse extends SQL
 
     /**
      * Purge usage metrics matching the given queries.
-     * Deletes from the single table.
+     * Deletes from the specified table(s).
      *
+     * @param array<Query> $queries
+     * @param string|null $type 'event', 'gauge', or null (purge both)
      * @throws Exception
      */
-    public function purge(array $queries = []): bool
+    public function purge(array $queries = [], ?string $type = null): bool
     {
         $this->setOperationContext('purge()');
 
-        $tableName = $this->getTableName();
-        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-
-        $parsed = $this->parseQueries($queries);
-        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
-        $whereClause = $whereData['clause'];
-        $params = $whereData['params'];
-
-        if (empty($whereClause)) {
-            $whereClause = ' WHERE 1=1';
+        $typesToPurge = [];
+        if ($type === Usage::TYPE_EVENT || $type === null) {
+            $typesToPurge[] = Usage::TYPE_EVENT;
+        }
+        if ($type === Usage::TYPE_GAUGE || $type === null) {
+            $typesToPurge[] = Usage::TYPE_GAUGE;
         }
 
-        $sql = "DELETE FROM {$escapedTable}{$whereClause}";
-        $this->query($sql, $params);
+        foreach ($typesToPurge as $purgeType) {
+            $tableName = $this->getTableForType($purgeType);
+            $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+
+            $parsed = $this->parseQueries($queries, $purgeType);
+            $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+            $whereClause = $whereData['clause'];
+            $params = $whereData['params'];
+
+            if (empty($whereClause)) {
+                $whereClause = ' WHERE 1=1';
+            }
+
+            $sql = "DELETE FROM {$escapedTable}{$whereClause}";
+            $this->query($sql, $params);
+        }
 
         return true;
     }

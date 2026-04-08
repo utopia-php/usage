@@ -58,20 +58,19 @@ class ClickHouseTest extends TestCase
             [
                 'metric' => 'tenant-override',
                 'value' => 5,
-                'type' => 'event',
                 '$tenant' => '2',
                 'tags' => [],
             ],
         ];
 
-        $this->assertTrue($usage->addBatch($metrics));
+        $this->assertTrue($usage->addBatch($metrics, Usage::TYPE_EVENT));
 
         // Switch adapter scope to the metric tenant to verify the row was stored under the override
         $adapter->setTenant('2');
 
         $results = $usage->find([
             \Utopia\Query\Query::equal('metric', ['tenant-override']),
-        ]);
+        ], Usage::TYPE_EVENT);
 
         $this->assertCount(1, $results);
         $this->assertEquals('2', $results[0]->getTenant());
@@ -85,17 +84,17 @@ class ClickHouseTest extends TestCase
     public function testAddBatchWithBatchSize(): void
     {
         $metrics = [
-            ['metric' => 'metric-1', 'value' => 10, 'type' => 'event', 'tags' => []],
-            ['metric' => 'metric-2', 'value' => 20, 'type' => 'event', 'tags' => []],
-            ['metric' => 'metric-3', 'value' => 30, 'type' => 'event', 'tags' => []],
-            ['metric' => 'metric-4', 'value' => 40, 'type' => 'event', 'tags' => []],
+            ['metric' => 'metric-1', 'value' => 10, 'tags' => []],
+            ['metric' => 'metric-2', 'value' => 20, 'tags' => []],
+            ['metric' => 'metric-3', 'value' => 30, 'tags' => []],
+            ['metric' => 'metric-4', 'value' => 40, 'tags' => []],
         ];
 
         // Process with batch size of 2
-        $this->assertTrue($this->usage->addBatch($metrics, 2));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_EVENT, 2));
 
         // Verify all metrics were inserted
-        $results = $this->usage->find();
+        $results = $this->usage->find([], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(4, count($results));
     }
 
@@ -105,16 +104,16 @@ class ClickHouseTest extends TestCase
     public function testAddBatchGaugeWithBatchSize(): void
     {
         $metrics = [
-            ['metric' => 'counter-1', 'value' => 100, 'type' => 'gauge', 'tags' => []],
-            ['metric' => 'counter-2', 'value' => 200, 'type' => 'gauge', 'tags' => []],
-            ['metric' => 'counter-3', 'value' => 300, 'type' => 'gauge', 'tags' => []],
+            ['metric' => 'counter-1', 'value' => 100, 'tags' => []],
+            ['metric' => 'counter-2', 'value' => 200, 'tags' => []],
+            ['metric' => 'counter-3', 'value' => 300, 'tags' => []],
         ];
 
         // Process with batch size of 2
-        $this->assertTrue($this->usage->addBatch($metrics, 2));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_GAUGE, 2));
 
         // Verify gauge metrics were inserted
-        $results = $this->usage->find();
+        $results = $this->usage->find([], Usage::TYPE_GAUGE);
         $this->assertGreaterThanOrEqual(3, count($results));
     }
 
@@ -128,17 +127,16 @@ class ClickHouseTest extends TestCase
             $metrics[] = [
                 'metric' => 'large-batch-metric',
                 'value' => $i,
-                'type' => 'event',
                 'tags' => ['index' => (string) $i],
             ];
         }
 
-        $this->assertTrue($this->usage->addBatch($metrics, 10));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_EVENT, 10));
 
         // Verify metrics were processed
         $results = $this->usage->find([
             \Utopia\Query\Query::equal('metric', ['large-batch-metric']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
     }
 
@@ -147,18 +145,18 @@ class ClickHouseTest extends TestCase
      */
     public function testGaugeMetricsLastValueWins(): void
     {
-        $this->usage->purge();
+        $this->usage->purge([], Usage::TYPE_GAUGE);
 
         $metrics = [
-            ['metric' => 'gauge-test', 'value' => 5, 'type' => 'gauge', 'tags' => []],
-            ['metric' => 'gauge-test', 'value' => 10, 'type' => 'gauge', 'tags' => []],
-            ['metric' => 'gauge-test', 'value' => 15, 'type' => 'gauge', 'tags' => []],
+            ['metric' => 'gauge-test', 'value' => 5, 'tags' => []],
+            ['metric' => 'gauge-test', 'value' => 10, 'tags' => []],
+            ['metric' => 'gauge-test', 'value' => 15, 'tags' => []],
         ];
 
-        $this->assertTrue($this->usage->addBatch($metrics));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_GAUGE));
 
         // Gauge total returns argMax (latest value)
-        $total = $this->usage->getTotal('gauge-test');
+        $total = $this->usage->getTotal('gauge-test', [], Usage::TYPE_GAUGE);
         $this->assertGreaterThanOrEqual(5, $total);
     }
 
@@ -167,18 +165,18 @@ class ClickHouseTest extends TestCase
      */
     public function testEventMetricsAggregate(): void
     {
-        $this->usage->purge();
+        $this->usage->purge([], Usage::TYPE_EVENT);
 
         $metrics = [
-            ['metric' => 'agg-test', 'value' => 5, 'type' => 'event', 'tags' => []],
-            ['metric' => 'agg-test', 'value' => 10, 'type' => 'event', 'tags' => []],
-            ['metric' => 'agg-test', 'value' => 15, 'type' => 'event', 'tags' => []],
+            ['metric' => 'agg-test', 'value' => 5, 'tags' => []],
+            ['metric' => 'agg-test', 'value' => 10, 'tags' => []],
+            ['metric' => 'agg-test', 'value' => 15, 'tags' => []],
         ];
 
-        $this->assertTrue($this->usage->addBatch($metrics));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_EVENT));
 
         // Event metrics should sum: 5 + 10 + 15 = 30
-        $total = $this->usage->getTotal('agg-test');
+        $total = $this->usage->getTotal('agg-test', [], Usage::TYPE_EVENT);
         $this->assertEquals(30, $total);
     }
 
@@ -187,7 +185,7 @@ class ClickHouseTest extends TestCase
      */
     public function testEmptyBatchClickHouse(): void
     {
-        $this->assertTrue($this->usage->addBatch([]));
+        $this->assertTrue($this->usage->addBatch([], Usage::TYPE_EVENT));
     }
 
     /**
@@ -196,17 +194,164 @@ class ClickHouseTest extends TestCase
     public function testBatchWithTagsClickHouse(): void
     {
         $metrics = [
-            ['metric' => 'tagged', 'value' => 10, 'type' => 'event', 'tags' => ['region' => 'us-east']],
-            ['metric' => 'tagged', 'value' => 20, 'type' => 'event', 'tags' => ['region' => 'us-west']],
-            ['metric' => 'tagged', 'value' => 15, 'type' => 'event', 'tags' => ['region' => 'eu-west']],
+            ['metric' => 'tagged', 'value' => 10, 'tags' => ['region' => 'us-east', 'path' => '/v1/test', 'method' => 'GET', 'status' => '200']],
+            ['metric' => 'tagged', 'value' => 20, 'tags' => ['region' => 'us-west', 'path' => '/v1/test', 'method' => 'POST', 'status' => '201']],
+            ['metric' => 'tagged', 'value' => 15, 'tags' => ['region' => 'eu-west', 'path' => '/v1/test', 'method' => 'GET', 'status' => '200']],
         ];
 
-        $this->assertTrue($this->usage->addBatch($metrics));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_EVENT));
 
         $results = $this->usage->find([
             \Utopia\Query\Query::equal('metric', ['tagged']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
+    }
+
+    /**
+     * Test event-specific columns are extracted from tags
+     */
+    public function testEventColumnsExtractedFromTags(): void
+    {
+        $this->usage->purge([], Usage::TYPE_EVENT);
+
+        $metrics = [
+            [
+                'metric' => 'event-cols-test',
+                'value' => 42,
+                'tags' => [
+                    'path' => '/v1/storage/files',
+                    'method' => 'POST',
+                    'status' => '201',
+                    'resource' => 'bucket',
+                    'resourceId' => 'bucket123',
+                    'region' => 'us-east',
+                    'userAgent' => 'test-agent',
+                ],
+            ],
+        ];
+
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_EVENT));
+
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('metric', ['event-cols-test']),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(1, $results);
+        $metric = $results[0];
+
+        // Event-specific columns should be set
+        $this->assertEquals('/v1/storage/files', $metric->getPath());
+        $this->assertEquals('POST', $metric->getMethod());
+        $this->assertEquals('201', $metric->getStatus());
+        $this->assertEquals('bucket', $metric->getResource());
+        $this->assertEquals('bucket123', $metric->getResourceId());
+
+        // Remaining tags should only contain non-event fields
+        $tags = $metric->getTags();
+        $this->assertEquals('us-east', $tags['region'] ?? null);
+        $this->assertEquals('test-agent', $tags['userAgent'] ?? null);
+        $this->assertArrayNotHasKey('path', $tags);
+        $this->assertArrayNotHasKey('method', $tags);
+        $this->assertArrayNotHasKey('status', $tags);
+        $this->assertArrayNotHasKey('resource', $tags);
+        $this->assertArrayNotHasKey('resourceId', $tags);
+    }
+
+    /**
+     * Test querying events by event-specific columns
+     */
+    public function testQueryEventsByColumns(): void
+    {
+        $this->usage->purge([], Usage::TYPE_EVENT);
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'req', 'value' => 10, 'tags' => ['path' => '/v1/storage', 'method' => 'GET', 'status' => '200', 'resource' => 'project', 'resourceId' => 'p1']],
+            ['metric' => 'req', 'value' => 20, 'tags' => ['path' => '/v1/databases', 'method' => 'POST', 'status' => '201', 'resource' => 'database', 'resourceId' => 'db1']],
+            ['metric' => 'req', 'value' => 30, 'tags' => ['path' => '/v1/storage', 'method' => 'GET', 'status' => '404', 'resource' => 'project', 'resourceId' => 'p1']],
+        ], Usage::TYPE_EVENT));
+
+        // Filter by path
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('path', ['/v1/storage']),
+        ], Usage::TYPE_EVENT);
+        $this->assertCount(2, $results);
+
+        // Filter by method
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('method', ['POST']),
+        ], Usage::TYPE_EVENT);
+        $this->assertCount(1, $results);
+        $this->assertEquals(20, $results[0]->getValue());
+
+        // Filter by status
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('status', ['404']),
+        ], Usage::TYPE_EVENT);
+        $this->assertCount(1, $results);
+        $this->assertEquals(30, $results[0]->getValue());
+
+        // Filter by resource
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('resource', ['database']),
+        ], Usage::TYPE_EVENT);
+        $this->assertCount(1, $results);
+
+        // Filter by resourceId
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('resourceId', ['db1']),
+        ], Usage::TYPE_EVENT);
+        $this->assertCount(1, $results);
+    }
+
+    /**
+     * Test gauge table does not have event columns
+     */
+    public function testGaugeTableSimpleSchema(): void
+    {
+        $this->usage->purge([], Usage::TYPE_GAUGE);
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'gauge-simple', 'value' => 500, 'tags' => ['region' => 'us-east']],
+        ], Usage::TYPE_GAUGE));
+
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('metric', ['gauge-simple']),
+        ], Usage::TYPE_GAUGE);
+
+        $this->assertCount(1, $results);
+        $this->assertEquals(500, $results[0]->getValue());
+        $this->assertEquals('gauge', $results[0]->getType());
+
+        // Gauge results should not have event-specific columns
+        $this->assertNull($results[0]->getPath());
+        $this->assertNull($results[0]->getMethod());
+        $this->assertNull($results[0]->getStatus());
+        $this->assertNull($results[0]->getResource());
+        $this->assertNull($results[0]->getResourceId());
+    }
+
+    /**
+     * Test finding across both tables (type=null)
+     */
+    public function testFindBothTables(): void
+    {
+        $this->usage->purge();
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'both-test-event', 'value' => 10, 'tags' => []],
+        ], Usage::TYPE_EVENT));
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'both-test-gauge', 'value' => 100, 'tags' => []],
+        ], Usage::TYPE_GAUGE));
+
+        // Find from both tables
+        $results = $this->usage->find([], null);
+        $this->assertGreaterThanOrEqual(2, count($results));
+
+        $metricNames = array_map(fn ($m) => $m->getMetric(), $results);
+        $this->assertContains('both-test-event', $metricNames);
+        $this->assertContains('both-test-gauge', $metricNames);
     }
 
     /**
@@ -219,16 +364,15 @@ class ClickHouseTest extends TestCase
             $metrics[] = [
                 'metric' => 'boundary-test',
                 'value' => 1,
-                'type' => 'event',
                 'tags' => [],
             ];
         }
 
-        $this->assertTrue($this->usage->addBatch($metrics, 1000));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_EVENT, 1000));
 
         $sum = $this->usage->sum([
             \Utopia\Query\Query::equal('metric', ['boundary-test']),
-        ]);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertEquals(500, $sum);
     }
 
@@ -238,15 +382,15 @@ class ClickHouseTest extends TestCase
     public function testBatchSizeOfOne(): void
     {
         $metrics = [
-            ['metric' => 'size-one-1', 'value' => 10, 'type' => 'event', 'tags' => []],
-            ['metric' => 'size-one-2', 'value' => 20, 'type' => 'event', 'tags' => []],
-            ['metric' => 'size-one-3', 'value' => 30, 'type' => 'event', 'tags' => []],
+            ['metric' => 'size-one-1', 'value' => 10, 'tags' => []],
+            ['metric' => 'size-one-2', 'value' => 20, 'tags' => []],
+            ['metric' => 'size-one-3', 'value' => 30, 'tags' => []],
         ];
 
-        $this->assertTrue($this->usage->addBatch($metrics, 1));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_EVENT, 1));
 
         // All metrics should be inserted
-        $results = $this->usage->find();
+        $results = $this->usage->find([], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(3, count($results));
     }
 
@@ -260,17 +404,16 @@ class ClickHouseTest extends TestCase
             $metrics[] = [
                 'metric' => 'default-batch-test',
                 'value' => 1,
-                'type' => 'event',
                 'tags' => [],
             ];
         }
 
         // Use default batch size
-        $this->assertTrue($this->usage->addBatch($metrics));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_EVENT));
 
         $sum = $this->usage->sum([
             \Utopia\Query\Query::equal('metric', ['default-batch-test']),
-        ]);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertEquals(50, $sum);
     }
 
@@ -281,12 +424,12 @@ class ClickHouseTest extends TestCase
     {
         $specialVal = "Text with \n newline, \t tab, \"quote\", and unicode \u{1F600}";
         $this->assertTrue($this->usage->addBatch([
-            ['metric' => 'special-metric', 'value' => 1, 'type' => 'event', 'tags' => ['s' => $specialVal]],
-        ]));
+            ['metric' => 'special-metric', 'value' => 1, 'tags' => ['s' => $specialVal]],
+        ], Usage::TYPE_EVENT));
 
         $results = $this->usage->find([
             \Utopia\Query\Query::equal('metric', ['special-metric']),
-        ]);
+        ], Usage::TYPE_EVENT);
 
         $this->assertEquals(1, count($results));
         $this->assertEquals('special-metric', $results[0]->getMetric());
@@ -304,22 +447,22 @@ class ClickHouseTest extends TestCase
 
         // Setup test data
         $this->usage->addBatch([
-            ['metric' => 'metric-A', 'value' => 10, 'type' => 'event', 'tags' => ['category' => 'cat1']],
-        ]);
+            ['metric' => 'metric-A', 'value' => 10, 'tags' => ['category' => 'cat1']],
+        ], Usage::TYPE_EVENT);
         $this->usage->addBatch([
-            ['metric' => 'metric-B', 'value' => 20, 'type' => 'event', 'tags' => ['category' => 'cat2']],
-        ]);
+            ['metric' => 'metric-B', 'value' => 20, 'tags' => ['category' => 'cat2']],
+        ], Usage::TYPE_EVENT);
 
         // 1. Array Equal (IN)
         $results = $this->usage->find([
             \Utopia\Query\Query::equal('metric', ['metric-A', 'metric-B']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(2, count($results));
 
         // 2. Scalar Equal
         $results = $this->usage->find([
             \Utopia\Query\Query::equal('value', [20]),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
         $this->assertEquals(20, $results[0]->getValue());
 
@@ -327,7 +470,7 @@ class ClickHouseTest extends TestCase
         $results = $this->usage->find([
             \Utopia\Query\Query::lessThan('value', 20),
             \Utopia\Query\Query::equal('metric', ['metric-A']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
         $this->assertEquals(10, $results[0]->getValue());
 
@@ -335,7 +478,7 @@ class ClickHouseTest extends TestCase
         $results = $this->usage->find([
             \Utopia\Query\Query::greaterThan('value', 10),
             \Utopia\Query\Query::equal('metric', ['metric-B']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
         $this->assertEquals(20, $results[0]->getValue());
 
@@ -343,13 +486,13 @@ class ClickHouseTest extends TestCase
         $results = $this->usage->find([
             \Utopia\Query\Query::between('value', 5, 25),
             \Utopia\Query\Query::equal('metric', ['metric-A', 'metric-B']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(2, count($results));
 
         // 6. Contains (IN alias)
         $results = $this->usage->find([
             \Utopia\Query\Query::contains('metric', ['metric-A']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
 
         // 7. Order Desc
@@ -357,7 +500,7 @@ class ClickHouseTest extends TestCase
             \Utopia\Query\Query::equal('metric', ['metric-A', 'metric-B']),
             \Utopia\Query\Query::orderDesc('value'),
             \Utopia\Query\Query::limit(2),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(2, count($results));
         $this->assertTrue($results[0]->getValue() >= $results[1]->getValue());
 
@@ -366,7 +509,7 @@ class ClickHouseTest extends TestCase
             \Utopia\Query\Query::equal('metric', ['metric-A', 'metric-B']),
             \Utopia\Query\Query::orderAsc('value'),
             \Utopia\Query\Query::limit(2),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(2, count($results));
         $this->assertTrue($results[0]->getValue() <= $results[1]->getValue());
     }
@@ -558,24 +701,24 @@ class ClickHouseTest extends TestCase
 
         // Insert data using addBatch with compression enabled
         $batchResult = $usage->addBatch([
-            ['metric' => 'compression.test.batch', 'value' => 50, 'type' => 'event', 'tags' => ['type' => 'batch']],
-            ['metric' => 'compression.test.batch', 'value' => 75, 'type' => 'event', 'tags' => ['type' => 'batch']],
-            ['metric' => 'compression.test.single', 'value' => 100, 'type' => 'event', 'tags' => ['type' => 'single']],
-        ]);
+            ['metric' => 'compression.test.batch', 'value' => 50, 'tags' => ['type' => 'batch']],
+            ['metric' => 'compression.test.batch', 'value' => 75, 'tags' => ['type' => 'batch']],
+            ['metric' => 'compression.test.single', 'value' => 100, 'tags' => ['type' => 'single']],
+        ], Usage::TYPE_EVENT);
         $this->assertTrue($batchResult);
 
         // Verify find query works with compression
-        $metrics = $usage->find([]);
+        $metrics = $usage->find([], Usage::TYPE_EVENT);
         $this->assertIsArray($metrics);
 
         // Verify count query works with compression
-        $count = $usage->count([]);
+        $count = $usage->count([], Usage::TYPE_EVENT);
         $this->assertIsInt($count);
 
         // Verify sum operation works with compression
         $sum = $usage->sum([
             \Utopia\Query\Query::equal('metric', ['compression.test.batch']),
-        ]);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertIsInt($sum);
     }
 
@@ -625,10 +768,10 @@ class ClickHouseTest extends TestCase
 
         // Make some requests
         $usage->addBatch([
-            ['metric' => 'pooling.test', 'value' => 100, 'type' => 'event', 'tags' => ['test' => 'value']],
-        ]);
-        $usage->find([]);
-        $usage->count([]);
+            ['metric' => 'pooling.test', 'value' => 100, 'tags' => ['test' => 'value']],
+        ], Usage::TYPE_EVENT);
+        $usage->find([], Usage::TYPE_EVENT);
+        $usage->count([], Usage::TYPE_EVENT);
 
         // Verify request count increased
         $newStats = $adapter->getConnectionStats();
@@ -736,11 +879,11 @@ class ClickHouseTest extends TestCase
 
         // These operations should succeed on first attempt (no retries needed)
         $result = $usage->addBatch([
-            ['metric' => 'retry.test', 'value' => 100, 'type' => 'event', 'tags' => ['test' => 'success']],
-        ]);
+            ['metric' => 'retry.test', 'value' => 100, 'tags' => ['test' => 'success']],
+        ], Usage::TYPE_EVENT);
         $this->assertTrue($result);
 
-        $count = $usage->count([]);
+        $count = $usage->count([], Usage::TYPE_EVENT);
         $this->assertIsInt($count);
     }
 
@@ -765,7 +908,7 @@ class ClickHouseTest extends TestCase
 
         try {
             // This should fail because database doesn't exist
-            $usage->find([]);
+            $usage->find([], Usage::TYPE_EVENT);
             $this->fail('Expected exception was not thrown');
         } catch (\Exception $e) {
             $errorMessage = $e->getMessage();
@@ -810,10 +953,10 @@ class ClickHouseTest extends TestCase
         $usage->purge();
 
         $this->assertTrue($usage->addBatch([
-            ['metric' => 'async-test', 'value' => 42, 'type' => 'event', 'tags' => []],
-        ]));
+            ['metric' => 'async-test', 'value' => 42, 'tags' => []],
+        ], Usage::TYPE_EVENT));
 
-        $total = $usage->getTotal('async-test');
+        $total = $usage->getTotal('async-test', [], Usage::TYPE_EVENT);
         $this->assertEquals(42, $total);
 
         // Test fire-and-forget mode

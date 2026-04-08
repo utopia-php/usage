@@ -24,27 +24,32 @@ trait UsageBase
 
     public function createUsageMetrics(): void
     {
+        // Events: additive metrics
         $this->assertTrue($this->usage->addBatch([
-            ['metric' => 'requests', 'value' => 100, 'type' => 'event', 'tags' => ['region' => 'us-east']],
-            ['metric' => 'requests', 'value' => 150, 'type' => 'event', 'tags' => ['region' => 'us-west']],
-            ['metric' => 'bandwidth', 'value' => 5000, 'type' => 'event', 'tags' => ['region' => 'us-east']],
-            ['metric' => 'storage', 'value' => 10000, 'type' => 'gauge', 'tags' => ['region' => 'us-east']],
-        ]));
+            ['metric' => 'requests', 'value' => 100, 'tags' => ['region' => 'us-east', 'path' => '/v1/storage', 'method' => 'GET', 'status' => '200', 'resource' => 'project', 'resourceId' => 'p1']],
+            ['metric' => 'requests', 'value' => 150, 'tags' => ['region' => 'us-west', 'path' => '/v1/databases', 'method' => 'POST', 'status' => '201', 'resource' => 'database', 'resourceId' => 'db1']],
+            ['metric' => 'bandwidth', 'value' => 5000, 'tags' => ['region' => 'us-east', 'path' => '/v1/storage/files', 'method' => 'POST', 'status' => '201', 'resource' => 'bucket', 'resourceId' => 'b1']],
+        ], Usage::TYPE_EVENT));
+
+        // Gauges: point-in-time snapshots
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'storage', 'value' => 10000, 'tags' => ['region' => 'us-east']],
+        ], Usage::TYPE_GAUGE));
     }
 
     public function testAddBatchEvent(): void
     {
         $this->usage->purge();
 
-        // addBatch with event type — values should sum
+        // addBatch with event type -- values should sum
         $this->assertTrue($this->usage->addBatch([
-            ['metric' => 'add-metric', 'value' => 10, 'type' => 'event', 'tags' => []],
-            ['metric' => 'add-metric', 'value' => 5, 'type' => 'event', 'tags' => []],
-        ]));
+            ['metric' => 'add-metric', 'value' => 10, 'tags' => []],
+            ['metric' => 'add-metric', 'value' => 5, 'tags' => []],
+        ], Usage::TYPE_EVENT));
 
         $sum = $this->usage->sum([
             Query::equal('metric', ['add-metric']),
-        ]);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertEquals(15, $sum);
     }
 
@@ -54,12 +59,12 @@ trait UsageBase
 
         // addBatch with gauge type
         $this->assertTrue($this->usage->addBatch([
-            ['metric' => 'gauge-metric', 'value' => 100, 'type' => 'gauge', 'tags' => []],
-            ['metric' => 'gauge-metric', 'value' => 200, 'type' => 'gauge', 'tags' => []],
-        ]));
+            ['metric' => 'gauge-metric', 'value' => 100, 'tags' => []],
+            ['metric' => 'gauge-metric', 'value' => 200, 'tags' => []],
+        ], Usage::TYPE_GAUGE));
 
         // getTotal for gauge returns latest value (argMax)
-        $total = $this->usage->getTotal('gauge-metric');
+        $total = $this->usage->getTotal('gauge-metric', [], Usage::TYPE_GAUGE);
         $this->assertGreaterThanOrEqual(100, $total);
     }
 
@@ -68,16 +73,16 @@ trait UsageBase
         $this->usage->purge();
 
         $metrics = [
-            ['metric' => 'batch-requests', 'value' => 100, 'type' => 'event', 'tags' => ['region' => 'eu-west']],
-            ['metric' => 'batch-requests', 'value' => 150, 'type' => 'event', 'tags' => ['region' => 'eu-east']],
-            ['metric' => 'batch-bandwidth', 'value' => 3000, 'type' => 'event', 'tags' => ['region' => 'eu-west']],
+            ['metric' => 'batch-requests', 'value' => 100, 'tags' => ['region' => 'eu-west']],
+            ['metric' => 'batch-requests', 'value' => 150, 'tags' => ['region' => 'eu-east']],
+            ['metric' => 'batch-bandwidth', 'value' => 3000, 'tags' => ['region' => 'eu-west']],
         ];
 
-        $this->assertTrue($this->usage->addBatch($metrics, 2));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_EVENT, 2));
 
         $results = $this->usage->find([
             Query::equal('metric', ['batch-requests']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
     }
 
@@ -85,7 +90,7 @@ trait UsageBase
     {
         $results = $this->usage->find([
             Query::equal('metric', ['requests']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
     }
 
@@ -97,7 +102,7 @@ trait UsageBase
         $results = $this->usage->find([
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(0, count($results));
     }
 
@@ -105,7 +110,7 @@ trait UsageBase
     {
         $count = $this->usage->count([
             Query::equal('metric', ['requests']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, $count);
     }
 
@@ -113,36 +118,39 @@ trait UsageBase
     {
         $sum = $this->usage->sum([
             Query::equal('metric', ['requests']),
-        ]);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertEquals(250, $sum); // 100 + 150
     }
 
     public function testGetTotal(): void
     {
-        $total = $this->usage->getTotal('requests');
+        $total = $this->usage->getTotal('requests', [], Usage::TYPE_EVENT);
         $this->assertEquals(250, $total); // event: SUM
 
-        $total = $this->usage->getTotal('storage');
+        $total = $this->usage->getTotal('storage', [], Usage::TYPE_GAUGE);
         $this->assertEquals(10000, $total); // gauge: argMax (latest)
     }
 
     public function testGetTotalBatch(): void
     {
-        $totals = $this->usage->getTotalBatch(['requests', 'bandwidth', 'storage']);
+        // Event metrics batch
+        $totals = $this->usage->getTotalBatch(['requests', 'bandwidth'], [], Usage::TYPE_EVENT);
 
         $this->assertIsArray($totals);
         $this->assertArrayHasKey('requests', $totals);
         $this->assertArrayHasKey('bandwidth', $totals);
-        $this->assertArrayHasKey('storage', $totals);
 
         $this->assertEquals(250, $totals['requests']);
         $this->assertEquals(5000, $totals['bandwidth']);
-        $this->assertEquals(10000, $totals['storage']);
+
+        // Gauge metrics batch
+        $gaugeTotals = $this->usage->getTotalBatch(['storage'], [], Usage::TYPE_GAUGE);
+        $this->assertEquals(10000, $gaugeTotals['storage']);
     }
 
     public function testGetTotalBatchWithMissingMetric(): void
     {
-        $totals = $this->usage->getTotalBatch(['requests', 'nonexistent-metric']);
+        $totals = $this->usage->getTotalBatch(['requests', 'nonexistent-metric'], [], Usage::TYPE_EVENT);
 
         $this->assertEquals(250, $totals['requests']);
         $this->assertEquals(0, $totals['nonexistent-metric']);
@@ -165,6 +173,9 @@ trait UsageBase
             '1h',
             $start,
             $end,
+            [],
+            true,
+            Usage::TYPE_EVENT,
         );
 
         $this->assertIsArray($results);
@@ -184,6 +195,9 @@ trait UsageBase
             '1d',
             $start,
             $end,
+            [],
+            true,
+            Usage::TYPE_EVENT,
         );
 
         $this->assertArrayHasKey('requests', $results);
@@ -195,7 +209,7 @@ trait UsageBase
         // Test equal query with array of values (IN clause)
         $results = $this->usage->find([
             Query::equal('metric', ['requests', 'bandwidth']),
-        ]);
+        ], Usage::TYPE_EVENT);
 
         // Should find all metrics matching either 'requests' or 'bandwidth'
         $this->assertGreaterThanOrEqual(2, count($results));
@@ -203,12 +217,12 @@ trait UsageBase
 
     public function testContainsQuery(): void
     {
-        // Test contains query with multiple values
+        // Test contains query with multiple values from events
         $results = $this->usage->find([
-            Query::contains('metric', ['requests', 'storage']),
-        ]);
+            Query::contains('metric', ['requests', 'bandwidth']),
+        ], Usage::TYPE_EVENT);
 
-        // Should find all metrics matching either 'requests' or 'storage'
+        // Should find all metrics matching either 'requests' or 'bandwidth'
         $this->assertGreaterThanOrEqual(2, count($results));
     }
 
@@ -217,7 +231,7 @@ trait UsageBase
         $now = (new \DateTime())->format('Y-m-d\TH:i:s');
         $results = $this->usage->find([
             Query::lessThanEqual('time', $now),
-        ]);
+        ], Usage::TYPE_EVENT);
 
         $this->assertGreaterThanOrEqual(0, count($results));
     }
@@ -227,7 +241,7 @@ trait UsageBase
         $past = (new \DateTime())->modify('-24 hours')->format('Y-m-d\TH:i:s');
         $results = $this->usage->find([
             Query::greaterThanEqual('time', $past),
-        ]);
+        ], Usage::TYPE_EVENT);
 
         $this->assertGreaterThanOrEqual(0, count($results));
     }
@@ -237,17 +251,17 @@ trait UsageBase
         sleep(2);
 
         $this->usage->addBatch([
-            ['metric' => 'purge-test', 'value' => 999, 'type' => 'event', 'tags' => []],
-        ]);
+            ['metric' => 'purge-test', 'value' => 999, 'tags' => []],
+        ], Usage::TYPE_EVENT);
 
         sleep(2);
 
-        $status = $this->usage->purge();
+        $status = $this->usage->purge([], Usage::TYPE_EVENT);
         $this->assertTrue($status);
 
         $results = $this->usage->find([
             Query::equal('metric', ['purge-test']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertEquals(0, count($results));
     }
 
@@ -256,26 +270,26 @@ trait UsageBase
         $this->usage->purge();
 
         $this->assertTrue($this->usage->addBatch([
-            ['metric' => 'purge-keep', 'value' => 10, 'type' => 'event', 'tags' => []],
-            ['metric' => 'purge-remove', 'value' => 20, 'type' => 'event', 'tags' => []],
-        ]));
+            ['metric' => 'purge-keep', 'value' => 10, 'tags' => []],
+            ['metric' => 'purge-remove', 'value' => 20, 'tags' => []],
+        ], Usage::TYPE_EVENT));
 
         // Purge only the 'purge-remove' metric
         $status = $this->usage->purge([
             Query::equal('metric', ['purge-remove']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertTrue($status);
 
         // 'purge-remove' should be gone
         $sum = $this->usage->sum([
             Query::equal('metric', ['purge-remove']),
-        ]);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertEquals(0, $sum);
 
         // 'purge-keep' should still exist
         $sum = $this->usage->sum([
             Query::equal('metric', ['purge-keep']),
-        ]);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertEquals(10, $sum);
     }
 
@@ -296,7 +310,7 @@ trait UsageBase
         // Nothing in storage yet
         $sum = $this->usage->sum([
             Query::equal('metric', ['collect-metric']),
-        ]);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertEquals(0, $sum);
 
         // Flush writes to storage
@@ -309,7 +323,7 @@ trait UsageBase
         // Storage should have accumulated value (10 + 20 + 30 = 60)
         $sum = $this->usage->sum([
             Query::equal('metric', ['collect-metric']),
-        ]);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertEquals(60, $sum);
     }
 
@@ -329,10 +343,10 @@ trait UsageBase
 
         $sumA = $this->usage->sum([
             Query::equal('metric', ['metric-a']),
-        ]);
+        ], 'value', Usage::TYPE_EVENT);
         $sumB = $this->usage->sum([
             Query::equal('metric', ['metric-b']),
-        ]);
+        ], 'value', Usage::TYPE_EVENT);
 
         $this->assertEquals(15, $sumA);
         $this->assertEquals(20, $sumB);
@@ -354,7 +368,7 @@ trait UsageBase
         $this->assertTrue($this->usage->flush());
 
         // Should have last value (300), not summed
-        $total = $this->usage->getTotal('gauge-collect');
+        $total = $this->usage->getTotal('gauge-collect', [], Usage::TYPE_GAUGE);
         $this->assertEquals(300, $total);
     }
 
@@ -375,10 +389,10 @@ trait UsageBase
         $this->assertTrue($this->usage->flush());
 
         // Event: summed (10 + 20 = 30)
-        $this->assertEquals(30, $this->usage->getTotal('inc-mixed'));
+        $this->assertEquals(30, $this->usage->getTotal('inc-mixed', [], Usage::TYPE_EVENT));
 
         // Gauge: last value (200)
-        $this->assertEquals(200, $this->usage->getTotal('set-mixed'));
+        $this->assertEquals(200, $this->usage->getTotal('set-mixed', [], Usage::TYPE_GAUGE));
     }
 
     public function testShouldFlushByThreshold(): void
@@ -466,7 +480,7 @@ trait UsageBase
         $results = $this->usage->find([
             Query::equal('metric', ['requests']),
             Query::limit(1),
-        ]);
+        ], Usage::TYPE_EVENT);
 
         $this->assertEquals(1, count($results));
 
@@ -474,29 +488,29 @@ trait UsageBase
             Query::equal('metric', ['requests']),
             Query::limit(1),
             Query::offset(1),
-        ]);
+        ], Usage::TYPE_EVENT);
 
         $this->assertLessThanOrEqual(1, count($results2));
     }
 
     public function testEmptyBatch(): void
     {
-        $this->assertTrue($this->usage->addBatch([]));
+        $this->assertTrue($this->usage->addBatch([], Usage::TYPE_EVENT));
     }
 
     public function testAddBatchWithTags(): void
     {
         $metrics = [
-            ['metric' => 'tagged', 'value' => 10, 'type' => 'event', 'tags' => ['region' => 'us-east']],
-            ['metric' => 'tagged', 'value' => 20, 'type' => 'event', 'tags' => ['region' => 'us-west']],
-            ['metric' => 'tagged', 'value' => 15, 'type' => 'event', 'tags' => ['region' => 'eu-west']],
+            ['metric' => 'tagged', 'value' => 10, 'tags' => ['region' => 'us-east']],
+            ['metric' => 'tagged', 'value' => 20, 'tags' => ['region' => 'us-west']],
+            ['metric' => 'tagged', 'value' => 15, 'tags' => ['region' => 'eu-west']],
         ];
 
-        $this->assertTrue($this->usage->addBatch($metrics));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_EVENT));
 
         $results = $this->usage->find([
             Query::equal('metric', ['tagged']),
-        ]);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
     }
 }

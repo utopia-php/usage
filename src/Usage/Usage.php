@@ -8,8 +8,9 @@ namespace Utopia\Usage;
  * This class manages usage metrics using pluggable adapters.
  * Adapters can be used to store metrics in different backends (Database, ClickHouse, etc.)
  *
- * Metrics are either 'event' type (additive, aggregated with SUM) or
- * 'gauge' type (point-in-time snapshots, aggregated with argMax).
+ * Metrics are stored in two separate tables:
+ * - Events table: additive metrics (bandwidth, requests, etc.) aggregated with SUM
+ * - Gauges table: point-in-time snapshots (storage, user count, etc.) aggregated with argMax
  */
 class Usage
 {
@@ -84,13 +85,14 @@ class Usage
      * Add metrics in batch (raw append).
      *
      * @param array<array{metric: string, value: int, type: string, tags?: array<string,mixed>}> $metrics
+     * @param string $type Metric type: 'event' or 'gauge'
      * @param int $batchSize Maximum number of metrics per INSERT statement
      * @return bool
      * @throws \Exception
      */
-    public function addBatch(array $metrics, int $batchSize = 1000): bool
+    public function addBatch(array $metrics, string $type = self::TYPE_EVENT, int $batchSize = 1000): bool
     {
-        return $this->adapter->addBatch($metrics, $batchSize);
+        return $this->adapter->addBatch($metrics, $type, $batchSize);
     }
 
     /**
@@ -102,12 +104,13 @@ class Usage
      * @param string $endDate End datetime
      * @param array<\Utopia\Query\Query> $queries Additional filters
      * @param bool $zeroFill Whether to fill gaps with zero values
+     * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
      * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
      * @throws \Exception
      */
-    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true): array
+    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
     {
-        return $this->adapter->getTimeSeries($metrics, $interval, $startDate, $endDate, $queries, $zeroFill);
+        return $this->adapter->getTimeSeries($metrics, $interval, $startDate, $endDate, $queries, $zeroFill, $type);
     }
 
     /**
@@ -115,12 +118,13 @@ class Usage
      *
      * @param string $metric Metric name
      * @param array<\Utopia\Query\Query> $queries Additional filters
+     * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
      * @return int
      * @throws \Exception
      */
-    public function getTotal(string $metric, array $queries = []): int
+    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
     {
-        return $this->adapter->getTotal($metric, $queries);
+        return $this->adapter->getTotal($metric, $queries, $type);
     }
 
     /**
@@ -128,12 +132,13 @@ class Usage
      *
      * @param array<string> $metrics List of metric names
      * @param array<\Utopia\Query\Query> $queries Additional filters
+     * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
      * @return array<string, int>
      * @throws \Exception
      */
-    public function getTotalBatch(array $metrics, array $queries = []): array
+    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
     {
-        return $this->adapter->getTotalBatch($metrics, $queries);
+        return $this->adapter->getTotalBatch($metrics, $queries, $type);
     }
 
     /**
@@ -141,35 +146,38 @@ class Usage
      * When no queries are provided, all metrics are deleted.
      *
      * @param array<\Utopia\Query\Query> $queries
+     * @param string|null $type Metric type: 'event', 'gauge', or null (purge both)
      * @throws \Exception
      */
-    public function purge(array $queries = []): bool
+    public function purge(array $queries = [], ?string $type = null): bool
     {
-        return $this->adapter->purge($queries);
+        return $this->adapter->purge($queries, $type);
     }
 
     /**
      * Find metrics using Query objects.
      *
      * @param array<\Utopia\Query\Query> $queries
+     * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
      * @return array<Metric>
      * @throws \Exception
      */
-    public function find(array $queries = []): array
+    public function find(array $queries = [], ?string $type = null): array
     {
-        return $this->adapter->find($queries);
+        return $this->adapter->find($queries, $type);
     }
 
     /**
      * Count metrics using Query objects.
      *
      * @param array<\Utopia\Query\Query> $queries
+     * @param string|null $type Metric type: 'event', 'gauge', or null (count both)
      * @return int
      * @throws \Exception
      */
-    public function count(array $queries = []): int
+    public function count(array $queries = [], ?string $type = null): int
     {
-        return $this->adapter->count($queries);
+        return $this->adapter->count($queries, $type);
     }
 
     /**
@@ -177,12 +185,13 @@ class Usage
      *
      * @param array<\Utopia\Query\Query> $queries
      * @param string $attribute Attribute to sum (default: 'value')
+     * @param string|null $type Metric type: 'event', 'gauge', or null (sum both)
      * @return int
      * @throws \Exception
      */
-    public function sum(array $queries = [], string $attribute = 'value'): int
+    public function sum(array $queries = [], string $attribute = 'value', ?string $type = null): int
     {
-        return $this->adapter->sum($queries, $attribute);
+        return $this->adapter->sum($queries, $attribute, $type);
     }
 
     /**
@@ -279,7 +288,8 @@ class Usage
     /**
      * Flush the in-memory buffer to storage.
      *
-     * Writes all buffered metrics using addBatch(), then clears the buffer.
+     * Separates buffered metrics into events and gauges, then writes each batch
+     * to the appropriate table via addBatch().
      *
      * @return bool True if flush succeeded (or buffer was empty)
      * @throws \Exception
@@ -291,7 +301,29 @@ class Usage
             return true;
         }
 
-        $result = $this->adapter->addBatch(array_values($this->buffer));
+        // Separate events and gauges
+        $events = [];
+        $gauges = [];
+
+        foreach ($this->buffer as $entry) {
+            if ($entry['type'] === self::TYPE_EVENT) {
+                $events[] = $entry;
+            } else {
+                $gauges[] = $entry;
+            }
+        }
+
+        $result = true;
+
+        // Flush events to events table
+        if (!empty($events)) {
+            $result = $this->adapter->addBatch($events, self::TYPE_EVENT) && $result;
+        }
+
+        // Flush gauges to gauges table
+        if (!empty($gauges)) {
+            $result = $this->adapter->addBatch($gauges, self::TYPE_GAUGE) && $result;
+        }
 
         $this->buffer = [];
         $this->bufferCount = 0;

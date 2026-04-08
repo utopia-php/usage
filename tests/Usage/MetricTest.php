@@ -8,14 +8,14 @@ use Utopia\Usage\Metric;
 class MetricTest extends TestCase
 {
     /**
-     * Test Metric::getSchema() returns correct attribute definitions
+     * Test Metric::getEventSchema() returns correct attribute definitions
      */
-    public function testGetSchemaReturnsAttributeDefinitions(): void
+    public function testGetEventSchemaReturnsAttributeDefinitions(): void
     {
-        $schema = Metric::getSchema();
+        $schema = Metric::getEventSchema();
 
         $this->assertIsArray($schema);
-        $this->assertCount(5, $schema);
+        $this->assertCount(9, $schema);
 
         // Test metric attribute
         $metricAttr = $schema[0];
@@ -30,35 +30,75 @@ class MetricTest extends TestCase
         $this->assertEquals('integer', $valueAttr['type']);
         $this->assertTrue($valueAttr['required']);
 
-        // Test type attribute
-        $typeAttr = $schema[2];
-        $this->assertEquals('type', $typeAttr['$id']);
-        $this->assertEquals('string', $typeAttr['type']);
-        $this->assertEquals(16, $typeAttr['size']);
-        $this->assertTrue($typeAttr['required']);
-
         // Test time attribute (optional)
-        $timeAttr = $schema[3];
+        $timeAttr = $schema[2];
         $this->assertEquals('time', $timeAttr['$id']);
         $this->assertEquals('datetime', $timeAttr['type']);
         $this->assertFalse($timeAttr['required']);
 
+        // Test event-specific columns
+        $pathAttr = $schema[3];
+        $this->assertEquals('path', $pathAttr['$id']);
+        $this->assertFalse($pathAttr['required']);
+
+        $methodAttr = $schema[4];
+        $this->assertEquals('method', $methodAttr['$id']);
+        $this->assertFalse($methodAttr['required']);
+
+        $statusAttr = $schema[5];
+        $this->assertEquals('status', $statusAttr['$id']);
+        $this->assertFalse($statusAttr['required']);
+
+        $resourceAttr = $schema[6];
+        $this->assertEquals('resource', $resourceAttr['$id']);
+        $this->assertFalse($resourceAttr['required']);
+
+        $resourceIdAttr = $schema[7];
+        $this->assertEquals('resourceId', $resourceIdAttr['$id']);
+        $this->assertFalse($resourceIdAttr['required']);
+
         // Test tags attribute (optional)
-        $tagsAttr = $schema[4];
+        $tagsAttr = $schema[8];
         $this->assertEquals('tags', $tagsAttr['$id']);
         $this->assertEquals('string', $tagsAttr['type']);
         $this->assertFalse($tagsAttr['required']);
     }
 
     /**
-     * Test Metric::getIndexes() returns correct index definitions
+     * Test Metric::getGaugeSchema() returns correct attribute definitions
      */
-    public function testGetIndexesReturnsIndexDefinitions(): void
+    public function testGetGaugeSchemaReturnsAttributeDefinitions(): void
     {
-        $indexes = Metric::getIndexes();
+        $schema = Metric::getGaugeSchema();
+
+        $this->assertIsArray($schema);
+        $this->assertCount(4, $schema);
+
+        $this->assertEquals('metric', $schema[0]['$id']);
+        $this->assertEquals('value', $schema[1]['$id']);
+        $this->assertEquals('time', $schema[2]['$id']);
+        $this->assertEquals('tags', $schema[3]['$id']);
+    }
+
+    /**
+     * Test backward-compatible getSchema() returns event schema
+     */
+    public function testGetSchemaReturnsEventSchema(): void
+    {
+        $schema = Metric::getSchema();
+        $eventSchema = Metric::getEventSchema();
+        $this->assertEquals($eventSchema, $schema);
+    }
+
+    /**
+     * Test Metric::getEventIndexes() returns correct index definitions
+     */
+    public function testGetEventIndexesReturnsIndexDefinitions(): void
+    {
+        $indexes = Metric::getEventIndexes();
 
         $this->assertIsArray($indexes);
-        $this->assertCount(3, $indexes);
+        $this->assertCount(7, $indexes);
 
         // Test metric index
         $metricIndex = $indexes[0];
@@ -66,32 +106,78 @@ class MetricTest extends TestCase
         $this->assertEquals('key', $metricIndex['type']);
         $this->assertEquals(['metric'], $metricIndex['attributes']);
 
-        // Test type index
-        $typeIndex = $indexes[1];
-        $this->assertEquals('index-type', $typeIndex['$id']);
-        $this->assertEquals(['type'], $typeIndex['attributes']);
-
         // Test time index
-        $timeIndex = $indexes[2];
+        $timeIndex = $indexes[1];
         $this->assertEquals('index-time', $timeIndex['$id']);
         $this->assertEquals(['time'], $timeIndex['attributes']);
+
+        // Test event-specific indexes
+        $this->assertEquals('index-path', $indexes[2]['$id']);
+        $this->assertEquals('index-method', $indexes[3]['$id']);
+        $this->assertEquals('index-status', $indexes[4]['$id']);
+        $this->assertEquals('index-resource', $indexes[5]['$id']);
+        $this->assertEquals('index-resourceId', $indexes[6]['$id']);
     }
 
     /**
-     * Test Metric::validate() accepts valid data
+     * Test Metric::getGaugeIndexes() returns correct index definitions
      */
-    public function testValidateAcceptsValidData(): void
+    public function testGetGaugeIndexesReturnsIndexDefinitions(): void
+    {
+        $indexes = Metric::getGaugeIndexes();
+
+        $this->assertIsArray($indexes);
+        $this->assertCount(2, $indexes);
+
+        $this->assertEquals('index-metric', $indexes[0]['$id']);
+        $this->assertEquals('index-time', $indexes[1]['$id']);
+    }
+
+    /**
+     * Test backward-compatible getIndexes() returns event indexes
+     */
+    public function testGetIndexesReturnsEventIndexes(): void
+    {
+        $indexes = Metric::getIndexes();
+        $eventIndexes = Metric::getEventIndexes();
+        $this->assertEquals($eventIndexes, $indexes);
+    }
+
+    /**
+     * Test Metric::validate() accepts valid event data
+     */
+    public function testValidateAcceptsValidEventData(): void
     {
         $validData = [
             'metric' => 'requests',
             'value' => 100,
-            'type' => 'event',
             'time' => '2024-01-01 12:00:00',
+            'path' => '/v1/storage/files',
+            'method' => 'POST',
+            'status' => '201',
+            'resource' => 'bucket',
+            'resourceId' => 'abc123',
             'tags' => ['region' => 'us-east', 'env' => 'prod'],
         ];
 
         // Should not throw exception
-        Metric::validate($validData);
+        Metric::validate($validData, 'event');
+        $this->assertTrue(true);
+    }
+
+    /**
+     * Test Metric::validate() accepts valid gauge data
+     */
+    public function testValidateAcceptsValidGaugeData(): void
+    {
+        $validData = [
+            'metric' => 'storage',
+            'value' => 10000,
+            'time' => '2024-01-01 12:00:00',
+            'tags' => ['region' => 'us-east'],
+        ];
+
+        Metric::validate($validData, 'gauge');
         $this->assertTrue(true);
     }
 
@@ -103,10 +189,9 @@ class MetricTest extends TestCase
         $minimalData = [
             'metric' => 'requests',
             'value' => 50,
-            'type' => 'event',
         ];
 
-        Metric::validate($minimalData);
+        Metric::validate($minimalData, 'event');
         $this->assertTrue(true);
     }
 
@@ -120,8 +205,7 @@ class MetricTest extends TestCase
 
         Metric::validate([
             'value' => 100,
-            'type' => 'event',
-        ]);
+        ], 'event');
     }
 
     /**
@@ -134,22 +218,7 @@ class MetricTest extends TestCase
 
         Metric::validate([
             'metric' => 'requests',
-            'type' => 'event',
-        ]);
-    }
-
-    /**
-     * Test Metric::validate() rejects missing required type
-     */
-    public function testValidateRejectsMissingType(): void
-    {
-        $this->expectException(\Exception::class);
-        $this->expectExceptionMessage("Required attribute 'type' is missing");
-
-        Metric::validate([
-            'metric' => 'requests',
-            'value' => 100,
-        ]);
+        ], 'event');
     }
 
     /**
@@ -163,8 +232,7 @@ class MetricTest extends TestCase
         Metric::validate([
             'metric' => 123,
             'value' => 100,
-            'type' => 'event',
-        ]);
+        ], 'event');
     }
 
     /**
@@ -178,8 +246,7 @@ class MetricTest extends TestCase
         Metric::validate([
             'metric' => str_repeat('a', 256),
             'value' => 100,
-            'type' => 'event',
-        ]);
+        ], 'event');
     }
 
     /**
@@ -193,23 +260,7 @@ class MetricTest extends TestCase
         Metric::validate([
             'metric' => 'requests',
             'value' => '100',
-            'type' => 'event',
-        ]);
-    }
-
-    /**
-     * Test Metric::validate() rejects non-string type
-     */
-    public function testValidateRejectsNonStringType(): void
-    {
-        $this->expectException(\Exception::class);
-        $this->expectExceptionMessage("Attribute 'type' must be a string");
-
-        Metric::validate([
-            'metric' => 'requests',
-            'value' => 100,
-            'type' => 123,
-        ]);
+        ], 'event');
     }
 
     /**
@@ -220,11 +271,10 @@ class MetricTest extends TestCase
         $data = [
             'metric' => 'requests',
             'value' => 100,
-            'type' => 'event',
             'time' => new \DateTime('2024-01-01 12:00:00'),
         ];
 
-        Metric::validate($data);
+        Metric::validate($data, 'event');
         $this->assertTrue(true);
     }
 
@@ -236,11 +286,10 @@ class MetricTest extends TestCase
         $data = [
             'metric' => 'requests',
             'value' => 100,
-            'type' => 'event',
             'time' => '2024-01-01 12:00:00',
         ];
 
-        Metric::validate($data);
+        Metric::validate($data, 'event');
         $this->assertTrue(true);
     }
 
@@ -255,9 +304,8 @@ class MetricTest extends TestCase
         Metric::validate([
             'metric' => 'requests',
             'value' => 100,
-            'type' => 'event',
             'time' => 'invalid-date',
-        ]);
+        ], 'event');
     }
 
     /**
@@ -271,9 +319,8 @@ class MetricTest extends TestCase
         Metric::validate([
             'metric' => 'requests',
             'value' => 100,
-            'type' => 'event',
             'tags' => 'not-an-array',
-        ]);
+        ], 'event');
     }
 
     /**
@@ -284,11 +331,10 @@ class MetricTest extends TestCase
         $data = [
             'metric' => 'requests',
             'value' => 100,
-            'type' => 'event',
             'tags' => [],
         ];
 
-        Metric::validate($data);
+        Metric::validate($data, 'event');
         $this->assertTrue(true);
     }
 
@@ -302,6 +348,11 @@ class MetricTest extends TestCase
             'metric' => 'requests',
             'value' => 100,
             'type' => 'event',
+            'path' => '/v1/storage/files',
+            'method' => 'POST',
+            'status' => '201',
+            'resource' => 'bucket',
+            'resourceId' => 'abc123',
             'tags' => ['env' => 'prod'],
         ];
 
@@ -311,6 +362,11 @@ class MetricTest extends TestCase
         $this->assertEquals('requests', $metric->getMetric());
         $this->assertEquals(100, $metric->getValue());
         $this->assertEquals('event', $metric->getType());
+        $this->assertEquals('/v1/storage/files', $metric->getPath());
+        $this->assertEquals('POST', $metric->getMethod());
+        $this->assertEquals('201', $metric->getStatus());
+        $this->assertEquals('bucket', $metric->getResource());
+        $this->assertEquals('abc123', $metric->getResourceId());
         $this->assertEquals(['env' => 'prod'], $metric->getTags());
     }
 
@@ -375,6 +431,38 @@ class MetricTest extends TestCase
     {
         $metric = new Metric([]);
         $this->assertEquals('event', $metric->getType());
+    }
+
+    /**
+     * Test event-specific getters return null when not set
+     */
+    public function testEventGettersReturnNullWhenNotSet(): void
+    {
+        $metric = new Metric([]);
+        $this->assertNull($metric->getPath());
+        $this->assertNull($metric->getMethod());
+        $this->assertNull($metric->getStatus());
+        $this->assertNull($metric->getResource());
+        $this->assertNull($metric->getResourceId());
+    }
+
+    /**
+     * Test event-specific getters return correct values
+     */
+    public function testEventGettersReturnCorrectValues(): void
+    {
+        $metric = new Metric([
+            'path' => '/v1/databases',
+            'method' => 'GET',
+            'status' => '200',
+            'resource' => 'database',
+            'resourceId' => 'db123',
+        ]);
+        $this->assertEquals('/v1/databases', $metric->getPath());
+        $this->assertEquals('GET', $metric->getMethod());
+        $this->assertEquals('200', $metric->getStatus());
+        $this->assertEquals('database', $metric->getResource());
+        $this->assertEquals('db123', $metric->getResourceId());
     }
 
     /**
@@ -573,5 +661,14 @@ class MetricTest extends TestCase
         $this->assertEquals('metric-1', $array['$id']);
         $this->assertEquals('requests', $array['metric']);
         $this->assertEquals(100, $array['value']);
+    }
+
+    /**
+     * Test EVENT_COLUMNS constant
+     */
+    public function testEventColumnsConstant(): void
+    {
+        $expected = ['path', 'method', 'status', 'resource', 'resourceId'];
+        $this->assertEquals($expected, Metric::EVENT_COLUMNS);
     }
 }
