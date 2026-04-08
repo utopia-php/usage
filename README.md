@@ -9,17 +9,17 @@ Although this library is part of the [Utopia Framework](https://github.com/utopi
 
 ## Features
 
-- **Pluggable Adapters**: Use different storage backends (Database, ClickHouse)
-- **Database Adapter**: Store metrics in any SQL database via utopia-php/database
-- **ClickHouse Adapter**: High-performance analytics storage for massive scale
-- **Flexible Periods**: Hourly (1h), Daily (1d), and Infinite (inf) periods
-- **Dual Upsert Semantics**: Additive (`increment`) and replace (`set`) upserts
+- **Two Table Architecture**: Separate events and gauges tables optimized for their access patterns
+- **Events Table**: Request-level metrics with dedicated columns (path, method, status, resource, country, userAgent)
+- **Gauges Table**: Simple resource snapshots (storage size, user count, etc.)
+- **Query-Time Aggregation**: No write-time period fan-out — aggregate by any interval at query time
+- **Daily Materialized View**: Pre-aggregated daily SummingMergeTree for fast billing queries
+- **Pluggable Adapters**: ClickHouse (production) and Database (development/testing)
 - **In-Memory Buffering**: Collect metrics and flush in batch for high-throughput scenarios
-- **Auto Period Fan-Out**: `increment()`, `set()`, `collect()`, `collectSet()` automatically write to all periods
-- **Batch Operations**: `incrementBatch()` and `setBatch()` for efficient bulk writes
-- **Async Inserts**: ClickHouse adapter supports server-side async inserts
-- **Rich Queries**: Filter, limit, offset, and aggregate metrics
-- **Tag Support**: Add custom tags for multi-dimensional analytics
+- **Rich Queries**: Filter, sort, paginate using `Utopia\Query\Query` objects
+- **Multi-Tenant**: Shared tables with tenant isolation via string tenant IDs
+- **LowCardinality Columns**: Country uses `LowCardinality(String)` for efficient storage
+- **Bloom Filter Indexes**: Fast filtering on all event columns
 
 ## Getting Started
 
@@ -28,60 +28,14 @@ Install using composer:
 composer require utopia-php/usage
 ```
 
-### Using Database Adapter
-
-The Database adapter stores metrics using utopia-php/database, supporting MySQL, MariaDB, PostgreSQL, and more.
-
-```php
-<?php
-
-require_once __DIR__ . '/../../vendor/autoload.php';
-
-use PDO;
-use Utopia\Cache\Cache;
-use Utopia\Cache\Adapter\None as NoCache;
-use Utopia\Database\Adapter\MySQL;
-use Utopia\Database\Database;
-use Utopia\Usage\Usage;
-use Utopia\Usage\Adapter\Database as DatabaseAdapter;
-
-$dbHost = '127.0.0.1';
-$dbUser = 'root';
-$dbPass = 'password';
-$dbPort = '3306';
-
-$pdo = new PDO("mysql:host={$dbHost};port={$dbPort};charset=utf8mb4", $dbUser, $dbPass, [
-    PDO::ATTR_TIMEOUT => 3, // Seconds
-    PDO::ATTR_PERSISTENT => true,
-    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-    PDO::ATTR_EMULATE_PREPARES => true,
-    PDO::ATTR_STRINGIFY_FETCHES => true,
-]);
-
-$cache = new Cache(new NoCache());
-$database = new Database(new MySQL($pdo), $cache);
-$database->setNamespace('namespace');
-
-// Create Usage instance with Database adapter
-$adapter = new DatabaseAdapter($database);
-$usage = new Usage($adapter);
-$usage->setup();
-```
-
 ### Using ClickHouse Adapter
 
-The ClickHouse adapter provides high-performance analytics storage for massive scale metrics.
-
 ```php
 <?php
-
-require_once __DIR__ . '/../../vendor/autoload.php';
 
 use Utopia\Usage\Usage;
 use Utopia\Usage\Adapter\ClickHouse;
 
-// Create Usage instance with ClickHouse adapter
 $adapter = new ClickHouse(
     host: 'clickhouse-server',
     username: 'default',
@@ -89,224 +43,259 @@ $adapter = new ClickHouse(
     port: 8123,
     secure: false
 );
-$usage = new Usage($adapter);
 
-$usage->setup();
+// Multi-tenant setup
+$adapter->setNamespace('my_app');
+$adapter->setSharedTables(true);
+$adapter->setTenant('project_123');
+
+$usage = new Usage($adapter);
+$usage->setup(); // Creates events, gauges, and daily MV tables
 ```
 
-### Using Custom Adapter
-
-You can create custom adapters by extending the `Utopia\Usage\Adapter` abstract class.
+### Using Database Adapter
 
 ```php
 <?php
 
 use Utopia\Usage\Usage;
-use Utopia\Usage\Adapter\Database;
+use Utopia\Usage\Adapter\Database as DatabaseAdapter;
 
-// Create custom adapter instance
-$adapter = new Database($database);
-
-// Use with Usage
+$adapter = new DatabaseAdapter($database); // Utopia\Database\Database instance
 $usage = new Usage($adapter);
 $usage->setup();
 ```
 
 ## Metric Types
 
-The library supports two types of metrics with different upsert semantics:
+### Events (Additive)
 
-### Increment (Additive Upsert)
+Events are request-level metrics like bandwidth, executions, API calls. They are summed when aggregated.
 
-Values are **summed** when the same metric/period/time bucket already exists. Use for event-driven counters like request counts, bandwidth, etc.
+Event-specific columns: `path`, `method`, `status`, `resource`, `resourceId`, `country`, `userAgent`
 
 ```php
-// Single metric, auto fan-out to all periods (1h, 1d, inf)
-$usage->increment('requests', 1);
-$usage->increment('bandwidth', 5000, ['region' => 'us-east']);
+// Collect events — values accumulate in-memory buffer (summed per metric)
+$usage->collect('bandwidth', 5000, Usage::TYPE_EVENT, [
+    'path' => '/v1/storage/files',
+    'method' => 'POST',
+    'status' => '201',
+    'resource' => 'bucket',
+    'resourceId' => 'abc123',
+    'country' => 'US',
+    'userAgent' => 'AppwriteSDK/1.0',
+]);
 
-// Batch with explicit periods
-$usage->incrementBatch([
-    ['metric' => 'requests', 'value' => 100, 'period' => '1h', 'tags' => ['method' => 'GET']],
-    ['metric' => 'bandwidth', 'value' => 50000, 'period' => '1h', 'tags' => ['region' => 'us-east']],
+// Event columns are auto-extracted from tags into dedicated columns
+// Remaining tags stay in the JSON tags column
+```
+
+### Gauges (Point-in-Time)
+
+Gauges are resource snapshots like storage size, user count, file count. Last-write-wins semantics.
+
+```php
+// Collect gauges — last value wins per metric in buffer
+$usage->collect('users', 1500, Usage::TYPE_GAUGE);
+$usage->collect('storage.size', 1048576, Usage::TYPE_GAUGE, [
+    'resource' => 'bucket',
+    'resourceId' => 'abc123',
 ]);
 ```
 
-### Set (Replace Upsert)
-
-Values **replace** the existing value when the same metric/period/time bucket already exists. Use for periodic recounts or resource gauges (e.g., current storage size, active user count).
+### Flushing
 
 ```php
-// Single metric, auto fan-out to all periods (1h, 1d, inf)
-$usage->set('storage.size', 1048576);
-$usage->set('users.active', 42, ['plan' => 'pro']);
-
-// Batch with explicit periods
-$usage->setBatch([
-    ['metric' => 'storage.size', 'value' => 1048576, 'period' => '1h', 'tags' => []],
-    ['metric' => 'users.active', 'value' => 42, 'period' => '1d', 'tags' => []],
-]);
-```
-
-## In-Memory Buffering
-
-For high-throughput scenarios (e.g., inside a request loop or worker), use `collect()` / `collectSet()` to accumulate metrics in memory and `flush()` to write them in batch.
-
-```php
-// Accumulate increment metrics (values are summed in-memory)
-$usage->collect('requests', 1);
-$usage->collect('requests', 1);
-$usage->collect('bandwidth', 5000);
-
-// Accumulate set metrics (last-write-wins in-memory)
-$usage->collectSet('storage.size', 1048576);
-
 // Check if flush is recommended (threshold or interval reached)
 if ($usage->shouldFlush()) {
-    $usage->flush();
+    $usage->flush(); // Writes events to events table, gauges to gauges table
 }
 
-// Or flush explicitly
-$usage->flush();
+// Configure thresholds
+$usage->setFlushThreshold(5000);  // Flush after 5000 collect() calls (default: 10,000)
+$usage->setFlushInterval(10);     // Flush after 10 seconds (default: 20)
 ```
 
-### Flush Configuration
+### Batch Writes
 
 ```php
-// Flush when 5000 collect() calls have been made (default: 10,000)
-$usage->setFlushThreshold(5000);
+// Write directly without buffering
+$usage->addBatch([
+    ['metric' => 'requests', 'value' => 100, 'tags' => ['path' => '/v1/users']],
+    ['metric' => 'bandwidth', 'value' => 50000, 'tags' => ['country' => 'DE']],
+], Usage::TYPE_EVENT);
 
-// Flush when 10 seconds have elapsed since last flush (default: 20)
-$usage->setFlushInterval(10);
+$usage->addBatch([
+    ['metric' => 'users', 'value' => 42, 'tags' => []],
+], Usage::TYPE_GAUGE);
 ```
 
 ## Querying Metrics
 
-**Get Usage By Period**
-
-```php
-$metrics = $usage->getByPeriod('requests', '1h');
-// Returns an array of Metric objects
-```
-
-**Get Usage Between Dates**
-
-```php
-$start = '2024-01-01 00:00:00';
-$end = '2024-01-31 23:59:59';
-
-$metrics = $usage->getBetweenDates('requests', $start, $end);
-```
-
-**Count and Sum Usage**
-
-```php
-// Count total records
-$count = $usage->countByPeriod('requests', '1h');
-
-// Sum all values
-$sum = $usage->sumByPeriod('requests', '1h');
-```
-
-**Find with Query Objects**
+### Find with Query Objects
 
 ```php
 use Utopia\Query\Query;
 
+// Find events filtered by metric and time range
 $metrics = $usage->find([
-    Query::equal('metric', ['requests', 'bandwidth']),
-    Query::greaterThan('value', 100),
+    Query::equal('metric', ['bandwidth']),
+    Query::equal('country', ['US']),
+    Query::greaterThanEqual('time', '2026-01-01'),
     Query::orderDesc('time'),
-    Query::limit(10),
-]);
+    Query::limit(100),
+], Usage::TYPE_EVENT);
 
-$count = $usage->count([
-    Query::equal('period', ['1h']),
-]);
-```
+// Find gauges
+$gauges = $usage->find([
+    Query::equal('metric', ['users', 'storage.size']),
+], Usage::TYPE_GAUGE);
 
-**Purge Old Usage**
-
-```php
-use Utopia\Query\Query;
-use Utopia\Database\DateTime;
-
-$datetime = DateTime::addSeconds(new \DateTime(), -86400); // Delete metrics older than 24 hours
-$usage->purge([
-    Query::lessThan('time', $datetime),
+// Query both tables (type = null)
+$all = $usage->find([
+    Query::equal('metric', ['bandwidth']),
 ]);
 ```
 
-## Periods
+### Totals
 
-The library supports three types of periods:
-
-- `1h` - Hourly periods (`Y-m-d H:00`)
-- `1d` - Daily periods (`Y-m-d 00:00`)
-- `inf` - Infinite/lifetime periods (`0000-00-00 00:00`)
-
-## Adapters
-
-### Database Adapter
-
-The Database adapter uses [utopia-php/database](https://github.com/utopia-php/database) to store metrics in SQL databases.
-
-**Features**:
-- Works with MySQL, MariaDB, PostgreSQL, SQLite
-- Full query support (filters, sorting, pagination)
-- ACID compliance for data consistency
-- Additive upsert via `upsertDocumentsWithIncrease`
-- Replace upsert via `upsertDocuments`
-
-### ClickHouse Adapter
-
-The ClickHouse adapter uses the HTTP interface to store metrics in ClickHouse for high-performance analytics.
-
-**Features**:
-- SummingMergeTree for additive upserts (`usage` table)
-- ReplacingMergeTree for replace upserts (`usage_snapshot` table)
-- Automatic partitioning by month
-- Efficient compression and storage
-- Bloom filter indexes for fast lookups
-- Async insert support for server-side batching
-- Deterministic IDs for correct merge behavior
-
-**Example**:
 ```php
-use Utopia\Usage\Usage;
-use Utopia\Usage\Adapter\ClickHouse;
+// Get total for a single metric (SUM for events, latest for gauges)
+$total = $usage->getTotal('bandwidth', [
+    Query::greaterThanEqual('time', '2026-03-01'),
+], Usage::TYPE_EVENT);
 
-$adapter = new ClickHouse(
-    host: 'clickhouse.example.com',
-    username: 'metrics_user',
-    password: 'secure_password',
-    port: 8123,
-    secure: true  // Use HTTPS
+// Batch totals — single query with GROUP BY
+$totals = $usage->getTotalBatch(
+    ['bandwidth', 'executions', 'requests'],
+    [Query::greaterThanEqual('time', '2026-03-01')],
+    Usage::TYPE_EVENT
+);
+```
+
+### Time Series
+
+```php
+// Get time series with query-time aggregation
+// Events: SUM per bucket, Gauges: argMax per bucket
+$series = $usage->getTimeSeries(
+    metrics: ['bandwidth', 'requests'],
+    interval: '1d',        // '1h' or '1d'
+    startDate: '2026-03-01',
+    endDate: '2026-04-01',
+    zeroFill: true,        // Fill gaps with zeros
+    type: Usage::TYPE_EVENT
 );
 
-// Enable async inserts (server-side batching)
-$adapter->setAsyncInserts(true, waitForConfirmation: true);
-
-$usage = new Usage($adapter);
-$usage->setup();
+// Returns: ['bandwidth' => ['total' => 5000000, 'data' => [['value' => 100, 'date' => '...'], ...]]]
 ```
+
+### Billing Queries (Daily MV)
+
+The daily materialized view pre-aggregates events by `metric + tenant + day` for fast billing:
+
+```php
+// Sum a single metric from the daily table
+$total = $usage->sumDaily([
+    Query::equal('metric', ['bandwidth']),
+    Query::between('time', '2026-03-01', '2026-04-01'),
+]);
+
+// Sum multiple metrics in one query
+$totals = $usage->sumDailyBatch(
+    ['bandwidth', 'executions', 'storage.size'],
+    [Query::between('time', '2026-03-01', '2026-04-01')]
+);
+// Returns: ['bandwidth' => 5000000, 'executions' => 12345, 'storage.size' => 0]
+
+// Find daily aggregated rows
+$rows = $usage->findDaily([
+    Query::equal('metric', ['bandwidth']),
+    Query::orderDesc('time'),
+    Query::limit(30),
+]);
+```
+
+### Purge
+
+```php
+// Purge all event metrics older than 90 days
+$usage->purge([
+    Query::lessThan('time', '2026-01-01'),
+], Usage::TYPE_EVENT);
+
+// Purge all gauge metrics
+$usage->purge([], Usage::TYPE_GAUGE);
+```
+
+## Architecture
+
+### ClickHouse Tables
+
+| Table | Engine | Purpose |
+|-------|--------|---------|
+| `{ns}_usage_events` | MergeTree | Raw request events with full metadata |
+| `{ns}_usage_gauges` | MergeTree | Resource snapshot gauges |
+| `{ns}_usage_events_daily` | SummingMergeTree | Pre-aggregated daily event totals |
+| `{ns}_usage_events_daily_mv` | Materialized View | Auto-populates daily table on insert |
+
+### Events Table Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | String | UUID |
+| metric | String | Metric name (e.g. bandwidth, requests) |
+| value | Int64 | Metric value |
+| time | DateTime64(3) | Event timestamp |
+| path | Nullable(String) | API endpoint path |
+| method | Nullable(String) | HTTP method |
+| status | Nullable(String) | HTTP status code |
+| resource | Nullable(String) | Resource type |
+| resourceId | Nullable(String) | Resource ID |
+| country | LowCardinality(Nullable(String)) | ISO country code |
+| userAgent | Nullable(String) | User agent string |
+| tags | Nullable(String) | JSON for extra metadata |
+| tenant | Nullable(String) | Tenant ID (shared tables) |
+
+### Gauges Table Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | String | UUID |
+| metric | String | Metric name |
+| value | Int64 | Current value |
+| time | DateTime64(3) | Snapshot timestamp |
+| tags | Nullable(String) | JSON metadata |
+| tenant | Nullable(String) | Tenant ID (shared tables) |
+
+### Daily Table Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| metric | String | Metric name |
+| value | Int64 | Aggregated daily sum |
+| time | DateTime64(3) | Day start timestamp |
+| tenant | Nullable(String) | Tenant ID (shared tables) |
 
 ### Creating Custom Adapters
 
-Extend the `Utopia\Usage\Adapter` abstract class and implement these methods:
+Extend `Utopia\Usage\Adapter` and implement:
 
-- `getName(): string` - Return adapter name
-- `setup(): void` - Initialize storage structure
-- `healthCheck(): array` - Check adapter health
-- `incrementBatch(array $metrics, int $batchSize): bool` - Additive upsert batch
-- `setBatch(array $metrics, int $batchSize): bool` - Replace upsert batch
-- `getByPeriod(string $metric, string $period, array $queries): array` - Get metrics by period
-- `getBetweenDates(string $metric, string $startDate, string $endDate, array $queries): array` - Get metrics in date range
-- `countByPeriod(string $metric, string $period, array $queries): int` - Count metrics
-- `sumByPeriod(string $metric, string $period, array $queries): int` - Sum metric values
-- `purge(array $queries = []): bool` - Delete old metrics
-- `find(array $queries): array` - Find metrics with query objects
-- `count(array $queries): int` - Count metrics with query objects
+- `getName()`, `setup()`, `healthCheck()`
+- `addBatch(array $metrics, string $type, int $batchSize): bool`
+- `find(array $queries, ?string $type): array`
+- `count(array $queries, ?string $type): int`
+- `sum(array $queries, string $attribute, ?string $type): int`
+- `getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries, bool $zeroFill, ?string $type): array`
+- `getTotal(string $metric, array $queries, ?string $type): int`
+- `getTotalBatch(array $metrics, array $queries, ?string $type): array`
+- `findDaily(array $queries): array`
+- `sumDaily(array $queries, string $attribute): int`
+- `sumDailyBatch(array $metrics, array $queries): array`
+- `purge(array $queries, ?string $type): bool`
+- `setNamespace(string $namespace): self`
+- `setTenant(?string $tenant): self`
+- `setSharedTables(bool $sharedTables): self`
 
 ## System Requirements
 
