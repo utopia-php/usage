@@ -1028,6 +1028,9 @@ class ClickHouse extends SQL
     /**
      * Create the events daily SummingMergeTree table.
      *
+     * Minimal schema: only metric, value, time, resource, resourceId, tenant.
+     * No path/status/userAgent/country/tags — those don't aggregate.
+     *
      * @throws Exception
      */
     private function createDailyTable(): void
@@ -1035,40 +1038,29 @@ class ClickHouse extends SQL
         $dailyTableName = $this->getEventsDailyTableName();
         $escapedDailyTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyTableName);
 
-        // Daily table has same schema as events table
-        $columns = ['id String'];
-
-        foreach ($this->getAttributes('event') as $attribute) {
-            /** @var string $id */
-            $id = $attribute['$id'];
-
-            if ($id === 'time') {
-                $columns[] = 'time DateTime64(3)';
-            } else {
-                $columns[] = $this->getColumnDefinition($id, 'event');
-            }
-        }
+        $columns = [
+            'metric String',
+            'value Int64',
+            'time DateTime64(3)',
+            'resource Nullable(String)',
+            'resourceId Nullable(String)',
+        ];
 
         if ($this->sharedTables) {
             $columns[] = 'tenant Nullable(String)';
         }
 
-        $indexes = [];
-        foreach ($this->getEventIndexes() as $index) {
-            /** @var string $indexName */
-            $indexName = $index['$id'];
-            /** @var array<string> $attributes */
-            $attributes = $index['attributes'];
-            $escapedIndexName = $this->escapeIdentifier($indexName);
-            $escapedAttributes = array_map(fn ($attr) => $this->escapeIdentifier($attr), $attributes);
-            $attributeList = implode(', ', $escapedAttributes);
-            $indexes[] = "INDEX {$escapedIndexName} ({$attributeList}) TYPE bloom_filter GRANULARITY 1";
-        }
+        $indexes = [
+            'INDEX index_metric (metric) TYPE bloom_filter GRANULARITY 1',
+            'INDEX index_time (time) TYPE bloom_filter GRANULARITY 1',
+            'INDEX index_resource (resource) TYPE bloom_filter GRANULARITY 1',
+            'INDEX index_resourceId (resourceId) TYPE bloom_filter GRANULARITY 1',
+        ];
 
         $columnDefs = implode(",\n                ", $columns);
-        $indexDefsStr = !empty($indexes) ? ",\n                " . implode(",\n                ", $indexes) : '';
+        $indexDefsStr = ",\n                " . implode(",\n                ", $indexes);
 
-        $dailyOrderBy = $this->sharedTables ? '(tenant, metric, time)' : '(metric, time)';
+        $dailyOrderBy = $this->sharedTables ? '(tenant, metric, resource, resourceId, time)' : '(metric, resource, resourceId, time)';
 
         $createDailyTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDailyTable} (
@@ -1101,11 +1093,11 @@ class ClickHouse extends SQL
         if ($this->sharedTables) {
             $innerSelect = "metric, resource, resourceId, tenant, sum(value) as value, toStartOfDay(time) as d";
             $innerGroupBy = "metric, resource, resourceId, tenant, d";
-            $outerSelect = "generateUUIDv4() as id, metric, value, d as time, '' as path, '' as method, '' as status, resource, resourceId, '{}' as tags, tenant";
+            $outerSelect = "metric, value, d as time, resource, resourceId, tenant";
         } else {
             $innerSelect = "metric, resource, resourceId, sum(value) as value, toStartOfDay(time) as d";
             $innerGroupBy = "metric, resource, resourceId, d";
-            $outerSelect = "generateUUIDv4() as id, metric, value, d as time, '' as path, '' as method, '' as status, resource, resourceId, '{}' as tags";
+            $outerSelect = "metric, value, d as time, resource, resourceId";
         }
 
         $createDailyMvSql = "
@@ -1635,9 +1627,15 @@ class ClickHouse extends SQL
 
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
 
+        // Daily table has limited columns — only allow metric, value, time, resource, resourceId, tenant
         $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
-        $selectColumns = $this->getSelectColumns(Usage::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+
+        $dailyColumns = ['metric', 'value', 'time', 'resource', 'resourceId'];
+        if ($this->sharedTables) {
+            $dailyColumns[] = 'tenant';
+        }
+        $selectColumns = implode(', ', array_map(fn ($c) => $this->escapeIdentifier($c), $dailyColumns));
 
         $orderClause = !empty($parsed['orderBy']) ? ' ORDER BY ' . implode(', ', $parsed['orderBy']) : '';
         $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
