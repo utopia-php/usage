@@ -60,9 +60,6 @@ class ClickHouse extends SQL
 
     private Client $client;
 
-    /** @var bool Whether to use FINAL in SELECT queries to force merge-on-read (tests) */
-    private bool $useFinal = false;
-
     protected ?string $tenant = null;
 
     protected bool $sharedTables = false;
@@ -127,15 +124,6 @@ class ClickHouse extends SQL
         $this->client->addHeader('X-ClickHouse-User', $this->username);
         $this->client->addHeader('X-ClickHouse-Key', $this->password);
         $this->client->setTimeout(30_000); // 30 seconds
-    }
-
-    /**
-     * Enable or disable using FINAL in SELECT queries.
-     */
-    public function setUseFinal(bool $useFinal): self
-    {
-        $this->useFinal = $useFinal;
-        return $this;
     }
 
     /**
@@ -521,7 +509,7 @@ class ClickHouse extends SQL
      * @param bool|null $useFinal Whether to append FINAL clause
      * @return string Fully qualified table reference
      */
-    private function buildTableReference(string $tableName, ?bool $useFinal = null): string
+    private function buildTableReference(string $tableName): string
     {
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
         return $escapedTable;
@@ -1306,9 +1294,7 @@ class ClickHouse extends SQL
                 $rows[] = $encoded;
             }
 
-            if (count($rows) > 0) {
-                $this->insert($tableName, $rows);
-            }
+            $this->insert($tableName, $rows);
         }
 
         return true;
@@ -1331,7 +1317,11 @@ class ClickHouse extends SQL
             return $tenant;
         }
 
-        return is_numeric($tenant) ? (string) $tenant : (string) ($tenant ?? '');
+        if (is_int($tenant) || is_float($tenant)) {
+            return (string) $tenant;
+        }
+
+        return null;
     }
 
     /**

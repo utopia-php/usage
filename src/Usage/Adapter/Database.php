@@ -189,7 +189,7 @@ class Database extends SQL
         if ($type === 'gauge') {
             // For gauge, return the last (most recently inserted) value
             $lastResult = end($results);
-            return $lastResult !== false ? ($lastResult->getValue(0) ?? 0) : 0;
+            return $lastResult->getValue(0) ?? 0;
         }
 
         // For events, SUM all values
