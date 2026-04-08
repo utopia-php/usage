@@ -506,7 +506,6 @@ class ClickHouse extends SQL
      * Build a fully qualified table reference with database, escaping, and optional FINAL clause.
      *
      * @param string $tableName The table name (with namespace already applied)
-     * @param bool|null $useFinal Whether to append FINAL clause
      * @return string Fully qualified table reference
      */
     private function buildTableReference(string $tableName): string
