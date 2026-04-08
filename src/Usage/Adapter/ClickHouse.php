@@ -973,20 +973,26 @@ class ClickHouse extends SQL
         $escapedDailyMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyMvName);
 
         $tenantSelect = $this->sharedTables ? 'tenant' : "'' as tenant";
-        $groupByClause = $this->sharedTables ? 'metric, tenant, toStartOfDay(time)' : 'metric, toStartOfDay(time)';
+        $innerGroupBy = $this->sharedTables ? 'metric, tenant, d' : 'metric, d';
 
-        $dailySelect = $this->sharedTables
-            ? "generateUUIDv4() as id, metric, {$tenantSelect}, sum(value) as value, 'event' as type, toStartOfDay(time) as time, '{}' as tags"
-            : "generateUUIDv4() as id, metric, sum(value) as value, 'event' as type, toStartOfDay(time) as time, '{}' as tags";
+        $innerSelect = $this->sharedTables
+            ? "metric, {$tenantSelect}, sum(value) as value, toStartOfDay(time) as d"
+            : "metric, sum(value) as value, toStartOfDay(time) as d";
+
+        $outerSelect = $this->sharedTables
+            ? "generateUUIDv4() as id, metric, tenant, value, 'event' as type, d as time, '{}' as tags"
+            : "generateUUIDv4() as id, metric, value, 'event' as type, d as time, '{}' as tags";
 
         $createDailyMvSql = "
             CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedDailyMv}
             TO {$escapedDailyTable}
-            AS SELECT
-                {$dailySelect}
-            FROM {$escapedDatabaseAndTable}
-            WHERE type = 'event'
-            GROUP BY {$groupByClause}
+            AS SELECT {$outerSelect}
+            FROM (
+                SELECT {$innerSelect}
+                FROM {$escapedDatabaseAndTable}
+                WHERE type = 'event'
+                GROUP BY {$innerGroupBy}
+            )
         ";
 
         $this->query($createDailyMvSql);
