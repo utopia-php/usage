@@ -973,17 +973,16 @@ class ClickHouse extends SQL
         $escapedDailyMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyMvName);
 
         $tenantSelect = $this->sharedTables ? 'tenant' : "'' as tenant";
-        $groupByClause = $this->sharedTables ? 'metric, tenant, day' : 'metric, day';
+        $groupByClause = $this->sharedTables ? 'metric, tenant, toStartOfDay(time)' : 'metric, toStartOfDay(time)';
 
         $dailySelect = $this->sharedTables
-            ? "generateUUIDv4() as id, metric, {$tenantSelect}, sum(value) as value, 'event' as type, day as time, '{}' as tags"
-            : "generateUUIDv4() as id, metric, sum(value) as value, 'event' as type, day as time, '{}' as tags";
+            ? "generateUUIDv4() as id, metric, {$tenantSelect}, sum(value) as value, 'event' as type, toStartOfDay(time) as time, '{}' as tags"
+            : "generateUUIDv4() as id, metric, sum(value) as value, 'event' as type, toStartOfDay(time) as time, '{}' as tags";
 
         $createDailyMvSql = "
             CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedDailyMv}
             TO {$escapedDailyTable}
             AS SELECT
-                toStartOfDay(time) as day,
                 {$dailySelect}
             FROM {$escapedDatabaseAndTable}
             WHERE type = 'event'
