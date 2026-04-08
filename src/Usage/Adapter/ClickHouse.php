@@ -16,7 +16,7 @@ use Utopia\Validator\Hostname;
  * Uses a single MergeTree table with a 'type' column ('event' or 'gauge')
  * and query-time aggregation (SUM for events, argMax for gauges).
  *
- * A SummingMergeTree materialized view is created for billing totals (events only).
+ * A SummingMergeTree materialized view pre-aggregates events by day for fast billing/analytics queries.
  *
  * Features:
  * - Single MergeTree table for all metrics (no period fan-out)
@@ -881,7 +881,7 @@ class ClickHouse extends SQL
     /**
      * Setup ClickHouse table structure.
      *
-     * Creates a single MergeTree table and a SummingMergeTree materialized view for billing.
+     * Creates a single MergeTree table and a SummingMergeTree daily materialized view for events.
      *
      * @throws Exception
      */
@@ -949,81 +949,21 @@ class ClickHouse extends SQL
 
         $this->query($createTableSql);
 
-        // Create billing target table (SummingMergeTree)
-        $billingTableName = $tableName . '_billing';
-        $escapedBillingTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($billingTableName);
-
-        $billingColumns = [
-            'metric String',
-            'value Int64',
-            'time DateTime64(3)',
-        ];
-
-        if ($this->sharedTables) {
-            array_splice($billingColumns, 1, 0, ['tenant Nullable(String)']);
-        }
-
-        $billingColumnDefs = implode(",\n                ", $billingColumns);
-        $billingOrderBy = $this->sharedTables ? '(tenant, metric, time)' : '(metric, time)';
-
-        $createBillingTableSql = "
-            CREATE TABLE IF NOT EXISTS {$escapedBillingTable} (
-                {$billingColumnDefs}
-            )
-            ENGINE = SummingMergeTree()
-            ORDER BY {$billingOrderBy}
-            SETTINGS allow_nullable_key = 1
-        ";
-
-        $this->query($createBillingTableSql);
-
-        // Create materialized view for billing (events only)
-        $billingMvName = $tableName . '_billing_mv';
-        $escapedBillingMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($billingMvName);
-
-        $tenantSelect = $this->sharedTables ? 'tenant' : "'' as tenant";
-        $groupByClause = $this->sharedTables ? 'metric, tenant, time' : 'metric, time';
-
-        $billingSelectColumns = $this->sharedTables
-            ? "metric,\n                {$tenantSelect},\n                sum(value) as value,\n                toStartOfMonth(time) as time"
-            : "metric,\n                sum(value) as value,\n                toStartOfMonth(time) as time";
-
-        $createBillingMvSql = "
-            CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedBillingMv}
-            TO {$escapedBillingTable}
-            AS SELECT
-                {$billingSelectColumns}
-            FROM {$escapedDatabaseAndTable}
-            WHERE type = 'event'
-            GROUP BY {$groupByClause}
-        ";
-
-        $this->query($createBillingMvSql);
-
         // Create daily aggregation target table (SummingMergeTree) for events
+        // Same column definitions as source table — just pre-aggregated by day
         $dailyTableName = $tableName . '_daily';
         $escapedDailyTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyTableName);
 
-        $dailyColumns = [
-            'metric String',
-            'value Int64',
-            'time DateTime64(3)',
-        ];
-
-        if ($this->sharedTables) {
-            array_splice($dailyColumns, 1, 0, ['tenant Nullable(String)']);
-        }
-
-        $dailyColumnDefs = implode(",\n                ", $dailyColumns);
         $dailyOrderBy = $this->sharedTables ? '(tenant, metric, time)' : '(metric, time)';
 
         $createDailyTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDailyTable} (
-                {$dailyColumnDefs}
+                {$columnDefs}{$indexDefs}
             )
             ENGINE = SummingMergeTree()
             ORDER BY {$dailyOrderBy}
-            SETTINGS allow_nullable_key = 1
+            PARTITION BY toYYYYMM(time)
+            SETTINGS index_granularity = 8192, allow_nullable_key = 1
         ";
 
         $this->query($createDailyTableSql);
@@ -1032,18 +972,21 @@ class ClickHouse extends SQL
         $dailyMvName = $tableName . '_daily_mv';
         $escapedDailyMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyMvName);
 
-        $dailySelectColumns = $this->sharedTables
-            ? "metric,\n                {$tenantSelect},\n                sum(value) as value,\n                toStartOfDay(time) as time"
-            : "metric,\n                sum(value) as value,\n                toStartOfDay(time) as time";
+        $tenantSelect = $this->sharedTables ? 'tenant' : "'' as tenant";
+        $groupByClause = $this->sharedTables ? 'metric, tenant' : 'metric';
+
+        $dailySelect = $this->sharedTables
+            ? "generateUUIDv4() as id, metric, {$tenantSelect}, sum(value) as value, 'event' as type, toStartOfDay(time) as time, '{}' as tags"
+            : "generateUUIDv4() as id, metric, sum(value) as value, 'event' as type, toStartOfDay(time) as time, '{}' as tags";
 
         $createDailyMvSql = "
             CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedDailyMv}
             TO {$escapedDailyTable}
             AS SELECT
-                {$dailySelectColumns}
+                {$dailySelect}
             FROM {$escapedDatabaseAndTable}
             WHERE type = 'event'
-            GROUP BY {$groupByClause}
+            GROUP BY {$groupByClause}, toStartOfDay(time)
         ";
 
         $this->query($createDailyMvSql);
