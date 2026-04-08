@@ -40,7 +40,7 @@ class Metric extends ArrayObject
     /**
      * Event-specific column names that are extracted from tags into dedicated columns.
      */
-    public const EVENT_COLUMNS = ['path', 'method', 'status', 'resource', 'resourceId'];
+    public const EVENT_COLUMNS = ['path', 'method', 'status', 'resource', 'resourceId', 'country', 'userAgent'];
 
     /**
      * Construct a new metric object.
@@ -197,6 +197,28 @@ class Metric extends ArrayObject
     {
         $resourceId = $this->getAttribute('resourceId', null);
         return is_string($resourceId) ? $resourceId : null;
+    }
+
+    /**
+     * Get country code (event metrics only).
+     *
+     * @return string|null ISO 3166-1 alpha-2 country code, or null if not set
+     */
+    public function getCountry(): ?string
+    {
+        $country = $this->getAttribute('country', null);
+        return is_string($country) ? $country : null;
+    }
+
+    /**
+     * Get user agent (event metrics only).
+     *
+     * @return string|null The user agent string, or null if not set
+     */
+    public function getUserAgent(): ?string
+    {
+        $userAgent = $this->getAttribute('userAgent', null);
+        return is_string($userAgent) ? $userAgent : null;
     }
 
     /**
@@ -451,6 +473,24 @@ class Metric extends ArrayObject
                 'filters' => [],
             ],
             [
+                '$id' => 'country',
+                'type' => 'string',
+                'size' => 2,
+                'required' => false,
+                'signed' => true,
+                'array' => false,
+                'filters' => [],
+            ],
+            [
+                '$id' => 'userAgent',
+                'type' => 'string',
+                'size' => 512,
+                'required' => false,
+                'signed' => true,
+                'array' => false,
+                'filters' => [],
+            ],
+            [
                 '$id' => 'tags',
                 'type' => 'string',
                 'size' => 16777216,
@@ -568,6 +608,16 @@ class Metric extends ArrayObject
                 '$id' => 'index-resourceId',
                 'type' => 'key',
                 'attributes' => ['resourceId'],
+            ],
+            [
+                '$id' => 'index-country',
+                'type' => 'key',
+                'attributes' => ['country'],
+            ],
+            [
+                '$id' => 'index-userAgent',
+                'type' => 'key',
+                'attributes' => ['userAgent'],
             ],
         ];
     }

@@ -1202,6 +1202,11 @@ class ClickHouse extends SQL
             throw new Exception("Attribute {$id} not found in {$type} schema");
         }
 
+        // Country uses LowCardinality for efficient storage of low-cardinality values
+        if ($id === 'country') {
+            return 'LowCardinality(Nullable(String))';
+        }
+
         $attributeType = is_string($attribute['type'] ?? null) ? $attribute['type'] : 'string';
         $baseType = match ($attributeType) {
             'integer' => 'Int64',
