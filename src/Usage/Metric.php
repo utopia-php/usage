@@ -19,7 +19,7 @@ use ArrayObject;
  *     '$id' => 'unique-id',
  *     'metric' => 'bandwidth',
  *     'value' => 1024,
- *     'period' => '1h',
+ *     'type' => 'event',
  *     'time' => '2025-12-09 10:00:00',
  *     'tags' => ['region' => 'us-east', 'project' => 'my-app']
  * ]);
@@ -40,7 +40,7 @@ class Metric extends ArrayObject
      * - $id: Unique identifier for the metric
      * - metric: Name/type of the metric being tracked
      * - value: Numeric value of the metric
-     * - period: Time period (1h, 1d, inf)
+     * - type: Metric type ('event' or 'gauge')
      * - time: Timestamp when the metric was recorded
      * - tags: Additional metadata as key-value pairs
      * - tenant: Tenant ID for multi-tenant environments
@@ -96,20 +96,19 @@ class Metric extends ArrayObject
     }
 
     /**
-     * Get time period.
+     * Get metric type.
      *
-     * Returns the aggregation period for this metric.
-     * Common values:
-     * - '1h': Hourly aggregation
-     * - '1d': Daily aggregation
-     * - 'inf': Infinite/lifetime aggregation
+     * Returns the type of this metric.
+     * Values:
+     * - 'event': Additive metrics (bandwidth, requests, etc.) aggregated with SUM
+     * - 'gauge': Point-in-time metrics (storage, user count, etc.) aggregated with argMax
      *
-     * @return string The period identifier, defaults to '1h'
+     * @return string The type identifier, defaults to 'event'
      */
-    public function getPeriod(): string
+    public function getType(): string
     {
-        $period = $this->getAttribute('period', '1h');
-        return is_string($period) ? $period : '1h';
+        $type = $this->getAttribute('type', 'event');
+        return is_string($type) ? $type : 'event';
     }
 
     /**
@@ -338,7 +337,7 @@ class Metric extends ArrayObject
                 'filters' => [],
             ],
             [
-                '$id' => 'period',
+                '$id' => 'type',
                 'type' => 'string',
                 'size' => 16,
                 'required' => true,
@@ -385,9 +384,9 @@ class Metric extends ArrayObject
                 'attributes' => ['metric'],
             ],
             [
-                '$id' => 'index-period',
+                '$id' => 'index-type',
                 'type' => 'key',
-                'attributes' => ['period'],
+                'attributes' => ['type'],
             ],
             [
                 '$id' => 'index-time',

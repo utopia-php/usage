@@ -10,62 +10,6 @@ abstract class Adapter
     abstract public function getName(): string;
 
     /**
-     * Increment a metric across all periods (1h, 1d, inf).
-     *
-     * Uses additive upsert semantics: if a row with the same deterministic ID exists,
-     * the value is added to the existing value (SummingMergeTree in ClickHouse,
-     * upsertDocumentsWithIncrease in Database).
-     *
-     * @param string $metric Metric name
-     * @param int $value Value to add (must be positive)
-     * @param array<string,mixed> $tags Optional tags
-     * @return bool
-     * @throws \Exception
-     */
-    public function increment(string $metric, int $value, array $tags = []): bool
-    {
-        $metrics = [];
-        foreach (array_keys(Usage::PERIODS) as $period) {
-            $metrics[] = [
-                'metric' => $metric,
-                'value' => $value,
-                'period' => $period,
-                'tags' => $tags,
-            ];
-        }
-
-        return $this->incrementBatch($metrics);
-    }
-
-    /**
-     * Set a metric to an absolute value across all periods (1h, 1d, inf).
-     *
-     * Uses replace upsert semantics: if a row with the same deterministic ID exists,
-     * the value replaces the existing value (ReplacingMergeTree in ClickHouse,
-     * upsertDocuments in Database).
-     *
-     * @param string $metric Metric name
-     * @param int $value Absolute value to set
-     * @param array<string,mixed> $tags Optional tags
-     * @return bool
-     * @throws \Exception
-     */
-    public function set(string $metric, int $value, array $tags = []): bool
-    {
-        $metrics = [];
-        foreach (array_keys(Usage::PERIODS) as $period) {
-            $metrics[] = [
-                'metric' => $metric,
-                'value' => $value,
-                'period' => $period,
-                'tags' => $tags,
-            ];
-        }
-
-        return $this->setBatch($metrics);
-    }
-
-    /**
      * Check adapter health and connection status
      *
      * @return array<string, mixed> Health check result with 'healthy' bool and additional adapter-specific information
@@ -78,79 +22,54 @@ abstract class Adapter
     abstract public function setup(): void;
 
     /**
-     * Increment metrics in batch (additive upsert).
+     * Add metrics in batch (raw append).
      *
-     * Values with the same deterministic ID are summed together
-     * (SummingMergeTree in ClickHouse, upsertDocumentsWithIncrease in Database).
+     * Appends rows to the single MergeTree table. Each row must include
+     * a 'type' field ('event' or 'gauge') and a 'metric' name.
      *
-     * @param  array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}>  $metrics
+     * @param  array<array{metric: string, value: int, type: string, tags?: array<string,mixed>}>  $metrics
      * @param  int  $batchSize  Maximum number of metrics per INSERT statement
      */
-    abstract public function incrementBatch(array $metrics, int $batchSize = 1000): bool;
+    abstract public function addBatch(array $metrics, int $batchSize = 1000): bool;
 
     /**
-     * Set metrics in batch (replace upsert).
+     * Get time series data for metrics with query-time aggregation.
      *
-     * Values with the same deterministic ID are replaced (last write wins)
-     * (ReplacingMergeTree in ClickHouse, upsertDocuments in Database).
-     *
-     * @param  array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}>  $metrics
-     * @param  int  $batchSize  Maximum number of metrics per INSERT statement
-     */
-    abstract public function setBatch(array $metrics, int $batchSize = 1000): bool;
-
-    /**
-     * Get usage metrics by period
-     *
-     * @param  array<\Utopia\Query\Query>  $queries
-     * @return array<Metric>
-     */
-    abstract public function getByPeriod(string $metric, string $period, array $queries = []): array;
-
-    /**
-     * Get usage metrics between dates
-     *
-     * @param  array<\Utopia\Query\Query>  $queries
-     * @return array<Metric>
-     */
-    abstract public function getBetweenDates(string $metric, string $startDate, string $endDate, array $queries = []): array;
-
-    /**
-     * Count usage metrics by period
-     *
-     * @param  array<\Utopia\Query\Query>  $queries
-     */
-    abstract public function countByPeriod(string $metric, string $period, array $queries = []): int;
-
-    /**
-     * Sum usage metrics by period
-     *
-     * @param  array<\Utopia\Query\Query>  $queries
-     */
-    abstract public function sumByPeriod(string $metric, string $period, array $queries = []): int;
-
-    /**
-     * Sum usage metrics by period for multiple metrics in a single query.
-     *
-     * Returns an associative array keyed by metric name with the sum as value.
-     * Metrics not found will have a value of 0.
+     * Groups data by the specified interval (1h or 1d) and applies
+     * SUM for event metrics and argMax for gauge metrics.
      *
      * @param  array<string>  $metrics  List of metric names
-     * @param  array<\Utopia\Query\Query>  $queries
+     * @param  string  $interval  Aggregation interval: '1h' or '1d'
+     * @param  string  $startDate  Start datetime string
+     * @param  string  $endDate  End datetime string
+     * @param  array<\Utopia\Query\Query>  $queries  Additional query filters
+     * @param  bool  $zeroFill  Whether to fill gaps with zero values
+     * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
+     */
+    abstract public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true): array;
+
+    /**
+     * Get total value for a single metric.
+     *
+     * Returns sum for event metrics, latest value for gauge metrics.
+     * Auto-detects type from stored data.
+     *
+     * @param  string  $metric  Metric name
+     * @param  array<\Utopia\Query\Query>  $queries  Additional query filters
+     * @return int
+     */
+    abstract public function getTotal(string $metric, array $queries = []): int;
+
+    /**
+     * Get totals for multiple metrics in a single query.
+     *
+     * Returns sum for event metrics, latest value for gauge metrics.
+     *
+     * @param  array<string>  $metrics  List of metric names
+     * @param  array<\Utopia\Query\Query>  $queries  Additional query filters
      * @return array<string, int>
      */
-    abstract public function sumByPeriodBatch(array $metrics, string $period, array $queries = []): array;
-
-    /**
-     * Get usage metrics by period for multiple metrics in a single query.
-     *
-     * Returns an associative array keyed by metric name with arrays of Metric objects as values.
-     *
-     * @param  array<string>  $metrics  List of metric names
-     * @param  array<\Utopia\Query\Query>  $queries
-     * @return array<string, array<Metric>>
-     */
-    abstract public function getByPeriodBatch(array $metrics, string $period, array $queries = []): array;
+    abstract public function getTotalBatch(array $metrics, array $queries = []): array;
 
     /**
      * Purge usage metrics matching the given queries.
@@ -175,6 +94,15 @@ abstract class Adapter
      * @return int
      */
     abstract public function count(array $queries = []): int;
+
+    /**
+     * Sum metric values using Query objects.
+     *
+     * @param array<\Utopia\Query\Query> $queries
+     * @param string $attribute Attribute to sum (default: 'value')
+     * @return int
+     */
+    abstract public function sum(array $queries = [], string $attribute = 'value'): int;
 
     /**
      * Set the namespace prefix for table names.

@@ -7,40 +7,26 @@ namespace Utopia\Usage;
  *
  * This class manages usage metrics using pluggable adapters.
  * Adapters can be used to store metrics in different backends (Database, ClickHouse, etc.)
+ *
+ * Metrics are either 'event' type (additive, aggregated with SUM) or
+ * 'gauge' type (point-in-time snapshots, aggregated with argMax).
  */
 class Usage
 {
-    public const PERIOD_1H = '1h';
-    public const PERIOD_1D = '1d';
-    public const PERIOD_INF = 'inf';
-    public const PERIODS = [
-        self::PERIOD_1H => 'Y-m-d H:00',
-        self::PERIOD_1D => 'Y-m-d 00:00',
-        self::PERIOD_INF => '0000-00-00 00:00',
-    ];
-
     private const DEFAULT_FLUSH_THRESHOLD = 10_000;
     private const DEFAULT_FLUSH_INTERVAL = 20;
 
     private Adapter $adapter;
 
     /**
-     * In-memory buffer for increment metrics (additive upsert).
-     * Keyed by "{metric}:{period}" with values accumulated (summed).
+     * In-memory buffer for metrics.
+     * Keyed by "{metric}:{type}" — events are summed, gauges use last-write-wins.
      *
-     * @var array<string, array{metric: string, value: int, period: string, tags: array<string,mixed>}>
+     * @var array<string, array{metric: string, value: int, type: string, tags: array<string,mixed>}>
      */
-    private array $incrementBuffer = [];
+    private array $buffer = [];
 
-    /**
-     * In-memory buffer for counter metrics (replace upsert).
-     * Keyed by "{metric}:{period}" with last value winning.
-     *
-     * @var array<string, array{metric: string, value: int, period: string, tags: array<string,mixed>}>
-     */
-    private array $counterBuffer = [];
-
-    /** @var int Number of collect()/collectSet() calls since last flush */
+    /** @var int Number of collect() calls since last flush */
     private int $bufferCount = 0;
 
     /** @var int Flush when buffer reaches this many entries */
@@ -92,115 +78,59 @@ class Usage
     }
 
     /**
-     * Increment metrics in batch (additive upsert).
+     * Add metrics in batch (raw append).
      *
-     * Values with the same deterministic ID are summed together.
-     *
-     * @param array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}> $metrics
+     * @param array<array{metric: string, value: int, type: string, tags?: array<string,mixed>}> $metrics
      * @param int $batchSize Maximum number of metrics per INSERT statement
      * @return bool
      * @throws \Exception
      */
-    public function incrementBatch(array $metrics, int $batchSize = 1000): bool
+    public function addBatch(array $metrics, int $batchSize = 1000): bool
     {
-        return $this->adapter->incrementBatch($metrics, $batchSize);
+        return $this->adapter->addBatch($metrics, $batchSize);
     }
 
     /**
-     * Set metrics in batch (replace upsert).
+     * Get time series data for metrics.
      *
-     * Values with the same deterministic ID are replaced (last write wins).
-     *
-     * @param array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}> $metrics
-     * @param int $batchSize Maximum number of metrics per INSERT statement
-     * @return bool
+     * @param array<string> $metrics List of metric names
+     * @param string $interval '1h' or '1d'
+     * @param string $startDate Start datetime
+     * @param string $endDate End datetime
+     * @param array<\Utopia\Query\Query> $queries Additional filters
+     * @param bool $zeroFill Whether to fill gaps with zero values
+     * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
      * @throws \Exception
      */
-    public function setBatch(array $metrics, int $batchSize = 1000): bool
+    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true): array
     {
-        return $this->adapter->setBatch($metrics, $batchSize);
+        return $this->adapter->getTimeSeries($metrics, $interval, $startDate, $endDate, $queries, $zeroFill);
     }
 
     /**
-     * Get usage metrics by period.
+     * Get total value for a single metric.
      *
-     * @param  array<\Utopia\Query\Query>  $queries
-     * @return array<Metric>
-     *
+     * @param string $metric Metric name
+     * @param array<\Utopia\Query\Query> $queries Additional filters
+     * @return int
      * @throws \Exception
      */
-    public function getByPeriod(string $metric, string $period, array $queries = []): array
+    public function getTotal(string $metric, array $queries = []): int
     {
-        return $this->adapter->getByPeriod($metric, $period, $queries);
+        return $this->adapter->getTotal($metric, $queries);
     }
 
     /**
-     * Get usage metrics between dates.
+     * Get totals for multiple metrics in a single query.
      *
-     * @param  array<\Utopia\Query\Query>  $queries
-     * @return array<Metric>
-     *
-     * @throws \Exception
-     */
-    public function getBetweenDates(string $metric, string $startDate, string $endDate, array $queries = []): array
-    {
-        return $this->adapter->getBetweenDates($metric, $startDate, $endDate, $queries);
-    }
-
-    /**
-     * Count usage metrics by period.
-     *
-     * @param  array<\Utopia\Query\Query>  $queries
-     *
-     * @throws \Exception
-     */
-    public function countByPeriod(string $metric, string $period, array $queries = []): int
-    {
-        return $this->adapter->countByPeriod($metric, $period, $queries);
-    }
-
-    /**
-     * Sum usage metric values by period.
-     *
-     * @param  array<\Utopia\Query\Query>  $queries
-     *
-     * @throws \Exception
-     */
-    public function sumByPeriod(string $metric, string $period, array $queries = []): int
-    {
-        return $this->adapter->sumByPeriod($metric, $period, $queries);
-    }
-
-    /**
-     * Sum usage metrics by period for multiple metrics in a single query.
-     *
-     * Collapses N sumByPeriod() calls into 1 query using WHERE metric IN (...).
-     *
-     * @param  array<string>  $metrics  List of metric names
-     * @param  array<\Utopia\Query\Query>  $queries
+     * @param array<string> $metrics List of metric names
+     * @param array<\Utopia\Query\Query> $queries Additional filters
      * @return array<string, int>
-     *
      * @throws \Exception
      */
-    public function sumByPeriodBatch(array $metrics, string $period, array $queries = []): array
+    public function getTotalBatch(array $metrics, array $queries = []): array
     {
-        return $this->adapter->sumByPeriodBatch($metrics, $period, $queries);
-    }
-
-    /**
-     * Get usage metrics by period for multiple metrics in a single query.
-     *
-     * Collapses N getByPeriod() calls into 1 query using WHERE metric IN (...).
-     *
-     * @param  array<string>  $metrics  List of metric names
-     * @param  array<\Utopia\Query\Query>  $queries
-     * @return array<string, array<Metric>>
-     *
-     * @throws \Exception
-     */
-    public function getByPeriodBatch(array $metrics, string $period, array $queries = []): array
-    {
-        return $this->adapter->getByPeriodBatch($metrics, $period, $queries);
+        return $this->adapter->getTotalBatch($metrics, $queries);
     }
 
     /**
@@ -237,6 +167,19 @@ class Usage
     public function count(array $queries = []): int
     {
         return $this->adapter->count($queries);
+    }
+
+    /**
+     * Sum metric values using Query objects.
+     *
+     * @param array<\Utopia\Query\Query> $queries
+     * @param string $attribute Attribute to sum (default: 'value')
+     * @return int
+     * @throws \Exception
+     */
+    public function sum(array $queries = [], string $attribute = 'value'): int
+    {
+        return $this->adapter->sum($queries, $attribute);
     }
 
     /**
@@ -277,97 +220,44 @@ class Usage
     }
 
     /**
-     * Increment a metric across all periods (1h, 1d, inf).
-     *
-     * Additive upsert: value is added to any existing value for the same
-     * metric/period/time bucket. This is the primary method for event-driven
-     * metrics like request counts, bandwidth, etc.
-     *
-     * @param string $metric Metric name
-     * @param int $value Value to add
-     * @param array<string,mixed> $tags Optional tags
-     * @return bool
-     * @throws \Exception
-     */
-    public function increment(string $metric, int $value, array $tags = []): bool
-    {
-        return $this->adapter->increment($metric, $value, $tags);
-    }
-
-    /**
-     * Set a metric to an absolute value across all periods (1h, 1d, inf).
-     *
-     * Replace upsert: value overwrites any existing value for the same
-     * metric/period/time bucket. Use this for periodic recounts or
-     * resource gauges (e.g., current storage size, active user count).
-     *
-     * @param string $metric Metric name
-     * @param int $value Absolute value
-     * @param array<string,mixed> $tags Optional tags
-     * @return bool
-     * @throws \Exception
-     */
-    public function set(string $metric, int $value, array $tags = []): bool
-    {
-        return $this->adapter->set($metric, $value, $tags);
-    }
-
-    /**
      * Collect a metric into the in-memory buffer for deferred flushing.
      *
-     * Uses additive upsert semantics: multiple collect() calls for the same
-     * metric within the same time bucket are summed together.
-     * Automatically fans out across all periods (1h, 1d, inf).
+     * For event type: multiple collect() calls for the same metric are summed.
+     * For gauge type: last-write-wins semantics.
+     * No period fan-out — raw timestamps are used.
      *
      * @param string $metric Metric name
-     * @param int $value Value to accumulate
+     * @param int $value Value
+     * @param string $type Metric type: 'event' or 'gauge'
      * @param array<string,mixed> $tags Optional tags
      * @return self
      */
-    public function collect(string $metric, int $value, array $tags = []): self
+    public function collect(string $metric, int $value, string $type, array $tags = []): self
     {
-        foreach (array_keys(self::PERIODS) as $period) {
-            $key = $metric . ':' . $period;
+        if ($type !== 'event' && $type !== 'gauge') {
+            throw new \InvalidArgumentException("Invalid metric type '{$type}'. Allowed: event, gauge");
+        }
 
-            if (isset($this->incrementBuffer[$key])) {
-                $this->incrementBuffer[$key]['value'] += $value;
+        $key = $metric . ':' . $type;
+
+        if ($type === 'event') {
+            // Additive: sum values for the same metric
+            if (isset($this->buffer[$key])) {
+                $this->buffer[$key]['value'] += $value;
             } else {
-                $this->incrementBuffer[$key] = [
+                $this->buffer[$key] = [
                     'metric' => $metric,
                     'value' => $value,
-                    'period' => $period,
+                    'type' => $type,
                     'tags' => $tags,
                 ];
             }
-        }
-
-        $this->bufferCount++;
-
-        return $this;
-    }
-
-    /**
-     * Collect a counter metric into the in-memory buffer for deferred flushing.
-     *
-     * Uses replace upsert semantics: multiple collectSet() calls for the same
-     * metric within the same time bucket keep the last value (last-write-wins).
-     * Automatically fans out across all periods (1h, 1d, inf).
-     *
-     * @param string $metric Metric name
-     * @param int $value Absolute value to set
-     * @param array<string,mixed> $tags Optional tags
-     * @return self
-     */
-    public function collectSet(string $metric, int $value, array $tags = []): self
-    {
-        foreach (array_keys(self::PERIODS) as $period) {
-            $key = $metric . ':' . $period;
-
-            // Last-write-wins: always overwrite
-            $this->counterBuffer[$key] = [
+        } else {
+            // Gauge: last-write-wins
+            $this->buffer[$key] = [
                 'metric' => $metric,
                 'value' => $value,
-                'period' => $period,
+                'type' => $type,
                 'tags' => $tags,
             ];
         }
@@ -380,31 +270,21 @@ class Usage
     /**
      * Flush the in-memory buffer to storage.
      *
-     * Writes increment metrics using additive upsert (incrementBatch) and
-     * set metrics using replace upsert (setBatch), then clears both buffers.
+     * Writes all buffered metrics using addBatch(), then clears the buffer.
      *
      * @return bool True if flush succeeded (or buffer was empty)
      * @throws \Exception
      */
     public function flush(): bool
     {
-        if (empty($this->incrementBuffer) && empty($this->counterBuffer)) {
+        if (empty($this->buffer)) {
             $this->lastFlushTime = microtime(true);
             return true;
         }
 
-        $result = true;
+        $result = $this->adapter->addBatch(array_values($this->buffer));
 
-        if (!empty($this->incrementBuffer)) {
-            $result = $this->adapter->incrementBatch(array_values($this->incrementBuffer));
-        }
-
-        if ($result && !empty($this->counterBuffer)) {
-            $result = $this->adapter->setBatch(array_values($this->counterBuffer));
-        }
-
-        $this->incrementBuffer = [];
-        $this->counterBuffer = [];
+        $this->buffer = [];
         $this->bufferCount = 0;
         $this->lastFlushTime = microtime(true);
 
@@ -445,13 +325,13 @@ class Usage
     }
 
     /**
-     * Get the number of unique metric/period entries in the buffer.
+     * Get the number of unique metric entries in the buffer.
      *
      * @return int
      */
     public function getBufferSize(): int
     {
-        return count($this->incrementBuffer) + count($this->counterBuffer);
+        return count($this->buffer);
     }
 
     /**

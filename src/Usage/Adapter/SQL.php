@@ -116,15 +116,11 @@ abstract class SQL extends Adapter
     }
 
     /**
-     * Build deterministic document ID based on time bucket, period, metric, and tenant (when applicable).
-     * Tags are intentionally excluded to ensure aggregation regardless of tag differences.
+     * Generate a UUID for row identification.
+     * Since we're appending raw rows (no dedup), IDs are random.
      */
-    protected function buildDeterministicId(string $metric, string $period, ?string $timeBucket, ?int $tenant = null): string
+    protected function generateId(): string
     {
-        $tenantPart = $tenant !== null ? ('_' . $tenant) : '';
-        $timePart = $timeBucket ?? '';
-        $hashInput = $timePart . '_' . $period . '_' . $metric . $tenantPart;
-
-        return md5($hashInput);
+        return bin2hex(random_bytes(16));
     }
 }

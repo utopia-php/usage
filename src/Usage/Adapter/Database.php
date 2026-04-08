@@ -8,7 +8,6 @@ use Utopia\Database\Exception\Duplicate as DuplicateException;
 use Utopia\Database\Query as DatabaseQuery;
 use Utopia\Usage\Metric;
 use Utopia\Query\Query;
-use Utopia\Usage\Usage;
 
 class Database extends SQL
 {
@@ -34,7 +33,6 @@ class Database extends SQL
     public function healthCheck(): array
     {
         try {
-            // Check if database exists
             $databaseName = $this->db->getDatabase();
             if (!$this->db->exists($databaseName)) {
                 return [
@@ -43,7 +41,6 @@ class Database extends SQL
                 ];
             }
 
-            // Check if collection exists
             $collectionName = $this->collection ?? 'usage';
             if ($this->db->getCollection($collectionName)->isEmpty()) {
                 return [
@@ -74,7 +71,6 @@ class Database extends SQL
             throw new \Exception('You need to create the database before running Usage setup');
         }
 
-        // Use column and index definitions from parent SQL adapter
         $attributes = $this->getAttributeDocuments();
         $indexDocs = $this->getIndexDocuments();
 
@@ -94,53 +90,48 @@ class Database extends SQL
      */
     protected function getColumnDefinition(string $id): string
     {
-        // Not used in Database adapter, but required by SQL abstract class
         return '';
     }
 
-    public function incrementBatch(array $metrics, int $batchSize = 1000): bool
+    /**
+     * Add metrics in batch (raw append).
+     *
+     * Stub implementation for Database adapter — inserts documents with UUID IDs.
+     *
+     * @param array<array{metric: string, value: int, type: string, tags?: array<string,mixed>}> $metrics
+     * @param int $batchSize
+     * @return bool
+     * @throws \Exception
+     */
+    public function addBatch(array $metrics, int $batchSize = 1000): bool
     {
         $this->db->getAuthorization()->skip(function () use ($metrics, $batchSize) {
-            $documentsById = [];
+            $documents = [];
             foreach ($metrics as $metric) {
-                $period = $metric['period'] ?? '1h';
+                $type = $metric['type'] ?? 'event';
 
-                if (! isset(Usage::PERIODS[$period])) {
-                    throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
+                if ($type !== 'event' && $type !== 'gauge') {
+                    throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: event, gauge");
                 }
-
-                $now = new \DateTime();
-                $time = $period === 'inf'
-                    ? null
-                    : $now->format(Usage::PERIODS[$period]);
 
                 $tags = $metric['tags'] ?? [];
                 ksort($tags);
 
-                $id = $this->buildDeterministicId($metric['metric'], $period, $time);
-
-                if (isset($documentsById[$id])) {
-                    $documentsById[$id]['value'] += $metric['value'];
-                } else {
-                    $documentsById[$id] = [
-                        '$id' => $id,
-                        '$permissions' => [],
-                        'metric' => $metric['metric'],
-                        'value' => $metric['value'],
-                        'period' => $period,
-                        'time' => $time,
-                        'tags' => $tags,
-                    ];
-                }
+                $documents[] = new Document([
+                    '$id' => $this->generateId(),
+                    '$permissions' => [],
+                    'metric' => $metric['metric'],
+                    'value' => $metric['value'],
+                    'type' => $type,
+                    'time' => (new \DateTime())->format('Y-m-d H:i:s.v'),
+                    'tags' => $tags,
+                ]);
             }
 
-            $documents = array_values(array_map(
-                static fn (array $doc) => new Document($doc),
-                $documentsById
-            ));
-
             foreach (array_chunk($documents, max(1, $batchSize)) as $chunk) {
-                $this->db->upsertDocumentsWithIncrease($this->collection, 'value', $chunk);
+                foreach ($chunk as $doc) {
+                    $this->db->createDocument($this->collection, $doc);
+                }
             }
         });
 
@@ -148,58 +139,75 @@ class Database extends SQL
     }
 
     /**
-     * Set metrics in batch (replace upsert).
+     * Get time series data for metrics.
      *
-     * Values with the same deterministic ID are replaced (last write wins).
+     * Stub implementation for Database adapter.
      *
-     * @param array<array{metric: string, value: int, period?: string, tags?: array<string,mixed>}> $metrics
-     * @return bool
-     * @throws \Exception
+     * @param array<string> $metrics
+     * @param string $interval
+     * @param string $startDate
+     * @param string $endDate
+     * @param array<Query> $queries
+     * @param bool $zeroFill
+     * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
      */
-    public function setBatch(array $metrics, int $batchSize = 1000): bool
+    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true): array
     {
-        $this->db->getAuthorization()->skip(function () use ($metrics, $batchSize) {
-            $documentsById = [];
-            foreach ($metrics as $metric) {
-                $period = $metric['period'] ?? '1h';
+        // Stub: Database adapter time series not yet implemented
+        $output = [];
+        foreach ($metrics as $metric) {
+            $output[$metric] = ['total' => 0, 'data' => []];
+        }
+        return $output;
+    }
 
-                if (! isset(Usage::PERIODS[$period])) {
-                    throw new \InvalidArgumentException('Invalid period. Allowed: ' . implode(', ', array_keys(Usage::PERIODS)));
-                }
+    /**
+     * Get total value for a single metric.
+     *
+     * Stub implementation for Database adapter.
+     *
+     * @param string $metric
+     * @param array<Query> $queries
+     * @return int
+     */
+    public function getTotal(string $metric, array $queries = []): int
+    {
+        // Stub: not yet implemented
+        return 0;
+    }
 
-                $now = new \DateTime();
-                $time = $period === 'inf'
-                    ? null
-                    : $now->format(Usage::PERIODS[$period]);
+    /**
+     * Get totals for multiple metrics.
+     *
+     * Stub implementation for Database adapter.
+     *
+     * @param array<string> $metrics
+     * @param array<Query> $queries
+     * @return array<string, int>
+     */
+    public function getTotalBatch(array $metrics, array $queries = []): array
+    {
+        return \array_fill_keys($metrics, 0);
+    }
 
-                $tags = $metric['tags'] ?? [];
-                ksort($tags);
+    /**
+     * Sum metric values.
+     *
+     * @param array<Query> $queries
+     * @param string $attribute
+     * @return int
+     */
+    public function sum(array $queries = [], string $attribute = 'value'): int
+    {
+        /** @var array<Metric> $results */
+        $results = $this->find($queries);
 
-                $id = $this->buildDeterministicId($metric['metric'], $period, $time);
+        $sum = 0;
+        foreach ($results as $result) {
+            $sum += (int) ($result->getValue(0) ?? 0);
+        }
 
-                // Last one wins for the same ID (replace behavior, not aggregating)
-                $documentsById[$id] = [
-                    '$id' => $id,
-                    '$permissions' => [],
-                    'metric' => $metric['metric'],
-                    'value' => $metric['value'],
-                    'period' => $period,
-                    'time' => $time,
-                    'tags' => $tags,
-                ];
-            }
-
-            $documents = array_values(array_map(
-                static fn (array $doc) => new Document($doc),
-                $documentsById
-            ));
-
-            foreach (array_chunk($documents, max(1, $batchSize)) as $chunk) {
-                $this->db->upsertDocuments($this->collection, $chunk);
-            }
-        });
-
-        return true;
+        return $sum;
     }
 
     /**
@@ -245,7 +253,6 @@ class Database extends SQL
                     }
                     break;
                 case Query::TYPE_CONTAINS:
-                    // For contains queries, the values are the items to match
                     /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
                     $dbQueries[] = DatabaseQuery::contains($attribute, $values);
                     break;
@@ -287,127 +294,6 @@ class Database extends SQL
         }
 
         return $dbQueries;
-    }
-
-    public function getByPeriod(string $metric, string $period, array $queries = []): array
-    {
-        /** @var array<Document> $result */
-        $result = $this->db->getAuthorization()->skip(function () use ($queries, $metric, $period) {
-            $dbQueries = $this->convertQueriesToDatabase($queries);
-            $dbQueries[] = DatabaseQuery::equal('metric', [$metric]);
-            $dbQueries[] = DatabaseQuery::equal('period', [$period]);
-            $dbQueries[] = DatabaseQuery::orderDesc();
-
-            return $this->db->find(
-                collection: $this->collection,
-                queries: $dbQueries,
-            );
-        });
-
-        return \array_map(fn ($doc) => new Metric($doc->getArrayCopy()), $result);
-    }
-
-    public function getBetweenDates(string $metric, string $startDate, string $endDate, array $queries = []): array
-    {
-        /** @var array<Document> $result */
-        $result = $this->db->getAuthorization()->skip(function () use ($queries, $metric, $startDate, $endDate) {
-            $dbQueries = $this->convertQueriesToDatabase($queries);
-            $dbQueries[] = DatabaseQuery::equal('metric', [$metric]);
-            $dbQueries[] = DatabaseQuery::greaterThanEqual('time', $startDate);
-            $dbQueries[] = DatabaseQuery::lessThanEqual('time', $endDate);
-            $dbQueries[] = DatabaseQuery::orderDesc();
-
-            return $this->db->find(
-                collection: $this->collection,
-                queries: $dbQueries,
-            );
-        });
-
-        return \array_map(fn ($doc) => new Metric($doc->getArrayCopy()), $result);
-    }
-
-    public function countByPeriod(string $metric, string $period, array $queries = []): int
-    {
-        /** @var int $count */
-        $count = $this->db->getAuthorization()->skip(function () use ($queries, $metric, $period) {
-            $dbQueries = $this->convertQueriesToDatabase($queries);
-            $dbQueries[] = DatabaseQuery::equal('metric', [$metric]);
-            $dbQueries[] = DatabaseQuery::equal('period', [$period]);
-
-            return $this->db->count(
-                collection: $this->collection,
-                queries: $dbQueries
-            );
-        });
-
-        return $count;
-    }
-
-    public function sumByPeriod(string $metric, string $period, array $queries = []): int
-    {
-        /** @var array<Document> $results */
-        $results = $this->getByPeriod($metric, $period, $queries);
-
-        $sum = 0;
-        foreach ($results as $result) {
-            $sum += $result->getAttribute('value', 0);
-        }
-
-        return $sum;
-    }
-
-    public function sumByPeriodBatch(array $metrics, string $period, array $queries = []): array
-    {
-        if (empty($metrics)) {
-            return [];
-        }
-
-        // Initialize all metrics to 0
-        $sums = \array_fill_keys($metrics, 0);
-
-        /** @var array<string, array<Metric>> $results */
-        $results = $this->getByPeriodBatch($metrics, $period, $queries);
-
-        foreach ($results as $metricName => $metricResults) {
-            foreach ($metricResults as $result) {
-                $sums[$metricName] += (int) ($result->getValue(0) ?? 0);
-            }
-        }
-
-        return $sums;
-    }
-
-    public function getByPeriodBatch(array $metrics, string $period, array $queries = []): array
-    {
-        if (empty($metrics)) {
-            return [];
-        }
-
-        // Initialize result array
-        $grouped = \array_fill_keys($metrics, []);
-
-        /** @var array<Document> $result */
-        $result = $this->db->getAuthorization()->skip(function () use ($queries, $metrics, $period) {
-            $dbQueries = $this->convertQueriesToDatabase($queries);
-            $dbQueries[] = DatabaseQuery::equal('metric', $metrics);
-            $dbQueries[] = DatabaseQuery::equal('period', [$period]);
-            $dbQueries[] = DatabaseQuery::orderDesc();
-
-            return $this->db->find(
-                collection: $this->collection,
-                queries: $dbQueries,
-            );
-        });
-
-        foreach ($result as $doc) {
-            $metricObj = new Metric($doc->getArrayCopy());
-            $metricName = $metricObj->getMetric();
-            if (isset($grouped[$metricName])) {
-                $grouped[$metricName][] = $metricObj;
-            }
-        }
-
-        return $grouped;
     }
 
     public function purge(array $queries = []): bool
@@ -473,7 +359,6 @@ class Database extends SQL
 
     /**
      * Set the namespace prefix for table names.
-     * (Not supported in Database adapter)
      *
      * @param string $namespace
      * @return self
@@ -486,7 +371,6 @@ class Database extends SQL
 
     /**
      * Set the tenant ID for multi-tenant support.
-     * (Not supported in Database adapter)
      *
      * @param int|null $tenant
      * @return self
@@ -498,8 +382,7 @@ class Database extends SQL
     }
 
     /**
-     * Enable or disable shared tables mode (multi-tenant with tenant column).
-     * (Not supported in Database adapter)
+     * Enable or disable shared tables mode.
      *
      * @param bool $sharedTables
      * @return self
