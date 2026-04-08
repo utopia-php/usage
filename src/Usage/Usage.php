@@ -201,10 +201,10 @@ class Usage
     /**
      * Set the tenant ID for multi-tenant support.
      *
-     * @param int|null $tenant
+     * @param string|null $tenant
      * @return $this
      */
-    public function setTenant(?int $tenant): self
+    public function setTenant(?string $tenant): self
     {
         $this->adapter->setTenant($tenant);
         return $this;
@@ -237,6 +237,12 @@ class Usage
      */
     public function collect(string $metric, int $value, string $type, array $tags = []): self
     {
+        if (empty($metric)) {
+            throw new \InvalidArgumentException('Metric name cannot be empty');
+        }
+        if ($value < 0) {
+            throw new \InvalidArgumentException('Value cannot be negative');
+        }
         if ($type !== self::TYPE_EVENT && $type !== self::TYPE_GAUGE) {
             throw new \InvalidArgumentException("Invalid metric type '{$type}'. Allowed: " . self::TYPE_EVENT . ', ' . self::TYPE_GAUGE);
         }

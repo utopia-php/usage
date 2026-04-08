@@ -153,9 +153,9 @@ class Metric extends ArrayObject
      * architectures. This allows data isolation at the application level while
      * sharing the same database tables.
      *
-     * @return int|null The tenant ID, or null if not set or not using multi-tenancy
+     * @return string|null The tenant ID, or null if not set or not using multi-tenancy
      */
-    public function getTenant(): ?int
+    public function getTenant(): ?string
     {
         $tenant = $this->getAttribute('tenant');
 
@@ -163,15 +163,7 @@ class Metric extends ArrayObject
             return null;
         }
 
-        if (is_int($tenant)) {
-            return $tenant;
-        }
-
-        if (is_numeric($tenant)) {
-            return (int) $tenant;
-        }
-
-        return null;
+        return (string) $tenant;
     }
 
     /**

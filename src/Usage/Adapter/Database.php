@@ -372,10 +372,10 @@ class Database extends SQL
     /**
      * Set the tenant ID for multi-tenant support.
      *
-     * @param int|null $tenant
+     * @param string|null $tenant
      * @return self
      */
-    public function setTenant(?int $tenant): self
+    public function setTenant(?string $tenant): self
     {
         $this->db->setTenant($tenant);
         return $this;

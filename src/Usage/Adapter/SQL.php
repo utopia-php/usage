@@ -4,11 +4,10 @@ namespace Utopia\Usage\Adapter;
 
 use Utopia\Usage\Adapter;
 use Utopia\Usage\Metric;
-use Utopia\Database\Database;
 use Utopia\Database\Document;
 
 /**
- * Base SQL Adapter for Audit
+ * Base SQL Adapter for Usage
  *
  * This is an abstract base class for SQL-based adapters (Database, ClickHouse, etc.)
  * It provides common functionality and references schema definitions from the Metric class.
@@ -18,7 +17,7 @@ abstract class SQL extends Adapter
     public const COLLECTION = 'usage';
 
     /**
-     * Get the collection/table name for audit logs.
+     * Get the collection/table name for usage metrics.
      *
      * @return string
      */
@@ -28,7 +27,7 @@ abstract class SQL extends Adapter
     }
 
     /**
-     * Get attribute definitions for audit logs.
+     * Get attribute definitions for usage metrics.
      *
      * Delegates to Metric class which defines the metric schema.
      *
@@ -40,7 +39,7 @@ abstract class SQL extends Adapter
     }
 
     /**
-     * Get attribute documents for audit logs.
+     * Get attribute documents for usage metrics.
      *
      * @return array<Document>
      */
@@ -50,7 +49,7 @@ abstract class SQL extends Adapter
     }
 
     /**
-     * Get index definitions for audit logs.
+     * Get index definitions for usage metrics.
      *
      * Delegates to Metric class which defines the metric indexes.
      *
@@ -62,7 +61,7 @@ abstract class SQL extends Adapter
     }
 
     /**
-     * Get index documents for audit logs.
+     * Get index documents for usage metrics.
      *
      * @return array<Document>
      */

@@ -115,10 +115,10 @@ abstract class Adapter
     /**
      * Set the tenant ID for multi-tenant support.
      *
-     * @param int|null $tenant
+     * @param string|null $tenant
      * @return self
      */
-    abstract public function setTenant(?int $tenant): self;
+    abstract public function setTenant(?string $tenant): self;
 
     /**
      * Enable or disable shared tables mode (multi-tenant with tenant column).

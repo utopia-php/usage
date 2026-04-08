@@ -63,7 +63,7 @@ class ClickHouse extends SQL
     /** @var bool Whether to use FINAL in SELECT queries to force merge-on-read (tests) */
     private bool $useFinal = true;
 
-    protected ?int $tenant = null;
+    protected ?string $tenant = null;
 
     protected bool $sharedTables = false;
 
@@ -457,10 +457,10 @@ class ClickHouse extends SQL
     /**
      * Set the tenant ID for multi-tenant support.
      *
-     * @param int|null $tenant
+     * @param string|null $tenant
      * @return self
      */
-    public function setTenant(?int $tenant): self
+    public function setTenant(?string $tenant): self
     {
         $this->tenant = $tenant;
         return $this;
@@ -469,9 +469,9 @@ class ClickHouse extends SQL
     /**
      * Get the tenant ID.
      *
-     * @return int|null
+     * @return string|null
      */
-    public function getTenant(): ?int
+    public function getTenant(): ?string
     {
         return $this->tenant;
     }
@@ -926,7 +926,7 @@ class ClickHouse extends SQL
 
         // Add tenant column only if tables are shared across tenants
         if ($this->sharedTables) {
-            $columns[] = 'tenant Nullable(UInt64)';
+            $columns[] = 'tenant Nullable(String)';
         }
 
         // Build indexes from schema
@@ -969,19 +969,23 @@ class ClickHouse extends SQL
 
         $billingColumns = [
             'metric String',
-            'tenant Nullable(UInt64)',
             'value Int64',
             'time DateTime64(3)',
         ];
 
+        if ($this->sharedTables) {
+            array_splice($billingColumns, 1, 0, ['tenant Nullable(String)']);
+        }
+
         $billingColumnDefs = implode(",\n                ", $billingColumns);
+        $billingOrderBy = $this->sharedTables ? '(tenant, metric, time)' : '(metric, time)';
 
         $createBillingTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedBillingTable} (
                 {$billingColumnDefs}
             )
             ENGINE = SummingMergeTree()
-            ORDER BY (tenant, metric, time)
+            ORDER BY {$billingOrderBy}
             SETTINGS allow_nullable_key = 1
         ";
 
@@ -991,19 +995,21 @@ class ClickHouse extends SQL
         $billingMvName = $tableName . '_billing_mv';
         $escapedBillingMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($billingMvName);
 
-        $tenantSelect = $this->sharedTables ? 'tenant' : 'NULL as tenant';
+        $tenantSelect = $this->sharedTables ? 'tenant' : "'' as tenant";
+        $groupByClause = $this->sharedTables ? 'metric, tenant, time' : 'metric, time';
+
+        $billingSelectColumns = $this->sharedTables
+            ? "metric,\n                {$tenantSelect},\n                sum(value) as value,\n                toStartOfMonth(time) as time"
+            : "metric,\n                sum(value) as value,\n                toStartOfMonth(time) as time";
 
         $createBillingMvSql = "
             CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedBillingMv}
             TO {$escapedBillingTable}
             AS SELECT
-                metric,
-                {$tenantSelect},
-                sum(value) as value,
-                toStartOfMonth(time) as time
+                {$billingSelectColumns}
             FROM {$escapedDatabaseAndTable}
             WHERE type = 'event'
-            GROUP BY metric, tenant, time
+            GROUP BY {$groupByClause}
         ";
 
         $this->query($createBillingMvSql);
@@ -1014,19 +1020,23 @@ class ClickHouse extends SQL
 
         $dailyColumns = [
             'metric String',
-            'tenant Nullable(UInt64)',
             'value Int64',
             'time DateTime64(3)',
         ];
 
+        if ($this->sharedTables) {
+            array_splice($dailyColumns, 1, 0, ['tenant Nullable(String)']);
+        }
+
         $dailyColumnDefs = implode(",\n                ", $dailyColumns);
+        $dailyOrderBy = $this->sharedTables ? '(tenant, metric, time)' : '(metric, time)';
 
         $createDailyTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDailyTable} (
                 {$dailyColumnDefs}
             )
             ENGINE = SummingMergeTree()
-            ORDER BY (tenant, metric, time)
+            ORDER BY {$dailyOrderBy}
             SETTINGS allow_nullable_key = 1
         ";
 
@@ -1036,17 +1046,18 @@ class ClickHouse extends SQL
         $dailyMvName = $tableName . '_daily_mv';
         $escapedDailyMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyMvName);
 
+        $dailySelectColumns = $this->sharedTables
+            ? "metric,\n                {$tenantSelect},\n                sum(value) as value,\n                toStartOfDay(time) as time"
+            : "metric,\n                sum(value) as value,\n                toStartOfDay(time) as time";
+
         $createDailyMvSql = "
             CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedDailyMv}
             TO {$escapedDailyTable}
             AS SELECT
-                metric,
-                {$tenantSelect},
-                sum(value) as value,
-                toStartOfDay(time) as time
+                {$dailySelectColumns}
             FROM {$escapedDatabaseAndTable}
             WHERE type = 'event'
-            GROUP BY metric, tenant, time
+            GROUP BY {$groupByClause}
         ";
 
         $this->query($createDailyMvSql);
@@ -1225,19 +1236,11 @@ class ClickHouse extends SQL
             $tags = $metricData['tags'] ?? [];
             $this->validateMetricData($metric, $value, $type, $tags, $index);
 
-            if (array_key_exists('tenant', $metricData)) {
-                $tenantValue = $metricData['tenant'];
+            if (array_key_exists('$tenant', $metricData)) {
+                $tenantValue = $metricData['$tenant'];
 
-                if ($tenantValue !== null) {
-                    if (is_int($tenantValue)) {
-                        if ($tenantValue < 0) {
-                            throw new Exception("Metric #{$index}: 'tenant' cannot be negative");
-                        }
-                    } elseif (is_string($tenantValue) && ctype_digit($tenantValue)) {
-                        // ok numeric string
-                    } else {
-                        throw new Exception("Metric #{$index}: 'tenant' must be a non-negative integer, got " . gettype($tenantValue));
-                    }
+                if ($tenantValue !== null && !is_string($tenantValue)) {
+                    throw new Exception("Metric #{$index}: '\$tenant' must be a string or null, got " . gettype($tenantValue));
                 }
             }
         }
@@ -1317,7 +1320,7 @@ class ClickHouse extends SQL
      *
      * @param array<string, mixed> $metricData
      */
-    private function resolveTenantFromMetric(array $metricData): ?int
+    private function resolveTenantFromMetric(array $metricData): ?string
     {
         $tenant = array_key_exists('$tenant', $metricData) ? $metricData['$tenant'] : $this->tenant;
 
@@ -1325,15 +1328,11 @@ class ClickHouse extends SQL
             return null;
         }
 
-        if (is_int($tenant)) {
+        if (is_string($tenant)) {
             return $tenant;
         }
 
-        if (is_string($tenant) && ctype_digit($tenant)) {
-            return (int) $tenant;
-        }
-
-        return null;
+        return (string) $tenant;
     }
 
     /**
@@ -1505,7 +1504,7 @@ class ClickHouse extends SQL
         // Build tenant filter
         $tenantFilter = '';
         if ($this->sharedTables && $this->tenant !== null) {
-            $tenantFilter = ' AND tenant = {tenant:Nullable(UInt64)}';
+            $tenantFilter = ' AND tenant = {tenant:Nullable(String)}';
             $params['tenant'] = $this->tenant;
         }
 
@@ -1780,7 +1779,7 @@ class ClickHouse extends SQL
         if ($includeTenant) {
             $tenantFilter = $this->getTenantFilter();
             if ($tenantFilter) {
-                $conditions[] = ltrim($tenantFilter, ' AND');
+                $conditions[] = $tenantFilter;
                 $whereParams['tenant'] = $this->tenant;
             }
         }
@@ -1791,6 +1790,19 @@ class ClickHouse extends SQL
             'clause' => $clause,
             'params' => $whereParams
         ];
+    }
+
+    /**
+     * Get the ClickHouse parameter type string for a given attribute.
+     *
+     * Returns 'Int64' for the value column, 'String' for everything else.
+     *
+     * @param string $attribute
+     * @return string
+     */
+    private function getParamType(string $attribute): string
+    {
+        return $attribute === 'value' ? 'Int64' : 'String';
     }
 
     /**
@@ -1818,6 +1830,7 @@ class ClickHouse extends SQL
                 case Query::TYPE_EQUAL:
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
+                    $chType = $this->getParamType($attribute);
 
                     if (count($values) > 1) {
                         /** @var array<mixed> $arrayValues */
@@ -1831,7 +1844,7 @@ class ClickHouse extends SQL
                                 $timeValue = $value;
                                 $params[$paramName] = $this->formatDateTime($timeValue);
                             } else {
-                                $inParams[] = "{{$paramName}:String}";
+                                $inParams[] = "{{$paramName}:{$chType}}";
                                 /** @var bool|float|int|string $scalarValue */
                                 $scalarValue = $value;
                                 $params[$paramName] = $this->formatParamValue($scalarValue);
@@ -1854,7 +1867,7 @@ class ClickHouse extends SQL
                         } else {
                             /** @var bool|float|int|string $formattedValue */
                             $formattedValue = $this->formatParamValue($values[0]);
-                            $filters[] = "{$escapedAttr} = {{$paramName}:String}";
+                            $filters[] = "{$escapedAttr} = {{$paramName}:{$chType}}";
                         }
                         $params[$paramName] = $formattedValue;
                     }
@@ -1863,13 +1876,14 @@ class ClickHouse extends SQL
                 case Query::TYPE_LESSER:
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
+                    $chType = $this->getParamType($attribute);
                     $paramName = 'param_' . $paramCounter++;
                     $value = is_array($values) && !empty($values) ? $values[0] : $values;
                     if ($attribute === 'time') {
                         $filters[] = "{$escapedAttr} < {{$paramName}:DateTime64(3)}";
                         $params[$paramName] = $this->formatDateTime($value);
                     } else {
-                        $filters[] = "{$escapedAttr} < {{$paramName}:String}";
+                        $filters[] = "{$escapedAttr} < {{$paramName}:{$chType}}";
                         $params[$paramName] = $this->formatParamValue($value);
                     }
                     break;
@@ -1877,13 +1891,14 @@ class ClickHouse extends SQL
                 case Query::TYPE_GREATER:
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
+                    $chType = $this->getParamType($attribute);
                     $paramName = 'param_' . $paramCounter++;
                     $value = is_array($values) && !empty($values) ? $values[0] : $values;
                     if ($attribute === 'time') {
                         $filters[] = "{$escapedAttr} > {{$paramName}:DateTime64(3)}";
                         $params[$paramName] = $this->formatDateTime($value);
                     } else {
-                        $filters[] = "{$escapedAttr} > {{$paramName}:String}";
+                        $filters[] = "{$escapedAttr} > {{$paramName}:{$chType}}";
                         $params[$paramName] = $this->formatParamValue($value);
                     }
                     break;
@@ -1891,6 +1906,7 @@ class ClickHouse extends SQL
                 case Query::TYPE_BETWEEN:
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
+                    $chType = $this->getParamType($attribute);
                     $paramName1 = 'param_' . $paramCounter++;
                     $paramName2 = 'param_' . $paramCounter++;
                     $value1 = is_array($values) && isset($values[0]) ? $values[0] : $values;
@@ -1901,7 +1917,7 @@ class ClickHouse extends SQL
                         $params[$paramName1] = $this->formatDateTime($value1);
                         $params[$paramName2] = $this->formatDateTime($value2);
                     } else {
-                        $filters[] = "{$escapedAttr} BETWEEN {{$paramName1}:String} AND {{$paramName2}:String}";
+                        $filters[] = "{$escapedAttr} BETWEEN {{$paramName1}:{$chType}} AND {{$paramName2}:{$chType}}";
                         $params[$paramName1] = $this->formatParamValue($value1);
                         $params[$paramName2] = $this->formatParamValue($value2);
                     }
@@ -1922,6 +1938,7 @@ class ClickHouse extends SQL
                 case Query::TYPE_CONTAINS:
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
+                    $chType = $this->getParamType($attribute);
                     $inParams = [];
                     foreach ($values as $value) {
                         $paramName = 'param_' . $paramCounter++;
@@ -1931,7 +1948,7 @@ class ClickHouse extends SQL
                             $singleValue = $value;
                             $params[$paramName] = $this->formatDateTime($singleValue);
                         } else {
-                            $inParams[] = "{{$paramName}:String}";
+                            $inParams[] = "{{$paramName}:{$chType}}";
                             /** @var bool|float|int|string $singleValue */
                             $singleValue = $value;
                             $params[$paramName] = $this->formatParamValue($singleValue);
@@ -1945,6 +1962,7 @@ class ClickHouse extends SQL
                 case Query::TYPE_LESSER_EQUAL:
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
+                    $chType = $this->getParamType($attribute);
                     $paramName = 'param_' . $paramCounter++;
                     $singleValue = null;
                     if ($attribute === 'time') {
@@ -1959,7 +1977,7 @@ class ClickHouse extends SQL
                             /** @var bool|float|int|string $singleValue */
                             $singleValue = $values[0] ?? null;
                         }
-                        $filters[] = "{$escapedAttr} <= {{$paramName}:String}";
+                        $filters[] = "{$escapedAttr} <= {{$paramName}:{$chType}}";
                         $params[$paramName] = $this->formatParamValue($singleValue);
                     }
                     break;
@@ -1967,6 +1985,7 @@ class ClickHouse extends SQL
                 case Query::TYPE_GREATER_EQUAL:
                     $this->validateAttributeName($attribute);
                     $escapedAttr = $this->escapeIdentifier($attribute);
+                    $chType = $this->getParamType($attribute);
                     $paramName = 'param_' . $paramCounter++;
                     $singleValue = null;
                     if ($attribute === 'time') {
@@ -1981,7 +2000,7 @@ class ClickHouse extends SQL
                             /** @var bool|float|int|string $singleValue */
                             $singleValue = $values[0] ?? null;
                         }
-                        $filters[] = "{$escapedAttr} >= {{$paramName}:String}";
+                        $filters[] = "{$escapedAttr} >= {{$paramName}:{$chType}}";
                         $params[$paramName] = $this->formatParamValue($singleValue);
                     }
                     break;
@@ -2054,7 +2073,7 @@ class ClickHouse extends SQL
 
             foreach ($row as $key => $value) {
                 if ($key === 'tenant') {
-                    $document[$key] = $value !== null ? (int) $value : null;
+                    $document[$key] = $value !== null ? (string) $value : null;
                 } elseif ($key === 'value') {
                     $document[$key] = $value !== null ? (int) $value : null;
                 } elseif ($key === 'time') {
@@ -2121,7 +2140,7 @@ class ClickHouse extends SQL
             return '';
         }
 
-        return " AND tenant = {tenant:Nullable(UInt64)}";
+        return "tenant = {tenant:Nullable(String)}";
     }
 
     /**

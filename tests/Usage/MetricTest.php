@@ -30,12 +30,12 @@ class MetricTest extends TestCase
         $this->assertEquals('integer', $valueAttr['type']);
         $this->assertTrue($valueAttr['required']);
 
-        // Test period attribute
-        $periodAttr = $schema[2];
-        $this->assertEquals('period', $periodAttr['$id']);
-        $this->assertEquals('string', $periodAttr['type']);
-        $this->assertEquals(16, $periodAttr['size']);
-        $this->assertTrue($periodAttr['required']);
+        // Test type attribute
+        $typeAttr = $schema[2];
+        $this->assertEquals('type', $typeAttr['$id']);
+        $this->assertEquals('string', $typeAttr['type']);
+        $this->assertEquals(16, $typeAttr['size']);
+        $this->assertTrue($typeAttr['required']);
 
         // Test time attribute (optional)
         $timeAttr = $schema[3];
@@ -66,10 +66,10 @@ class MetricTest extends TestCase
         $this->assertEquals('key', $metricIndex['type']);
         $this->assertEquals(['metric'], $metricIndex['attributes']);
 
-        // Test period index
-        $periodIndex = $indexes[1];
-        $this->assertEquals('index-period', $periodIndex['$id']);
-        $this->assertEquals(['period'], $periodIndex['attributes']);
+        // Test type index
+        $typeIndex = $indexes[1];
+        $this->assertEquals('index-type', $typeIndex['$id']);
+        $this->assertEquals(['type'], $typeIndex['attributes']);
 
         // Test time index
         $timeIndex = $indexes[2];
@@ -85,7 +85,7 @@ class MetricTest extends TestCase
         $validData = [
             'metric' => 'requests',
             'value' => 100,
-            'period' => '1h',
+            'type' => 'event',
             'time' => '2024-01-01 12:00:00',
             'tags' => ['region' => 'us-east', 'env' => 'prod'],
         ];
@@ -103,7 +103,7 @@ class MetricTest extends TestCase
         $minimalData = [
             'metric' => 'requests',
             'value' => 50,
-            'period' => '1h',
+            'type' => 'event',
         ];
 
         Metric::validate($minimalData);
@@ -120,7 +120,7 @@ class MetricTest extends TestCase
 
         Metric::validate([
             'value' => 100,
-            'period' => '1h',
+            'type' => 'event',
         ]);
     }
 
@@ -134,17 +134,17 @@ class MetricTest extends TestCase
 
         Metric::validate([
             'metric' => 'requests',
-            'period' => '1h',
+            'type' => 'event',
         ]);
     }
 
     /**
-     * Test Metric::validate() rejects missing required period
+     * Test Metric::validate() rejects missing required type
      */
-    public function testValidateRejectsMissingPeriod(): void
+    public function testValidateRejectsMissingType(): void
     {
         $this->expectException(\Exception::class);
-        $this->expectExceptionMessage("Required attribute 'period' is missing");
+        $this->expectExceptionMessage("Required attribute 'type' is missing");
 
         Metric::validate([
             'metric' => 'requests',
@@ -163,7 +163,7 @@ class MetricTest extends TestCase
         Metric::validate([
             'metric' => 123,
             'value' => 100,
-            'period' => '1h',
+            'type' => 'event',
         ]);
     }
 
@@ -178,7 +178,7 @@ class MetricTest extends TestCase
         Metric::validate([
             'metric' => str_repeat('a', 256),
             'value' => 100,
-            'period' => '1h',
+            'type' => 'event',
         ]);
     }
 
@@ -193,22 +193,22 @@ class MetricTest extends TestCase
         Metric::validate([
             'metric' => 'requests',
             'value' => '100',
-            'period' => '1h',
+            'type' => 'event',
         ]);
     }
 
     /**
-     * Test Metric::validate() rejects non-string period
+     * Test Metric::validate() rejects non-string type
      */
-    public function testValidateRejectsNonStringPeriod(): void
+    public function testValidateRejectsNonStringType(): void
     {
         $this->expectException(\Exception::class);
-        $this->expectExceptionMessage("Attribute 'period' must be a string");
+        $this->expectExceptionMessage("Attribute 'type' must be a string");
 
         Metric::validate([
             'metric' => 'requests',
             'value' => 100,
-            'period' => 123,
+            'type' => 123,
         ]);
     }
 
@@ -220,7 +220,7 @@ class MetricTest extends TestCase
         $data = [
             'metric' => 'requests',
             'value' => 100,
-            'period' => '1h',
+            'type' => 'event',
             'time' => new \DateTime('2024-01-01 12:00:00'),
         ];
 
@@ -236,7 +236,7 @@ class MetricTest extends TestCase
         $data = [
             'metric' => 'requests',
             'value' => 100,
-            'period' => '1h',
+            'type' => 'event',
             'time' => '2024-01-01 12:00:00',
         ];
 
@@ -255,7 +255,7 @@ class MetricTest extends TestCase
         Metric::validate([
             'metric' => 'requests',
             'value' => 100,
-            'period' => '1h',
+            'type' => 'event',
             'time' => 'invalid-date',
         ]);
     }
@@ -271,7 +271,7 @@ class MetricTest extends TestCase
         Metric::validate([
             'metric' => 'requests',
             'value' => 100,
-            'period' => '1h',
+            'type' => 'event',
             'tags' => 'not-an-array',
         ]);
     }
@@ -284,7 +284,7 @@ class MetricTest extends TestCase
         $data = [
             'metric' => 'requests',
             'value' => 100,
-            'period' => '1h',
+            'type' => 'event',
             'tags' => [],
         ];
 
@@ -301,7 +301,7 @@ class MetricTest extends TestCase
             '$id' => 'metric-1',
             'metric' => 'requests',
             'value' => 100,
-            'period' => '1h',
+            'type' => 'event',
             'tags' => ['env' => 'prod'],
         ];
 
@@ -310,7 +310,7 @@ class MetricTest extends TestCase
         $this->assertEquals('metric-1', $metric->getId());
         $this->assertEquals('requests', $metric->getMetric());
         $this->assertEquals(100, $metric->getValue());
-        $this->assertEquals('1h', $metric->getPeriod());
+        $this->assertEquals('event', $metric->getType());
         $this->assertEquals(['env' => 'prod'], $metric->getTags());
     }
 
@@ -360,21 +360,21 @@ class MetricTest extends TestCase
     }
 
     /**
-     * Test Metric::getPeriod() returns period
+     * Test Metric::getType() returns type
      */
-    public function testGetPeriodReturnsPeriod(): void
+    public function testGetTypeReturnsType(): void
     {
-        $metric = new Metric(['period' => '1d']);
-        $this->assertEquals('1d', $metric->getPeriod());
+        $metric = new Metric(['type' => 'gauge']);
+        $this->assertEquals('gauge', $metric->getType());
     }
 
     /**
-     * Test Metric::getPeriod() returns default period
+     * Test Metric::getType() returns default type
      */
-    public function testGetPeriodReturnsDefaultPeriod(): void
+    public function testGetTypeReturnsDefaultType(): void
     {
         $metric = new Metric([]);
-        $this->assertEquals('1h', $metric->getPeriod());
+        $this->assertEquals('event', $metric->getType());
     }
 
     /**
@@ -416,12 +416,13 @@ class MetricTest extends TestCase
     }
 
     /**
-     * Test Metric::getTenant() returns tenant ID
+     * Test Metric::getTenant() returns tenant ID as string
      */
     public function testGetTenantReturnsTenantId(): void
     {
-        $metric = new Metric(['tenant' => 123]);
-        $this->assertEquals(123, $metric->getTenant());
+        $metric = new Metric(['tenant' => '123']);
+        $this->assertEquals('123', $metric->getTenant());
+        $this->assertIsString($metric->getTenant());
     }
 
     /**
@@ -434,13 +435,13 @@ class MetricTest extends TestCase
     }
 
     /**
-     * Test Metric::getTenant() converts numeric tenant to int
+     * Test Metric::getTenant() converts numeric tenant to string
      */
-    public function testGetTenantConvertsNumericToInt(): void
+    public function testGetTenantConvertsNumericToString(): void
     {
-        $metric = new Metric(['tenant' => '456']);
-        $this->assertEquals(456, $metric->getTenant());
-        $this->assertIsInt($metric->getTenant());
+        $metric = new Metric(['tenant' => 456]);
+        $this->assertEquals('456', $metric->getTenant());
+        $this->assertIsString($metric->getTenant());
     }
 
     /**

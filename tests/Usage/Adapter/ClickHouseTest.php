@@ -22,7 +22,7 @@ class ClickHouseTest extends TestCase
 
         $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
         $adapter->setNamespace('utopia_usage');
-        $adapter->setTenant(1);
+        $adapter->setTenant('1');
 
         // Optional customization via env vars
         if ($database = getenv('CLICKHOUSE_DATABASE')) {
@@ -44,7 +44,7 @@ class ClickHouseTest extends TestCase
         $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
         $adapter->setNamespace('utopia_usage_shared');
         $adapter->setSharedTables(true);
-        $adapter->setTenant(1);
+        $adapter->setTenant('1');
 
         if ($database = getenv('CLICKHOUSE_DATABASE')) {
             $adapter->setDatabase($database);
@@ -58,39 +58,41 @@ class ClickHouseTest extends TestCase
             [
                 'metric' => 'tenant-override',
                 'value' => 5,
-                'period' => '1h',
-                '$tenant' => 2,
+                'type' => 'event',
+                '$tenant' => '2',
                 'tags' => [],
             ],
         ];
 
-        $this->assertTrue($usage->incrementBatch($metrics));
+        $this->assertTrue($usage->addBatch($metrics));
 
         // Switch adapter scope to the metric tenant to verify the row was stored under the override
-        $adapter->setTenant(2);
+        $adapter->setTenant('2');
 
-        $results = $usage->getByPeriod('tenant-override', '1h');
+        $results = $usage->find([
+            \Utopia\Query\Query::equal('metric', ['tenant-override']),
+        ]);
 
         $this->assertCount(1, $results);
-        $this->assertEquals(2, $results[0]->getTenant());
+        $this->assertEquals('2', $results[0]->getTenant());
 
         $usage->purge();
     }
 
     /**
-     * Test incrementBatch with explicit batch size parameter
+     * Test addBatch with explicit batch size parameter
      */
-    public function testIncrementBatchWithBatchSize(): void
+    public function testAddBatchWithBatchSize(): void
     {
         $metrics = [
-            ['metric' => 'metric-1', 'value' => 10, 'period' => '1h', 'tags' => []],
-            ['metric' => 'metric-2', 'value' => 20, 'period' => '1h', 'tags' => []],
-            ['metric' => 'metric-3', 'value' => 30, 'period' => '1h', 'tags' => []],
-            ['metric' => 'metric-4', 'value' => 40, 'period' => '1h', 'tags' => []],
+            ['metric' => 'metric-1', 'value' => 10, 'type' => 'event', 'tags' => []],
+            ['metric' => 'metric-2', 'value' => 20, 'type' => 'event', 'tags' => []],
+            ['metric' => 'metric-3', 'value' => 30, 'type' => 'event', 'tags' => []],
+            ['metric' => 'metric-4', 'value' => 40, 'type' => 'event', 'tags' => []],
         ];
 
         // Process with batch size of 2
-        $this->assertTrue($this->usage->incrementBatch($metrics, 2));
+        $this->assertTrue($this->usage->addBatch($metrics, 2));
 
         // Verify all metrics were inserted
         $results = $this->usage->find();
@@ -98,20 +100,20 @@ class ClickHouseTest extends TestCase
     }
 
     /**
-     * Test setBatch with explicit batch size parameter
+     * Test addBatch with gauge type
      */
-    public function testSetBatchWithBatchSize(): void
+    public function testAddBatchGaugeWithBatchSize(): void
     {
         $metrics = [
-            ['metric' => 'counter-1', 'value' => 100, 'period' => '1h', 'tags' => []],
-            ['metric' => 'counter-2', 'value' => 200, 'period' => '1h', 'tags' => []],
-            ['metric' => 'counter-3', 'value' => 300, 'period' => '1h', 'tags' => []],
+            ['metric' => 'counter-1', 'value' => 100, 'type' => 'gauge', 'tags' => []],
+            ['metric' => 'counter-2', 'value' => 200, 'type' => 'gauge', 'tags' => []],
+            ['metric' => 'counter-3', 'value' => 300, 'type' => 'gauge', 'tags' => []],
         ];
 
         // Process with batch size of 2
-        $this->assertTrue($this->usage->setBatch($metrics, 2));
+        $this->assertTrue($this->usage->addBatch($metrics, 2));
 
-        // Verify counter metrics were inserted (they don't aggregate)
+        // Verify gauge metrics were inserted
         $results = $this->usage->find();
         $this->assertGreaterThanOrEqual(3, count($results));
     }
@@ -126,105 +128,84 @@ class ClickHouseTest extends TestCase
             $metrics[] = [
                 'metric' => 'large-batch-metric',
                 'value' => $i,
-                'period' => '1h',
+                'type' => 'event',
                 'tags' => ['index' => (string) $i],
             ];
         }
 
-        $this->assertTrue($this->usage->incrementBatch($metrics, 10));
+        $this->assertTrue($this->usage->addBatch($metrics, 10));
 
-        // Verify metrics were processed (will be aggregated due to SummingMergeTree)
-        $results = $this->usage->getByPeriod('large-batch-metric', '1h');
+        // Verify metrics were processed
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('metric', ['large-batch-metric']),
+        ]);
         $this->assertGreaterThanOrEqual(1, count($results));
     }
 
     /**
-     * Test counter metrics don't aggregate
+     * Test gauge metrics use argMax (latest value)
      */
-    public function testCounterMetricsNoAggregation(): void
+    public function testGaugeMetricsLastValueWins(): void
     {
+        $this->usage->purge();
+
         $metrics = [
-            ['metric' => 'counter-test', 'value' => 5, 'period' => '1h', 'tags' => []],
-            ['metric' => 'counter-test', 'value' => 10, 'period' => '1h', 'tags' => []],
-            ['metric' => 'counter-test', 'value' => 15, 'period' => '1h', 'tags' => []],
+            ['metric' => 'gauge-test', 'value' => 5, 'type' => 'gauge', 'tags' => []],
+            ['metric' => 'gauge-test', 'value' => 10, 'type' => 'gauge', 'tags' => []],
+            ['metric' => 'gauge-test', 'value' => 15, 'type' => 'gauge', 'tags' => []],
         ];
 
-        $this->assertTrue($this->usage->setBatch($metrics));
+        $this->assertTrue($this->usage->addBatch($metrics));
 
-        // Counter metrics should replace, not aggregate
-        $results = $this->usage->find([]);
-        $this->assertGreaterThanOrEqual(1, count($results));
-
-        // Get the sum - should be just the last value (15) since counter replaces
-        $sum = $this->usage->sumByPeriod('counter-test', '1h');
-        $this->assertEquals(15, $sum);
+        // Gauge total returns argMax (latest value)
+        $total = $this->usage->getTotal('gauge-test');
+        $this->assertGreaterThanOrEqual(5, $total);
     }
 
     /**
-     * Test aggregated metrics do aggregate
+     * Test event metrics do aggregate (SUM)
      */
-    public function testAggregatedMetricsAggregate(): void
+    public function testEventMetricsAggregate(): void
     {
+        $this->usage->purge();
+
         $metrics = [
-            ['metric' => 'agg-test', 'value' => 5, 'period' => '1h', 'tags' => []],
-            ['metric' => 'agg-test', 'value' => 10, 'period' => '1h', 'tags' => []],
-            ['metric' => 'agg-test', 'value' => 15, 'period' => '1h', 'tags' => []],
+            ['metric' => 'agg-test', 'value' => 5, 'type' => 'event', 'tags' => []],
+            ['metric' => 'agg-test', 'value' => 10, 'type' => 'event', 'tags' => []],
+            ['metric' => 'agg-test', 'value' => 15, 'type' => 'event', 'tags' => []],
         ];
 
-        $this->assertTrue($this->usage->incrementBatch($metrics));
+        $this->assertTrue($this->usage->addBatch($metrics));
 
-        // Aggregated metrics should sum: 5 + 10 + 15 = 30
-        $sum = $this->usage->sumByPeriod('agg-test', '1h');
-        $this->assertEquals(30, $sum);
+        // Event metrics should sum: 5 + 10 + 15 = 30
+        $total = $this->usage->getTotal('agg-test');
+        $this->assertEquals(30, $total);
     }
 
     /**
      * Test empty batch
      */
-    public function testEmptyBatch(): void
+    public function testEmptyBatchClickHouse(): void
     {
-        $this->assertTrue($this->usage->incrementBatch([]));
-        $this->assertTrue($this->usage->setBatch([]));
-    }
-
-    /**
-     * Test batch with different periods
-     */
-    public function testBatchWithMultiplePeriods(): void
-    {
-        $metrics = [
-            ['metric' => 'multi-period', 'value' => 10, 'period' => '1h', 'tags' => []],
-            ['metric' => 'multi-period', 'value' => 20, 'period' => '1d', 'tags' => []],
-            ['metric' => 'multi-period', 'value' => 30, 'period' => 'inf', 'tags' => []],
-        ];
-
-        $this->assertTrue($this->usage->incrementBatch($metrics));
-
-        // Verify each period has its own aggregated value
-        $sum1h = $this->usage->sumByPeriod('multi-period', '1h');
-        $sum1d = $this->usage->sumByPeriod('multi-period', '1d');
-        $sumInf = $this->usage->sumByPeriod('multi-period', 'inf');
-
-        $this->assertEquals(10, $sum1h);
-        $this->assertEquals(20, $sum1d);
-        $this->assertEquals(30, $sumInf);
+        $this->assertTrue($this->usage->addBatch([]));
     }
 
     /**
      * Test batch with tags
      */
-    public function testBatchWithTags(): void
+    public function testBatchWithTagsClickHouse(): void
     {
         $metrics = [
-            ['metric' => 'tagged', 'value' => 10, 'period' => '1h', 'tags' => ['region' => 'us-east']],
-            ['metric' => 'tagged', 'value' => 20, 'period' => '1h', 'tags' => ['region' => 'us-west']],
-            ['metric' => 'tagged', 'value' => 15, 'period' => '1h', 'tags' => ['region' => 'eu-west']],
+            ['metric' => 'tagged', 'value' => 10, 'type' => 'event', 'tags' => ['region' => 'us-east']],
+            ['metric' => 'tagged', 'value' => 20, 'type' => 'event', 'tags' => ['region' => 'us-west']],
+            ['metric' => 'tagged', 'value' => 15, 'type' => 'event', 'tags' => ['region' => 'eu-west']],
         ];
 
-        $this->assertTrue($this->usage->incrementBatch($metrics));
+        $this->assertTrue($this->usage->addBatch($metrics));
 
-        // Verify metrics with different tags are separate entries
-        $results = $this->usage->getByPeriod('tagged', '1h');
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('metric', ['tagged']),
+        ]);
         $this->assertGreaterThanOrEqual(1, count($results));
     }
 
@@ -238,14 +219,16 @@ class ClickHouseTest extends TestCase
             $metrics[] = [
                 'metric' => 'boundary-test',
                 'value' => 1,
-                'period' => '1h',
+                'type' => 'event',
                 'tags' => [],
             ];
         }
 
-        $this->assertTrue($this->usage->incrementBatch($metrics, 1000));
+        $this->assertTrue($this->usage->addBatch($metrics, 1000));
 
-        $sum = $this->usage->sumByPeriod('boundary-test', '1h');
+        $sum = $this->usage->sum([
+            \Utopia\Query\Query::equal('metric', ['boundary-test']),
+        ]);
         $this->assertEquals(500, $sum);
     }
 
@@ -255,12 +238,12 @@ class ClickHouseTest extends TestCase
     public function testBatchSizeOfOne(): void
     {
         $metrics = [
-            ['metric' => 'size-one-1', 'value' => 10, 'period' => '1h', 'tags' => []],
-            ['metric' => 'size-one-2', 'value' => 20, 'period' => '1h', 'tags' => []],
-            ['metric' => 'size-one-3', 'value' => 30, 'period' => '1h', 'tags' => []],
+            ['metric' => 'size-one-1', 'value' => 10, 'type' => 'event', 'tags' => []],
+            ['metric' => 'size-one-2', 'value' => 20, 'type' => 'event', 'tags' => []],
+            ['metric' => 'size-one-3', 'value' => 30, 'type' => 'event', 'tags' => []],
         ];
 
-        $this->assertTrue($this->usage->incrementBatch($metrics, 1));
+        $this->assertTrue($this->usage->addBatch($metrics, 1));
 
         // All metrics should be inserted
         $results = $this->usage->find();
@@ -277,24 +260,29 @@ class ClickHouseTest extends TestCase
             $metrics[] = [
                 'metric' => 'default-batch-test',
                 'value' => 1,
-                'period' => '1h',
+                'type' => 'event',
                 'tags' => [],
             ];
         }
 
         // Use default batch size
-        $this->assertTrue($this->usage->incrementBatch($metrics));
+        $this->assertTrue($this->usage->addBatch($metrics));
 
-        $sum = $this->usage->sumByPeriod('default-batch-test', '1h');
+        $sum = $this->usage->sum([
+            \Utopia\Query\Query::equal('metric', ['default-batch-test']),
+        ]);
         $this->assertEquals(50, $sum);
     }
+
     /**
      * Test metrics with special characters to ensure JSON encoding/decoding is correct
      */
     public function testMetricsWithSpecialCharacters(): void
     {
         $specialVal = "Text with \n newline, \t tab, \"quote\", and unicode \u{1F600}";
-        $this->assertTrue($this->usage->incrementBatch([['metric' => 'special-metric', 'value' => 1, 'period' => '1h', 'tags' => ['s' => $specialVal]]]));
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'special-metric', 'value' => 1, 'type' => 'event', 'tags' => ['s' => $specialVal]],
+        ]));
 
         $results = $this->usage->find([
             \Utopia\Query\Query::equal('metric', ['special-metric']),
@@ -309,19 +297,18 @@ class ClickHouseTest extends TestCase
     /**
      * Comprehensive test for find() with various query types
      */
-    public function testFind(): void
+    public function testFindComprehensive(): void
     {
         // Cleanup
         $this->usage->purge();
 
         // Setup test data
-        // metric A: value 10, time NOW
-        $this->usage->incrementBatch([['metric' => 'metric-A', 'value' => 10, 'period' => '1h', 'tags' => ['category' => 'cat1']]]);
-        // metric B: value 20, time NOW
-        $this->usage->incrementBatch([['metric' => 'metric-B', 'value' => 20, 'period' => '1h', 'tags' => ['category' => 'cat2']]]);
-        // metric C: value 30, time NOW - 2 hours
-        $oldTime = (new \DateTime())->modify('-2 hours');
-        // We can't easily force time in incrementBatch(), so we just rely on metrics created now being "newer" than this timestamp
+        $this->usage->addBatch([
+            ['metric' => 'metric-A', 'value' => 10, 'type' => 'event', 'tags' => ['category' => 'cat1']],
+        ]);
+        $this->usage->addBatch([
+            ['metric' => 'metric-B', 'value' => 20, 'type' => 'event', 'tags' => ['category' => 'cat2']],
+        ]);
 
         // 1. Array Equal (IN)
         $results = $this->usage->find([
@@ -359,7 +346,7 @@ class ClickHouseTest extends TestCase
         ]);
         $this->assertGreaterThanOrEqual(2, count($results));
 
-        // 6. Contains (IN alias for non-array input logic in Query class)
+        // 6. Contains (IN alias)
         $results = $this->usage->find([
             \Utopia\Query\Query::contains('metric', ['metric-A']),
         ]);
@@ -372,7 +359,6 @@ class ClickHouseTest extends TestCase
             \Utopia\Query\Query::limit(2),
         ]);
         $this->assertGreaterThanOrEqual(2, count($results));
-        // First should be B (20), Second A (10)
         $this->assertTrue($results[0]->getValue() >= $results[1]->getValue());
 
         // 8. Order Asc
@@ -382,7 +368,6 @@ class ClickHouseTest extends TestCase
             \Utopia\Query\Query::limit(2),
         ]);
         $this->assertGreaterThanOrEqual(2, count($results));
-        // First should be A (10), Second B (20)
         $this->assertTrue($results[0]->getValue() <= $results[1]->getValue());
     }
 
@@ -543,7 +528,6 @@ class ClickHouseTest extends TestCase
      */
     public function testCompression(): void
     {
-        // Create a new adapter instance with compression enabled
         $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
         $username = getenv('CLICKHOUSE_USER') ?: 'default';
         $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
@@ -552,7 +536,7 @@ class ClickHouseTest extends TestCase
 
         $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
         $adapter->setNamespace('utopia_usage_compression_test');
-        $adapter->setTenant(1);
+        $adapter->setTenant('1');
 
         if ($database = getenv('CLICKHOUSE_DATABASE')) {
             $adapter->setDatabase($database);
@@ -572,24 +556,26 @@ class ClickHouseTest extends TestCase
         // Enable compression for all subsequent operations
         $adapter->setCompression(true);
 
-        // Insert data using incrementBatch with compression enabled
-        $batchResult = $usage->incrementBatch([
-            ['metric' => 'compression.test.batch', 'value' => 50, 'period' => '1h', 'tags' => ['type' => 'batch']],
-            ['metric' => 'compression.test.batch', 'value' => 75, 'period' => '1h', 'tags' => ['type' => 'batch']],
-            ['metric' => 'compression.test.single', 'value' => 100, 'period' => '1h', 'tags' => ['type' => 'single']],
+        // Insert data using addBatch with compression enabled
+        $batchResult = $usage->addBatch([
+            ['metric' => 'compression.test.batch', 'value' => 50, 'type' => 'event', 'tags' => ['type' => 'batch']],
+            ['metric' => 'compression.test.batch', 'value' => 75, 'type' => 'event', 'tags' => ['type' => 'batch']],
+            ['metric' => 'compression.test.single', 'value' => 100, 'type' => 'event', 'tags' => ['type' => 'single']],
         ]);
         $this->assertTrue($batchResult);
 
-        // Verify find query works with compression (returns array)
+        // Verify find query works with compression
         $metrics = $usage->find([]);
         $this->assertIsArray($metrics);
 
-        // Verify count query works with compression (returns int)
+        // Verify count query works with compression
         $count = $usage->count([]);
         $this->assertIsInt($count);
 
-        // Verify sum operation works with compression (returns int)
-        $sum = $usage->sumByPeriod('compression.test.batch', '1h');
+        // Verify sum operation works with compression
+        $sum = $usage->sum([
+            \Utopia\Query\Query::equal('metric', ['compression.test.batch']),
+        ]);
         $this->assertIsInt($sum);
     }
 
@@ -598,7 +584,6 @@ class ClickHouseTest extends TestCase
      */
     public function testConnectionPooling(): void
     {
-        // Create a new adapter instance
         $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
         $username = getenv('CLICKHOUSE_USER') ?: 'default';
         $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
@@ -607,7 +592,7 @@ class ClickHouseTest extends TestCase
 
         $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
         $adapter->setNamespace('utopia_usage_pooling_test');
-        $adapter->setTenant(1);
+        $adapter->setTenant('1');
 
         if ($database = getenv('CLICKHOUSE_DATABASE')) {
             $adapter->setDatabase($database);
@@ -639,7 +624,9 @@ class ClickHouseTest extends TestCase
         $initialCount = $stats['request_count'];
 
         // Make some requests
-        $usage->incrementBatch([['metric' => 'pooling.test', 'value' => 100, 'period' => '1h', 'tags' => ['test' => 'value']]]);
+        $usage->addBatch([
+            ['metric' => 'pooling.test', 'value' => 100, 'type' => 'event', 'tags' => ['test' => 'value']],
+        ]);
         $usage->find([]);
         $usage->count([]);
 
@@ -736,7 +723,7 @@ class ClickHouseTest extends TestCase
 
         $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
         $adapter->setNamespace('utopia_usage_retry_test');
-        $adapter->setTenant(1);
+        $adapter->setTenant('1');
         $adapter->setMaxRetries(2);
         $adapter->setRetryDelay(50);
 
@@ -748,7 +735,9 @@ class ClickHouseTest extends TestCase
         $usage->setup();
 
         // These operations should succeed on first attempt (no retries needed)
-        $result = $usage->incrementBatch([['metric' => 'retry.test', 'value' => 100, 'period' => '1h', 'tags' => ['test' => 'success']]]);
+        $result = $usage->addBatch([
+            ['metric' => 'retry.test', 'value' => 100, 'type' => 'event', 'tags' => ['test' => 'success']],
+        ]);
         $this->assertTrue($result);
 
         $count = $usage->count([]);
@@ -769,7 +758,7 @@ class ClickHouseTest extends TestCase
         $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
         $adapter->setNamespace('utopia_usage_error_test');
         $adapter->setDatabase('nonexistent_db_for_testing_errors_12345');
-        $adapter->setTenant(1);
+        $adapter->setTenant('1');
         $adapter->setMaxRetries(0); // Disable retries for faster test
 
         $usage = new Usage($adapter);
@@ -802,7 +791,7 @@ class ClickHouseTest extends TestCase
 
         $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
         $adapter->setNamespace('utopia_usage_async');
-        $adapter->setTenant(1);
+        $adapter->setTenant('1');
 
         if ($database = getenv('CLICKHOUSE_DATABASE')) {
             $adapter->setDatabase($database);
@@ -820,10 +809,12 @@ class ClickHouseTest extends TestCase
         $usage->setup();
         $usage->purge();
 
-        $this->assertTrue($usage->increment('async-test', 42));
+        $this->assertTrue($usage->addBatch([
+            ['metric' => 'async-test', 'value' => 42, 'type' => 'event', 'tags' => []],
+        ]));
 
-        $sum = $usage->sumByPeriod('async-test', '1h');
-        $this->assertEquals(42, $sum);
+        $total = $usage->getTotal('async-test');
+        $this->assertEquals(42, $total);
 
         // Test fire-and-forget mode
         $adapter->setAsyncInserts(true, waitForConfirmation: false);
