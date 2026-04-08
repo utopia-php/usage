@@ -1335,48 +1335,27 @@ class ClickHouse extends SQL
                 $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
 
                 if ($type === Usage::TYPE_EVENT) {
-                    // Extract event-specific columns from tags
-                    $path = null;
-                    $method = null;
-                    $status = null;
-                    $resource = null;
-                    $resourceId = null;
-
-                    if (isset($tags['path'])) {
-                        $path = (string) $tags['path'];
-                        unset($tags['path']);
-                    }
-                    if (isset($tags['method'])) {
-                        $method = (string) $tags['method'];
-                        unset($tags['method']);
-                    }
-                    if (isset($tags['status'])) {
-                        $status = (string) $tags['status'];
-                        unset($tags['status']);
-                    }
-                    if (isset($tags['resource'])) {
-                        $resource = (string) $tags['resource'];
-                        unset($tags['resource']);
-                    }
-                    if (isset($tags['resourceId'])) {
-                        $resourceId = (string) $tags['resourceId'];
-                        unset($tags['resourceId']);
+                    // Extract event-specific columns from tags into dedicated columns
+                    $eventColumns = [];
+                    foreach (Metric::EVENT_COLUMNS as $col) {
+                        if (isset($tags[$col])) {
+                            $eventColumns[$col] = (string) $tags[$col];
+                            unset($tags[$col]);
+                        } else {
+                            $eventColumns[$col] = null;
+                        }
                     }
 
                     ksort($tags);
 
-                    $row = [
+                    $row = array_merge([
                         'id' => $this->generateId(),
                         'metric' => $metric,
                         'value' => $value,
                         'time' => $this->formatDateTime(null),
-                        'path' => $path,
-                        'method' => $method,
-                        'status' => $status,
-                        'resource' => $resource,
-                        'resourceId' => $resourceId,
+                    ], $eventColumns, [
                         'tags' => $tags,
-                    ];
+                    ]);
                 } else {
                     // Gauge: simple schema
                     ksort($tags);
