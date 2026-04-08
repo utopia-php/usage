@@ -274,6 +274,29 @@ class Database extends SQL
     }
 
     /**
+     * Find from daily table — Database adapter falls back to regular find for events.
+     *
+     * @param array<Query> $queries
+     * @return array<Metric>
+     */
+    public function findDaily(array $queries = []): array
+    {
+        return $this->find($queries, Usage::TYPE_EVENT);
+    }
+
+    /**
+     * Sum from daily table — Database adapter falls back to regular sum for events.
+     *
+     * @param array<Query> $queries
+     * @param string $attribute
+     * @return int
+     */
+    public function sumDaily(array $queries = [], string $attribute = 'value'): int
+    {
+        return $this->sum($queries, $attribute, Usage::TYPE_EVENT);
+    }
+
+    /**
      * Convert Utopia\Query\Query to Utopia\Database\Query for use with the Database class.
      *
      * @param array<Query> $queries

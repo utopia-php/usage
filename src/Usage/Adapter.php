@@ -114,6 +114,26 @@ abstract class Adapter
     abstract public function sum(array $queries = [], string $attribute = 'value', ?string $type = null): int;
 
     /**
+     * Sum event metrics from the pre-aggregated daily table.
+     *
+     * Queries the SummingMergeTree daily materialized view for fast billing/analytics.
+     * Only works for event metrics (gauges are not pre-aggregated).
+     *
+     * @param array<\Utopia\Query\Query> $queries  Filters (metric, time range, resource, etc.)
+     * @return array<Metric>
+     */
+    abstract public function findDaily(array $queries = []): array;
+
+    /**
+     * Sum event metric values from the pre-aggregated daily table.
+     *
+     * @param array<\Utopia\Query\Query> $queries
+     * @param string $attribute Attribute to sum (default: 'value')
+     * @return int
+     */
+    abstract public function sumDaily(array $queries = [], string $attribute = 'value'): int;
+
+    /**
      * Set the namespace prefix for table names.
      *
      * @param string $namespace

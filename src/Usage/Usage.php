@@ -195,6 +195,36 @@ class Usage
     }
 
     /**
+     * Find event metrics from the pre-aggregated daily table.
+     *
+     * Queries the SummingMergeTree daily MV for fast billing/analytics.
+     *
+     * @param array<\Utopia\Query\Query> $queries
+     * @return array<Metric>
+     * @throws \Exception
+     */
+    public function findDaily(array $queries = []): array
+    {
+        return $this->adapter->findDaily($queries);
+    }
+
+    /**
+     * Sum event metric values from the pre-aggregated daily table.
+     *
+     * Use this for billing queries — reads pre-aggregated daily rows
+     * instead of scanning billions of raw events.
+     *
+     * @param array<\Utopia\Query\Query> $queries
+     * @param string $attribute Attribute to sum (default: 'value')
+     * @return int
+     * @throws \Exception
+     */
+    public function sumDaily(array $queries = [], string $attribute = 'value'): int
+    {
+        return $this->adapter->sumDaily($queries, $attribute);
+    }
+
+    /**
      * Set the namespace prefix for table names.
      *
      * @param string $namespace

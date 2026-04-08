@@ -1618,6 +1618,59 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Find event metrics from the pre-aggregated daily table.
+     *
+     * @param array<Query> $queries
+     * @return array<Metric>
+     * @throws Exception
+     */
+    public function findDaily(array $queries = []): array
+    {
+        $this->setOperationContext('findDaily()');
+
+        $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
+
+        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
+        $selectColumns = $this->getSelectColumns(Usage::TYPE_EVENT);
+        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+
+        $orderClause = !empty($parsed['orderBy']) ? ' ORDER BY ' . implode(', ', $parsed['orderBy']) : '';
+        $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
+        $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
+
+        $sql = "SELECT {$selectColumns} FROM {$fromTable}{$whereData['clause']}{$orderClause}{$limitClause}{$offsetClause} FORMAT JSON";
+
+        return $this->parseResults($this->query($sql, $whereData['params']), Usage::TYPE_EVENT);
+    }
+
+    /**
+     * Sum event metric values from the pre-aggregated daily table.
+     *
+     * @param array<Query> $queries
+     * @param string $attribute Attribute to sum (default: 'value')
+     * @return int
+     * @throws Exception
+     */
+    public function sumDaily(array $queries = [], string $attribute = 'value'): int
+    {
+        $this->setOperationContext('sumDaily()');
+
+        $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
+        $this->validateAttributeName($attribute, Usage::TYPE_EVENT);
+        $escapedAttribute = $this->escapeIdentifier($attribute);
+
+        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
+        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+
+        $sql = "SELECT sum({$escapedAttribute}) as total FROM {$fromTable}{$whereData['clause']} FORMAT JSON";
+
+        $result = $this->query($sql, $whereData['params']);
+        $json = json_decode($result, true);
+
+        return (is_array($json) && isset($json['data'][0]['total'])) ? (int) $json['data'][0]['total'] : 0;
+    }
+
+    /**
      * Get time series data for metrics with query-time aggregation.
      *
      * Uses SUM for event metrics and argMax for gauge metrics.
