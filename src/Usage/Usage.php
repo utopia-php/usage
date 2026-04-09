@@ -360,7 +360,7 @@ class Usage
 
         // Flush events to events table
         if (!empty($events)) {
-            $result = $this->adapter->addBatch($events, self::TYPE_EVENT) && $result;
+            $result = $this->adapter->addBatch($events, self::TYPE_EVENT);
         }
 
         // Flush gauges to gauges table
