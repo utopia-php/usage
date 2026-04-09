@@ -1335,7 +1335,8 @@ class ClickHouse extends SQL
                     $eventColumns = [];
                     foreach (Metric::EVENT_COLUMNS as $col) {
                         if (isset($tags[$col])) {
-                            $eventColumns[$col] = (string) $tags[$col];
+                            $tagValue = $tags[$col];
+                            $eventColumns[$col] = is_string($tagValue) ? $tagValue : (is_scalar($tagValue) ? (string) $tagValue : null);
                             unset($tags[$col]);
                         } else {
                             $eventColumns[$col] = null;

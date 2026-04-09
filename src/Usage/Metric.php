@@ -430,7 +430,7 @@ class Metric extends ArrayObject
             [
                 '$id' => 'path',
                 'type' => 'string',
-                'size' => 1024,
+                'size' => 255,
                 'required' => false,
                 'signed' => true,
                 'array' => false,
@@ -484,7 +484,7 @@ class Metric extends ArrayObject
             [
                 '$id' => 'userAgent',
                 'type' => 'string',
-                'size' => 512,
+                'size' => 255,
                 'required' => false,
                 'signed' => true,
                 'array' => false,

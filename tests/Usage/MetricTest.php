@@ -15,7 +15,7 @@ class MetricTest extends TestCase
         $schema = Metric::getEventSchema();
 
         $this->assertIsArray($schema);
-        $this->assertCount(9, $schema);
+        $this->assertCount(11, $schema);
 
         // Test metric attribute
         $metricAttr = $schema[0];
@@ -57,8 +57,18 @@ class MetricTest extends TestCase
         $this->assertEquals('resourceId', $resourceIdAttr['$id']);
         $this->assertFalse($resourceIdAttr['required']);
 
+        // Test country attribute (optional)
+        $countryAttr = $schema[8];
+        $this->assertEquals('country', $countryAttr['$id']);
+        $this->assertFalse($countryAttr['required']);
+
+        // Test userAgent attribute (optional)
+        $userAgentAttr = $schema[9];
+        $this->assertEquals('userAgent', $userAgentAttr['$id']);
+        $this->assertFalse($userAgentAttr['required']);
+
         // Test tags attribute (optional)
-        $tagsAttr = $schema[8];
+        $tagsAttr = $schema[10];
         $this->assertEquals('tags', $tagsAttr['$id']);
         $this->assertEquals('string', $tagsAttr['type']);
         $this->assertFalse($tagsAttr['required']);
@@ -98,7 +108,7 @@ class MetricTest extends TestCase
         $indexes = Metric::getEventIndexes();
 
         $this->assertIsArray($indexes);
-        $this->assertCount(7, $indexes);
+        $this->assertCount(9, $indexes);
 
         // Test metric index
         $metricIndex = $indexes[0];
@@ -117,6 +127,8 @@ class MetricTest extends TestCase
         $this->assertEquals('index-status', $indexes[4]['$id']);
         $this->assertEquals('index-resource', $indexes[5]['$id']);
         $this->assertEquals('index-resourceId', $indexes[6]['$id']);
+        $this->assertEquals('index-country', $indexes[7]['$id']);
+        $this->assertEquals('index-userAgent', $indexes[8]['$id']);
     }
 
     /**
@@ -668,7 +680,7 @@ class MetricTest extends TestCase
      */
     public function testEventColumnsConstant(): void
     {
-        $expected = ['path', 'method', 'status', 'resource', 'resourceId'];
+        $expected = ['path', 'method', 'status', 'resource', 'resourceId', 'country', 'userAgent'];
         $this->assertEquals($expected, Metric::EVENT_COLUMNS);
     }
 }

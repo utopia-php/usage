@@ -224,8 +224,9 @@ class ClickHouseTest extends TestCase
                     'status' => '201',
                     'resource' => 'bucket',
                     'resourceId' => 'bucket123',
-                    'region' => 'us-east',
+                    'country' => 'US',
                     'userAgent' => 'test-agent',
+                    'region' => 'us-east',
                 ],
             ],
         ];
@@ -245,16 +246,19 @@ class ClickHouseTest extends TestCase
         $this->assertEquals('201', $metric->getStatus());
         $this->assertEquals('bucket', $metric->getResource());
         $this->assertEquals('bucket123', $metric->getResourceId());
+        $this->assertEquals('US', $metric->getCountry());
+        $this->assertEquals('test-agent', $metric->getUserAgent());
 
         // Remaining tags should only contain non-event fields
         $tags = $metric->getTags();
         $this->assertEquals('us-east', $tags['region'] ?? null);
-        $this->assertEquals('test-agent', $tags['userAgent'] ?? null);
         $this->assertArrayNotHasKey('path', $tags);
         $this->assertArrayNotHasKey('method', $tags);
         $this->assertArrayNotHasKey('status', $tags);
         $this->assertArrayNotHasKey('resource', $tags);
         $this->assertArrayNotHasKey('resourceId', $tags);
+        $this->assertArrayNotHasKey('country', $tags);
+        $this->assertArrayNotHasKey('userAgent', $tags);
     }
 
     /**

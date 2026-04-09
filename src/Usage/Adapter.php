@@ -28,7 +28,7 @@ abstract class Adapter
      * For events, path/method/status/resource/resourceId are extracted from tags
      * into dedicated columns; remaining tags stay in the tags JSON.
      *
-     * @param  array<array{metric: string, value: int, type: string, tags?: array<string,mixed>}>  $metrics
+     * @param  array<array{metric: string, value: int, tags?: array<string,mixed>}>  $metrics
      * @param  string  $type  Metric type: 'event' or 'gauge' — determines which table to write to
      * @param  int  $batchSize  Maximum number of metrics per INSERT statement
      */

@@ -26,7 +26,7 @@ class Usage
      * In-memory buffer for metrics.
      * Keyed by "{metric}:{type}" — events are summed, gauges use last-write-wins.
      *
-     * @var array<string, array{metric: string, value: int, type: string, tags: array<string,mixed>}>
+     * @var array<string, array{metric: string, value: int, type: string, tags: array<string, mixed>}>
      */
     private array $buffer = [];
 
@@ -84,7 +84,7 @@ class Usage
     /**
      * Add metrics in batch (raw append).
      *
-     * @param array<array{metric: string, value: int, type: string, tags?: array<string,mixed>}> $metrics
+     * @param array<array{metric: string, value: int, tags?: array<string,mixed>}> $metrics
      * @param string $type Metric type: 'event' or 'gauge'
      * @param int $batchSize Maximum number of metrics per INSERT statement
      * @return bool

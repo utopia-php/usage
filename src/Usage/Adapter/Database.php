@@ -101,7 +101,7 @@ class Database extends SQL
      * Database adapter uses a single collection for both types. The $type parameter
      * is stored as a field in each document for query-time differentiation.
      *
-     * @param array<array{metric: string, value: int, type?: string, tags?: array<string,mixed>}> $metrics
+     * @param array<array{metric: string, value: int, tags?: array<string,mixed>}> $metrics
      * @param string $type Metric type: 'event' or 'gauge'
      * @param int $batchSize
      * @return bool
