@@ -8,6 +8,7 @@ use Utopia\Database\Exception\Duplicate as DuplicateException;
 use Utopia\Database\Query as DatabaseQuery;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
+use Utopia\Usage\UsageQuery;
 use Utopia\Query\Query;
 
 class Database extends SQL
@@ -391,6 +392,11 @@ class Database extends SQL
                         $val = $values[0] ?? 0;
                         $dbQueries[] = DatabaseQuery::offset((int) $val);
                     }
+                    break;
+
+                case UsageQuery::TYPE_GROUP_BY_INTERVAL:
+                    // groupByInterval is not supported by the Database adapter.
+                    // Silently skip — callers get raw (non-aggregated) results.
                     break;
             }
         }

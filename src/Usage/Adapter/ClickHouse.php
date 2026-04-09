@@ -7,6 +7,7 @@ use Utopia\Query\Query;
 use Utopia\Fetch\Client;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
+use Utopia\Usage\UsageQuery;
 use Utopia\Validator\Hostname;
 
 /**
@@ -1434,6 +1435,11 @@ class ClickHouse extends SQL
     /**
      * Find metrics from a specific table.
      *
+     * When a `groupByInterval` query is present, switches to aggregated mode:
+     * - Events: SELECT metric, SUM(value) as value, toStartOfInterval(time, INTERVAL ...) as time
+     * - Gauges: SELECT metric, argMax(value, time) as value, toStartOfInterval(time, INTERVAL ...) as time
+     * Results are grouped by metric and time bucket, ordered by time ASC.
+     *
      * @param array<Query> $queries
      * @param string $type 'event' or 'gauge'
      * @return array<Metric>
@@ -1445,6 +1451,11 @@ class ClickHouse extends SQL
         $fromTable = $this->buildTableReference($tableName);
 
         $parsed = $this->parseQueries($queries, $type);
+
+        // Check if groupByInterval is requested
+        if (isset($parsed['groupByInterval'])) {
+            return $this->findAggregatedFromTable($parsed, $fromTable, $type);
+        }
 
         $selectColumns = $this->getSelectColumns($type);
 
@@ -1469,6 +1480,115 @@ class ClickHouse extends SQL
         $result = $this->query($sql, $parsed['params']);
 
         return $this->parseResults($result, $type);
+    }
+
+    /**
+     * Find aggregated metrics from a table using time-bucketed grouping.
+     *
+     * Produces SQL like:
+     *   SELECT metric, SUM(value) as value,
+     *          toStartOfInterval(time, INTERVAL 1 HOUR) as time
+     *   FROM table WHERE ... GROUP BY metric, time ORDER BY time ASC
+     *
+     * @param array<string, mixed> $parsed Parsed query data from parseQueries()
+     * @param string $fromTable Fully qualified table reference
+     * @param string $type 'event' or 'gauge'
+     * @return array<Metric>
+     * @throws Exception
+     */
+    private function findAggregatedFromTable(array $parsed, string $fromTable, string $type): array
+    {
+        /** @var string $interval */
+        $interval = $parsed['groupByInterval'];
+        $intervalSql = UsageQuery::VALID_INTERVALS[$interval];
+
+        // Choose aggregation function based on metric type
+        $valueExpr = $type === Usage::TYPE_GAUGE
+            ? 'argMax(value, time) as value'
+            : 'SUM(value) as value';
+
+        // Use 'bucket' alias to avoid collision with the raw 'time' column,
+        // then alias back to 'time' in outer context for consistent Metric parsing.
+        $timeBucketExpr = "toStartOfInterval(time, {$intervalSql})";
+
+        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+        $whereClause = $whereData['clause'];
+        $params = $whereData['params'];
+
+        // Use custom ORDER BY if specified, otherwise default to bucket ASC
+        $orderClause = ' ORDER BY bucket ASC';
+        if (!empty($parsed['orderBy'])) {
+            $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
+        }
+
+        $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
+        $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
+
+        $sql = "
+            SELECT metric, {$valueExpr}, {$timeBucketExpr} as bucket
+            FROM {$fromTable}{$whereClause}
+            GROUP BY metric, bucket{$orderClause}{$limitClause}{$offsetClause}
+            FORMAT JSON
+        ";
+
+        $result = $this->query($sql, $params);
+
+        return $this->parseAggregatedResults($result, $type);
+    }
+
+    /**
+     * Parse ClickHouse JSON results from an aggregated (groupByInterval) query into Metric array.
+     *
+     * Maps the 'bucket' column back to 'time' for consistent Metric objects.
+     *
+     * @param string $result Raw JSON response from ClickHouse
+     * @param string $type 'event' or 'gauge'
+     * @return array<Metric>
+     */
+    private function parseAggregatedResults(string $result, string $type = 'event'): array
+    {
+        if (empty(trim($result))) {
+            return [];
+        }
+
+        $json = json_decode($result, true);
+
+        if (!is_array($json) || !isset($json['data']) || !is_array($json['data'])) {
+            return [];
+        }
+
+        $rows = $json['data'];
+        $metrics = [];
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $document = [];
+
+            foreach ($row as $key => $value) {
+                if ($key === 'bucket') {
+                    // Map 'bucket' back to 'time' for consistent Metric objects
+                    $parsedTime = (string) $value;
+                    if (strpos($parsedTime, 'T') === false) {
+                        $parsedTime = str_replace(' ', 'T', $parsedTime) . '+00:00';
+                    }
+                    $document['time'] = $parsedTime;
+                } elseif ($key === 'value') {
+                    $document[$key] = $value !== null ? (int) $value : null;
+                } else {
+                    $document[$key] = $value;
+                }
+            }
+
+            // Set the type based on which table we queried
+            $document['type'] = $type;
+
+            $metrics[] = new Metric($document);
+        }
+
+        return $metrics;
     }
 
     /**
@@ -2204,7 +2324,7 @@ class ClickHouse extends SQL
      *
      * @param array<Query> $queries
      * @param string $type 'event' or 'gauge' — used for attribute validation
-     * @return array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int}
+     * @return array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int, groupByInterval?: string}
      * @throws Exception
      */
     private function parseQueries(array $queries, string $type = 'event'): array
@@ -2214,6 +2334,7 @@ class ClickHouse extends SQL
         $orderBy = [];
         $limit = null;
         $offset = null;
+        $groupByInterval = null;
         $paramCounter = 0;
 
         foreach ($queries as $query) {
@@ -2417,6 +2538,18 @@ class ClickHouse extends SQL
                     $offset = $offsetVal;
                     $params['offset'] = $offset;
                     break;
+
+                case UsageQuery::TYPE_GROUP_BY_INTERVAL:
+                    $this->validateAttributeName($attribute, $type);
+                    $interval = $values[0] ?? '1h';
+                    if (!is_string($interval) || !isset(UsageQuery::VALID_INTERVALS[$interval])) {
+                        throw new \Exception(
+                            "Invalid groupByInterval interval '{$interval}'. Allowed: "
+                            . implode(', ', array_keys(UsageQuery::VALID_INTERVALS))
+                        );
+                    }
+                    $groupByInterval = $interval;
+                    break;
             }
         }
 
@@ -2435,6 +2568,10 @@ class ClickHouse extends SQL
 
         if ($offset !== null) {
             $result['offset'] = $offset;
+        }
+
+        if ($groupByInterval !== null) {
+            $result['groupByInterval'] = $groupByInterval;
         }
 
         return $result;

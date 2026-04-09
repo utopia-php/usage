@@ -4,6 +4,7 @@ namespace Utopia\Tests\Usage;
 
 use Utopia\Query\Query;
 use Utopia\Usage\Usage;
+use Utopia\Usage\UsageQuery;
 
 trait UsageBase
 {
@@ -513,4 +514,130 @@ trait UsageBase
         ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
     }
+
+    public function testGroupByIntervalHourly(): void
+    {
+        $this->usage->purge();
+
+        // Insert metrics spread across the current hour
+        $now = new \DateTime();
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'gbi-requests', 'value' => 100, 'tags' => []],
+            ['metric' => 'gbi-requests', 'value' => 50, 'tags' => []],
+            ['metric' => 'gbi-bandwidth', 'value' => 3000, 'tags' => []],
+        ], Usage::TYPE_EVENT));
+
+        $start = (clone $now)->modify('-1 hour')->format('Y-m-d\TH:i:s');
+        $end = (clone $now)->modify('+1 hour')->format('Y-m-d\TH:i:s');
+
+        $results = $this->usage->find([
+            UsageQuery::groupByInterval('time', '1h'),
+            Query::equal('metric', ['gbi-requests']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertGreaterThanOrEqual(1, count($results));
+
+        // All results should have bucketed time values and summed values
+        $totalValue = 0;
+        foreach ($results as $metric) {
+            $this->assertEquals('gbi-requests', $metric->getMetric());
+            $this->assertNotNull($metric->getTime());
+            $totalValue += $metric->getValue();
+        }
+
+        // SUM should be 100 + 50 = 150
+        $this->assertEquals(150, $totalValue);
+    }
+
+    public function testGroupByIntervalDaily(): void
+    {
+        $this->usage->purge();
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'gbi-daily', 'value' => 200, 'tags' => []],
+            ['metric' => 'gbi-daily', 'value' => 300, 'tags' => []],
+        ], Usage::TYPE_EVENT));
+
+        $start = (new \DateTime())->modify('-1 day')->format('Y-m-d\TH:i:s');
+        $end = (new \DateTime())->modify('+1 day')->format('Y-m-d\TH:i:s');
+
+        $results = $this->usage->find([
+            UsageQuery::groupByInterval('time', '1d'),
+            Query::equal('metric', ['gbi-daily']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertGreaterThanOrEqual(1, count($results));
+
+        $totalValue = 0;
+        foreach ($results as $metric) {
+            $this->assertEquals('gbi-daily', $metric->getMetric());
+            $totalValue += $metric->getValue();
+        }
+
+        $this->assertEquals(500, $totalValue);
+    }
+
+    public function testGroupByIntervalGauge(): void
+    {
+        $this->usage->purge();
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'gbi-storage', 'value' => 1000, 'tags' => []],
+            ['metric' => 'gbi-storage', 'value' => 2000, 'tags' => []],
+            ['metric' => 'gbi-storage', 'value' => 3000, 'tags' => []],
+        ], Usage::TYPE_GAUGE));
+
+        $start = (new \DateTime())->modify('-1 hour')->format('Y-m-d\TH:i:s');
+        $end = (new \DateTime())->modify('+1 hour')->format('Y-m-d\TH:i:s');
+
+        $results = $this->usage->find([
+            UsageQuery::groupByInterval('time', '1h'),
+            Query::equal('metric', ['gbi-storage']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_GAUGE);
+
+        $this->assertGreaterThanOrEqual(1, count($results));
+
+        // Gauge uses argMax — should return the latest value per bucket
+        foreach ($results as $metric) {
+            $this->assertEquals('gbi-storage', $metric->getMetric());
+            $this->assertGreaterThanOrEqual(1000, $metric->getValue());
+        }
+    }
+
+    public function testGroupByIntervalInvalidInterval(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        UsageQuery::groupByInterval('time', '2h');
+    }
+
+    public function testGroupByIntervalWithLimitOffset(): void
+    {
+        $this->usage->purge();
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'gbi-limit', 'value' => 10, 'tags' => []],
+            ['metric' => 'gbi-limit', 'value' => 20, 'tags' => []],
+        ], Usage::TYPE_EVENT));
+
+        $start = (new \DateTime())->modify('-1 hour')->format('Y-m-d\TH:i:s');
+        $end = (new \DateTime())->modify('+1 hour')->format('Y-m-d\TH:i:s');
+
+        $results = $this->usage->find([
+            UsageQuery::groupByInterval('time', '1h'),
+            Query::equal('metric', ['gbi-limit']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+            Query::limit(10),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertGreaterThanOrEqual(1, count($results));
+    }
 }
+
