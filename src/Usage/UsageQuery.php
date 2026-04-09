@@ -45,6 +45,18 @@ class UsageQuery extends Query
     ];
 
     /**
+     * Override isMethod to accept groupByInterval in addition to all base Query methods.
+     */
+    public static function isMethod(string $value): bool
+    {
+        if ($value === self::TYPE_GROUP_BY_INTERVAL) {
+            return true;
+        }
+
+        return parent::isMethod($value);
+    }
+
+    /**
      * Create a groupByInterval query.
      *
      * When passed to `find()`, this switches the adapter to return time-bucketed
