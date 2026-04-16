@@ -1490,7 +1490,7 @@ class ClickHouse extends SQL
      *          toStartOfInterval(time, INTERVAL 1 HOUR) as time
      *   FROM table WHERE ... GROUP BY metric, time ORDER BY time ASC
      *
-     * @param array<string, mixed> $parsed Parsed query data from parseQueries()
+     * @param array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int, groupByInterval?: string} $parsed Parsed query data from parseQueries()
      * @param string $fromTable Fully qualified table reference
      * @param string $type 'event' or 'gauge'
      * @return array<Metric>
@@ -1499,7 +1499,7 @@ class ClickHouse extends SQL
     private function findAggregatedFromTable(array $parsed, string $fromTable, string $type): array
     {
         /** @var string $interval */
-        $interval = $parsed['groupByInterval'];
+        $interval = $parsed['groupByInterval'] ?? '1h';
         $intervalSql = UsageQuery::VALID_INTERVALS[$interval];
 
         // Choose aggregation function based on metric type
@@ -2542,7 +2542,13 @@ class ClickHouse extends SQL
                 case UsageQuery::TYPE_GROUP_BY_INTERVAL:
                     $this->validateAttributeName($attribute, $type);
                     $interval = $values[0] ?? '1h';
-                    if (!is_string($interval) || !isset(UsageQuery::VALID_INTERVALS[$interval])) {
+                    if (!is_string($interval)) {
+                        throw new \Exception(
+                            'Invalid groupByInterval interval: expected string, got ' . get_debug_type($interval) . '. Allowed: '
+                            . implode(', ', array_keys(UsageQuery::VALID_INTERVALS))
+                        );
+                    }
+                    if (!isset(UsageQuery::VALID_INTERVALS[$interval])) {
                         throw new \Exception(
                             "Invalid groupByInterval interval '{$interval}'. Allowed: "
                             . implode(', ', array_keys(UsageQuery::VALID_INTERVALS))

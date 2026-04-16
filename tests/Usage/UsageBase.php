@@ -640,4 +640,3 @@ trait UsageBase
         $this->assertGreaterThanOrEqual(1, count($results));
     }
 }
-
