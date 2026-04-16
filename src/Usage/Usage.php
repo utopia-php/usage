@@ -299,10 +299,11 @@ class Usage
             throw new \InvalidArgumentException("Invalid metric type '{$type}'. Allowed: " . self::TYPE_EVENT . ', ' . self::TYPE_GAUGE);
         }
 
-        $key = $metric . ':' . $type;
+        $tagsHash = !empty($tags) ? md5(json_encode($tags)) : '';
+        $key = $metric . ':' . $type . ':' . $tagsHash;
 
         if ($type === 'event') {
-            // Additive: sum values for the same metric
+            // Additive: sum values for the same metric + tags combination
             if (isset($this->buffer[$key])) {
                 $this->buffer[$key]['value'] += $value;
             } else {

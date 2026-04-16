@@ -1147,6 +1147,37 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Columns available in the events daily (pre-aggregated) table.
+     */
+    private const DAILY_COLUMNS = ['metric', 'value', 'time'];
+
+    /**
+     * Validate that a query attribute exists in the daily table schema.
+     * The daily table only has metric, value, time (+ tenant if shared).
+     *
+     * @throws Exception
+     */
+    private function validateDailyAttributeName(string $attributeName): bool
+    {
+        if ($attributeName === 'id') {
+            return true;
+        }
+
+        if ($attributeName === 'tenant' && $this->sharedTables) {
+            return true;
+        }
+
+        if (in_array($attributeName, self::DAILY_COLUMNS, true)) {
+            return true;
+        }
+
+        throw new Exception(
+            "Invalid attribute '{$attributeName}' for daily table. "
+            . "Only metric, value, time" . ($this->sharedTables ? ", tenant" : "") . " are available."
+        );
+    }
+
+    /**
      * Format datetime for ClickHouse compatibility.
      *
      * @param \DateTime|string|null $dateTime
@@ -1723,7 +1754,13 @@ class ClickHouse extends SQL
 
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
 
-        // Daily table has limited columns — only allow metric, value, time, resource, resourceId, tenant
+        // Validate query attributes against daily table schema (metric, value, time, tenant only)
+        foreach ($queries as $query) {
+            $attr = $query->getAttribute();
+            if (!empty($attr)) {
+                $this->validateDailyAttributeName($attr);
+            }
+        }
         $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
@@ -1755,9 +1792,15 @@ class ClickHouse extends SQL
         $this->setOperationContext('sumDaily()');
 
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
-        $this->validateAttributeName($attribute, Usage::TYPE_EVENT);
+        $this->validateDailyAttributeName($attribute);
         $escapedAttribute = $this->escapeIdentifier($attribute);
 
+        foreach ($queries as $query) {
+            $attr = $query->getAttribute();
+            if (!empty($attr)) {
+                $this->validateDailyAttributeName($attr);
+            }
+        }
         $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
@@ -1784,6 +1827,13 @@ class ClickHouse extends SQL
         }
 
         $this->setOperationContext('sumDailyBatch()');
+
+        foreach ($queries as $query) {
+            $attr = $query->getAttribute();
+            if (!empty($attr)) {
+                $this->validateDailyAttributeName($attr);
+            }
+        }
 
         $totals = \array_fill_keys($metrics, 0);
 
@@ -1991,7 +2041,7 @@ class ClickHouse extends SQL
             foreach ($json['data'] as $row) {
                 $metricName = $row['metric'] ?? '';
                 $bucketTime = $row['bucket'] ?? '';
-                $value = (int) ($row['agg_value'] ?? 0);
+                $value = (float) ($row['agg_value'] ?? 0);
 
                 if (!isset($output[$metricName])) {
                     continue;
@@ -2084,12 +2134,11 @@ class ClickHouse extends SQL
         $eventTotal = $this->getTotalFromEvents($metric, $queries);
         $gaugeTotal = $this->getTotalFromGauges($metric, $queries);
 
-        // If we got data from both, prioritize event (they don't overlap in practice)
-        // If only one has data, return that
         if ($eventTotal > 0 && $gaugeTotal > 0) {
-            // A metric shouldn't be in both tables; return whichever is nonzero
-            // In practice, callers specify type for ambiguous cases
-            return $eventTotal + $gaugeTotal;
+            throw new Exception(
+                "Metric '{$metric}' exists in both event and gauge tables. "
+                . "Specify \$type explicitly to avoid ambiguous aggregation."
+            );
         }
 
         return $eventTotal > 0 ? $eventTotal : $gaugeTotal;
