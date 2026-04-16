@@ -491,6 +491,12 @@ class Database extends SQL
      */
     public function setTenant(?string $tenant): self
     {
+        if ($tenant !== null && !is_numeric($tenant)) {
+            throw new \InvalidArgumentException(
+                'Database adapter requires a numeric tenant ID, got: ' . $tenant
+            );
+        }
+
         $this->db->setTenant($tenant !== null ? (int) $tenant : null);
         return $this;
     }
