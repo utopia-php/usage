@@ -1896,7 +1896,7 @@ class ClickHouse extends SQL
      * @param  array<Query>  $queries
      * @param  bool  $zeroFill
      * @param  string|null  $type  'event', 'gauge', or null (both)
-     * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
+     * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
      * @throws Exception
      */
     public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
@@ -1967,7 +1967,7 @@ class ClickHouse extends SQL
      * @param  string  $endDate
      * @param  array<Query>  $queries
      * @param  string  $type
-     * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
+     * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
      * @throws Exception
      */
     private function getTimeSeriesFromTable(array $metrics, string $interval, string $startDate, string $endDate, array $queries, string $type): array
@@ -2040,7 +2040,7 @@ class ClickHouse extends SQL
         if (is_array($json) && isset($json['data']) && is_array($json['data'])) {
             foreach ($json['data'] as $row) {
                 $metricName = $row['metric'] ?? '';
-                $bucketTime = $row['bucket'] ?? '';
+                $bucketTime = (string) ($row['bucket'] ?? '');
                 $value = (float) ($row['agg_value'] ?? 0);
 
                 if (!isset($output[$metricName])) {
@@ -2049,7 +2049,7 @@ class ClickHouse extends SQL
 
                 // Format bucket time
                 $formattedDate = $bucketTime;
-                if (is_string($bucketTime) && strpos($bucketTime, 'T') === false) {
+                if (strpos($bucketTime, 'T') === false) {
                     $formattedDate = str_replace(' ', 'T', $bucketTime) . '+00:00';
                 }
 
@@ -2067,11 +2067,11 @@ class ClickHouse extends SQL
     /**
      * Fill gaps in time series data with zero-value entries.
      *
-     * @param array<array{value: int, date: string}> $data Existing data points
+     * @param array<array{value: float, date: string}> $data Existing data points
      * @param string $interval '1h' or '1d'
      * @param string $startDate Start datetime
      * @param string $endDate End datetime
-     * @return array<array{value: int, date: string}>
+     * @return array<array{value: float, date: string}>
      */
     private function zeroFillTimeSeries(array $data, string $interval, string $startDate, string $endDate): array
     {

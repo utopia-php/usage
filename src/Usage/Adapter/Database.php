@@ -161,7 +161,7 @@ class Database extends SQL
      * @param array<Query> $queries
      * @param bool $zeroFill
      * @param string|null $type
-     * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
+     * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
      */
     public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
     {

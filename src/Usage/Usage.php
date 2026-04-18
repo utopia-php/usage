@@ -105,7 +105,7 @@ class Usage
      * @param array<\Utopia\Query\Query> $queries Additional filters
      * @param bool $zeroFill Whether to fill gaps with zero values
      * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
-     * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
+     * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
      * @throws \Exception
      */
     public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
@@ -299,7 +299,7 @@ class Usage
             throw new \InvalidArgumentException("Invalid metric type '{$type}'. Allowed: " . self::TYPE_EVENT . ', ' . self::TYPE_GAUGE);
         }
 
-        $tagsHash = !empty($tags) ? md5(json_encode($tags)) : '';
+        $tagsHash = !empty($tags) ? md5(json_encode($tags, JSON_THROW_ON_ERROR)) : '';
         $key = $metric . ':' . $type . ':' . $tagsHash;
 
         if ($type === 'event') {

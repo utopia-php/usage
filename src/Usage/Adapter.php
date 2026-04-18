@@ -47,7 +47,7 @@ abstract class Adapter
      * @param  array<\Utopia\Query\Query>  $queries  Additional query filters
      * @param  bool  $zeroFill  Whether to fill gaps with zero values
      * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
-     * @return array<string, array{total: int, data: array<array{value: int, date: string}>}>
+     * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
      */
     abstract public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array;
 
