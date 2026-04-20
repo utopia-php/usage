@@ -1625,22 +1625,27 @@ class ClickHouse extends SQL
     /**
      * Count metrics using Query objects.
      *
+     * When $max is non-null the count is bounded at the database level via
+     * a `LIMIT {max}` inside a subquery — ClickHouse stops scanning once
+     * that many rows have been matched, keeping large counts cheap.
+     *
      * @param array<Query> $queries
      * @param string|null $type 'event', 'gauge', or null (both)
+     * @param int|null $max Optional upper bound (inclusive) for the count
      * @return int
      * @throws Exception
      */
-    public function count(array $queries = [], ?string $type = null): int
+    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
     {
         $this->setOperationContext('count()');
 
         if ($type !== null) {
-            return $this->countFromTable($queries, $type);
+            return $this->countFromTable($queries, $type, $max);
         }
 
         // Count from both tables
-        return $this->countFromTable($queries, Usage::TYPE_EVENT)
-             + $this->countFromTable($queries, Usage::TYPE_GAUGE);
+        return $this->countFromTable($queries, Usage::TYPE_EVENT, $max)
+             + $this->countFromTable($queries, Usage::TYPE_GAUGE, $max);
     }
 
     /**
@@ -1648,10 +1653,11 @@ class ClickHouse extends SQL
      *
      * @param array<Query> $queries
      * @param string $type
+     * @param int|null $max Optional upper bound (inclusive) for the count
      * @return int
      * @throws Exception
      */
-    private function countFromTable(array $queries, string $type): int
+    private function countFromTable(array $queries, string $type, ?int $max = null): int
     {
         $tableName = $this->getTableForType($type);
         $fromTable = $this->buildTableReference($tableName);
@@ -1665,10 +1671,20 @@ class ClickHouse extends SQL
         $whereClause = $whereData['clause'];
         $params = $whereData['params'];
 
-        $sql = "
-            SELECT COUNT(*) as total FROM {$fromTable}{$whereClause}
-            FORMAT JSON
-        ";
+        if ($max !== null) {
+            $params['max'] = $max;
+            $sql = "
+                SELECT COUNT(*) as total FROM (
+                    SELECT 1 FROM {$fromTable}{$whereClause} LIMIT {max:UInt64}
+                ) sub
+                FORMAT JSON
+            ";
+        } else {
+            $sql = "
+                SELECT COUNT(*) as total FROM {$fromTable}{$whereClause}
+                FORMAT JSON
+            ";
+        }
 
         $result = $this->query($sql, $params);
         $json = json_decode($result, true);

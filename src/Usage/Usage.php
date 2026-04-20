@@ -173,14 +173,19 @@ class Usage
     /**
      * Count metrics using Query objects.
      *
+     * When $max is non-null the count is bounded at the database level.
+     * Callers that only need a capped total (e.g. to render "5000+") should
+     * pass $max so the adapter can short-circuit the count for large tables.
+     *
      * @param array<\Utopia\Query\Query> $queries
      * @param string|null $type Metric type: 'event', 'gauge', or null (count both)
+     * @param int|null $max Optional upper bound for the count (inclusive)
      * @return int
      * @throws \Exception
      */
-    public function count(array $queries = [], ?string $type = null): int
+    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
     {
-        return $this->adapter->count($queries, $type);
+        return $this->adapter->count($queries, $type, $max);
     }
 
     /**

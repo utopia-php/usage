@@ -97,11 +97,17 @@ abstract class Adapter
     /**
      * Count metrics using Query objects.
      *
+     * When $max is non-null the count is bounded at the database level —
+     * the adapter must stop counting once $max rows have been matched.
+     * This keeps large counts cheap for endpoints that only need a capped
+     * total. When $max is null the count is unbounded.
+     *
      * @param array<\Utopia\Query\Query> $queries
      * @param string|null $type Metric type: 'event', 'gauge', or null (count both)
+     * @param int|null $max Optional upper bound for the count (inclusive)
      * @return int
      */
-    abstract public function count(array $queries = [], ?string $type = null): int;
+    abstract public function count(array $queries = [], ?string $type = null, ?int $max = null): int;
 
     /**
      * Sum metric values using Query objects.

@@ -455,18 +455,24 @@ class Database extends SQL
     /**
      * Count metrics using Query objects.
      *
+     * When $max is non-null the count is bounded at the database level —
+     * utopia-php/database accepts a `$max` argument that pushes the cap
+     * down into the underlying SQL.
+     *
      * @param array<Query> $queries
      * @param string|null $type
+     * @param int|null $max Optional upper bound (inclusive) for the count
      * @return int
      */
-    public function count(array $queries = [], ?string $type = null): int
+    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
     {
         /** @var int $count */
-        $count = $this->db->getAuthorization()->skip(function () use ($queries) {
+        $count = $this->db->getAuthorization()->skip(function () use ($queries, $max) {
             $dbQueries = $this->convertQueriesToDatabase($queries);
             return $this->db->count(
                 collection: $this->collection,
-                queries: $dbQueries
+                queries: $dbQueries,
+                max: $max
             );
         });
 
