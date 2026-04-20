@@ -84,13 +84,16 @@ class Usage
     /**
      * Add metrics in batch (raw append).
      *
+     * Callers must explicitly pass the metric type so event and gauge
+     * writes are never confused at the call site.
+     *
      * @param array<array{metric: string, value: int, tags?: array<string,mixed>}> $metrics
      * @param string $type Metric type: 'event' or 'gauge'
      * @param int $batchSize Maximum number of metrics per INSERT statement
      * @return bool
      * @throws \Exception
      */
-    public function addBatch(array $metrics, string $type = self::TYPE_EVENT, int $batchSize = 1000): bool
+    public function addBatch(array $metrics, string $type, int $batchSize = 1000): bool
     {
         return $this->adapter->addBatch($metrics, $type, $batchSize);
     }
@@ -183,14 +186,23 @@ class Usage
     /**
      * Sum metric values using Query objects.
      *
+     * Defaults to events because summing gauges (point-in-time snapshots)
+     * is semantically meaningless — it averages/accumulates snapshots rather
+     * than producing a useful total. Callers that truly want a gauge sum
+     * must opt in explicitly.
+     *
      * @param array<\Utopia\Query\Query> $queries
      * @param string $attribute Attribute to sum (default: 'value')
-     * @param string|null $type Metric type: 'event', 'gauge', or null (sum both)
+     * @param string $type Metric type: 'event' or 'gauge'
      * @return int
      * @throws \Exception
      */
-    public function sum(array $queries = [], string $attribute = 'value', ?string $type = null): int
+    public function sum(array $queries = [], string $attribute = 'value', string $type = self::TYPE_EVENT): int
     {
+        if ($type !== self::TYPE_EVENT && $type !== self::TYPE_GAUGE) {
+            throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: " . self::TYPE_EVENT . ', ' . self::TYPE_GAUGE);
+        }
+
         return $this->adapter->sum($queries, $attribute, $type);
     }
 
@@ -198,6 +210,9 @@ class Usage
      * Find event metrics from the pre-aggregated daily table.
      *
      * Queries the SummingMergeTree daily MV for fast billing/analytics.
+     *
+     * Note: Daily MV only stores event metrics. This method always queries
+     * the daily events table — gauges are never pre-aggregated.
      *
      * @param array<\Utopia\Query\Query> $queries
      * @return array<Metric>
@@ -214,6 +229,9 @@ class Usage
      * Use this for billing queries — reads pre-aggregated daily rows
      * instead of scanning billions of raw events.
      *
+     * Note: Daily MV only stores event metrics. This method always queries
+     * the daily events table — gauges are never pre-aggregated.
+     *
      * @param array<\Utopia\Query\Query> $queries
      * @param string $attribute Attribute to sum (default: 'value')
      * @return int
@@ -226,6 +244,9 @@ class Usage
 
     /**
      * Sum multiple event metrics from the pre-aggregated daily table in one query.
+     *
+     * Note: Daily MV only stores event metrics. This method always queries
+     * the daily events table — gauges are never pre-aggregated.
      *
      * @param array<string> $metrics List of metric names
      * @param array<\Utopia\Query\Query> $queries Additional filters (e.g. date range)
@@ -302,7 +323,7 @@ class Usage
         $tagsHash = !empty($tags) ? md5(json_encode($tags, JSON_THROW_ON_ERROR)) : '';
         $key = $metric . ':' . $type . ':' . $tagsHash;
 
-        if ($type === 'event') {
+        if ($type === self::TYPE_EVENT) {
             // Additive: sum values for the same metric + tags combination
             if (isset($this->buffer[$key])) {
                 $this->buffer[$key]['value'] += $value;
@@ -333,9 +354,15 @@ class Usage
      * Flush the in-memory buffer to storage.
      *
      * Separates buffered metrics into events and gauges, then writes each batch
-     * to the appropriate table via addBatch().
+     * to the appropriate table via addBatch(). Only entries whose batch write
+     * succeeds are removed from the buffer, so a partial failure preserves
+     * the unwritten metrics for retry on the next flush.
      *
-     * @return bool True if flush succeeded (or buffer was empty)
+     * If addBatch() throws mid-flush, any earlier successful batches have
+     * already been cleared from the buffer — the exception is allowed to
+     * propagate so the caller can observe the failure.
+     *
+     * @return bool True if all batches succeeded (or buffer was empty)
      * @throws \Exception
      */
     public function flush(): bool
@@ -345,35 +372,51 @@ class Usage
             return true;
         }
 
-        // Separate events and gauges
+        // Separate events and gauges; keep track of buffer keys so we can
+        // selectively unset only the entries whose write succeeded.
+        $eventKeys = [];
+        $gaugeKeys = [];
         $events = [];
         $gauges = [];
 
-        foreach ($this->buffer as $entry) {
+        foreach ($this->buffer as $key => $entry) {
             if ($entry['type'] === self::TYPE_EVENT) {
                 $events[] = $entry;
+                $eventKeys[] = $key;
             } else {
                 $gauges[] = $entry;
+                $gaugeKeys[] = $key;
             }
         }
 
-        $result = true;
+        $overallResult = true;
 
-        // Flush events to events table
+        // Flush events — clear buffer entries only on success.
         if (!empty($events)) {
-            $result = $this->adapter->addBatch($events, self::TYPE_EVENT);
+            if ($this->adapter->addBatch($events, self::TYPE_EVENT)) {
+                foreach ($eventKeys as $key) {
+                    unset($this->buffer[$key]);
+                }
+            } else {
+                $overallResult = false;
+            }
         }
 
-        // Flush gauges to gauges table
+        // Flush gauges — clear buffer entries only on success.
         if (!empty($gauges)) {
-            $result = $this->adapter->addBatch($gauges, self::TYPE_GAUGE) && $result;
+            if ($this->adapter->addBatch($gauges, self::TYPE_GAUGE)) {
+                foreach ($gaugeKeys as $key) {
+                    unset($this->buffer[$key]);
+                }
+            } else {
+                $overallResult = false;
+            }
         }
 
-        $this->buffer = [];
-        $this->bufferCount = 0;
+        $this->bufferCount = count($this->buffer);
         $this->lastFlushTime = microtime(true);
 
-        return $result;
+        return $overallResult;
     }
 
     /**

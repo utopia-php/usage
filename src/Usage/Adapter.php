@@ -106,18 +106,23 @@ abstract class Adapter
     /**
      * Sum metric values using Query objects.
      *
+     * Events-only by default because summing gauges is semantically meaningless
+     * (adding point-in-time snapshots doesn't produce a useful total).
+     *
      * @param array<\Utopia\Query\Query> $queries
      * @param string $attribute Attribute to sum (default: 'value')
-     * @param string|null $type Metric type: 'event', 'gauge', or null (sum both)
+     * @param string $type Metric type: 'event' or 'gauge'
      * @return int
      */
-    abstract public function sum(array $queries = [], string $attribute = 'value', ?string $type = null): int;
+    abstract public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int;
 
     /**
-     * Sum event metrics from the pre-aggregated daily table.
+     * Find event metrics from the pre-aggregated daily table.
      *
      * Queries the SummingMergeTree daily materialized view for fast billing/analytics.
-     * Only works for event metrics (gauges are not pre-aggregated).
+     *
+     * Note: Daily MV only stores event metrics. This method always queries
+     * the daily events table — gauges are never pre-aggregated.
      *
      * @param array<\Utopia\Query\Query> $queries  Filters (metric, time range, resource, etc.)
      * @return array<Metric>
@@ -127,6 +132,9 @@ abstract class Adapter
     /**
      * Sum event metric values from the pre-aggregated daily table.
      *
+     * Note: Daily MV only stores event metrics. This method always queries
+     * the daily events table — gauges are never pre-aggregated.
+     *
      * @param array<\Utopia\Query\Query> $queries
      * @param string $attribute Attribute to sum (default: 'value')
      * @return int
@@ -135,6 +143,9 @@ abstract class Adapter
 
     /**
      * Sum multiple event metrics from the pre-aggregated daily table in one query.
+     *
+     * Note: Daily MV only stores event metrics. This method always queries
+     * the daily events table — gauges are never pre-aggregated.
      *
      * @param array<string> $metrics List of metric names
      * @param array<\Utopia\Query\Query> $queries Additional filters (e.g. date range)

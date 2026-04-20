@@ -108,7 +108,7 @@ class Database extends SQL
      * @return bool
      * @throws \Exception
      */
-    public function addBatch(array $metrics, string $type = Usage::TYPE_EVENT, int $batchSize = 1000): bool
+    public function addBatch(array $metrics, string $type, int $batchSize = 1000): bool
     {
         $this->db->getAuthorization()->skip(function () use ($metrics, $type, $batchSize) {
             $documents = [];
@@ -256,12 +256,14 @@ class Database extends SQL
     /**
      * Sum metric values.
      *
+     * Events-only by default — summing gauges is semantically meaningless.
+     *
      * @param array<Query> $queries
      * @param string $attribute
-     * @param string|null $type
+     * @param string $type 'event' or 'gauge'
      * @return int
      */
-    public function sum(array $queries = [], string $attribute = 'value', ?string $type = null): int
+    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
     {
         /** @var array<Metric> $results */
         $results = $this->find($queries, $type);

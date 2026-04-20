@@ -1334,7 +1334,7 @@ class ClickHouse extends SQL
      * @param  int  $batchSize  Maximum number of metrics per INSERT statement
      * @throws Exception
      */
-    public function addBatch(array $metrics, string $type = Usage::TYPE_EVENT, int $batchSize = self::INSERT_BATCH_SIZE): bool
+    public function addBatch(array $metrics, string $type, int $batchSize = self::INSERT_BATCH_SIZE): bool
     {
         if (empty($metrics)) {
             return true;
@@ -1683,23 +1683,19 @@ class ClickHouse extends SQL
     /**
      * Sum metric values using Query objects.
      *
+     * Events-only by default — summing gauges is semantically meaningless.
+     *
      * @param array<Query> $queries
      * @param string $attribute Attribute to sum (default: 'value')
-     * @param string|null $type 'event', 'gauge', or null (both)
+     * @param string $type 'event' or 'gauge'
      * @return int
      * @throws Exception
      */
-    public function sum(array $queries = [], string $attribute = 'value', ?string $type = null): int
+    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
     {
         $this->setOperationContext('sum()');
 
-        if ($type !== null) {
-            return $this->sumFromTable($queries, $attribute, $type);
-        }
-
-        // Sum from both tables
-        return $this->sumFromTable($queries, $attribute, Usage::TYPE_EVENT)
-             + $this->sumFromTable($queries, $attribute, Usage::TYPE_GAUGE);
+        return $this->sumFromTable($queries, $attribute, $type);
     }
 
     /**

@@ -91,13 +91,16 @@ class UsageQuery extends Query
     /**
      * Extract the groupByInterval query from an array of queries, if present.
      *
+     * Queries parsed via `Query::parse()` are base `Query` objects rather than
+     * `UsageQuery` instances, so we match on the method string alone.
+     *
      * @param array<Query> $queries
-     * @return self|null The groupByInterval query, or null if not present
+     * @return Query|null The groupByInterval query, or null if not present
      */
-    public static function extractGroupByInterval(array $queries): ?self
+    public static function extractGroupByInterval(array $queries): ?Query
     {
         foreach ($queries as $query) {
-            if ($query instanceof self && $query->getMethod() === self::TYPE_GROUP_BY_INTERVAL) {
+            if ($query->getMethod() === self::TYPE_GROUP_BY_INTERVAL) {
                 return $query;
             }
         }

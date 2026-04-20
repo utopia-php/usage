@@ -62,7 +62,23 @@ class UsageQueryTest extends TestCase
         $extracted = UsageQuery::extractGroupByInterval($queries);
 
         $this->assertNotNull($extracted);
-        $this->assertInstanceOf(UsageQuery::class, $extracted);
+        $this->assertInstanceOf(Query::class, $extracted);
+        $this->assertEquals(UsageQuery::TYPE_GROUP_BY_INTERVAL, $extracted->getMethod());
+        $this->assertEquals('1h', $extracted->getValue());
+    }
+
+    public function testExtractGroupByIntervalFromParsedQuery(): void
+    {
+        // Queries created via Query::parse() are base Query objects, not UsageQuery.
+        $parsedGroupBy = new Query(UsageQuery::TYPE_GROUP_BY_INTERVAL, 'time', ['1h']);
+        $equalQuery = Query::equal('metric', ['bandwidth']);
+
+        $queries = [$equalQuery, $parsedGroupBy];
+
+        $extracted = UsageQuery::extractGroupByInterval($queries);
+
+        $this->assertNotNull($extracted);
+        $this->assertEquals(UsageQuery::TYPE_GROUP_BY_INTERVAL, $extracted->getMethod());
         $this->assertEquals('1h', $extracted->getValue());
     }
 
