@@ -3,9 +3,11 @@
 namespace Utopia\Tests\Adapter;
 
 use PHPUnit\Framework\TestCase;
+use Utopia\Query\Query;
 use Utopia\Tests\Usage\UsageBase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 use Utopia\Usage\Usage;
+use Utopia\Usage\UsageQuery;
 
 class ClickHouseTest extends TestCase
 {
@@ -974,5 +976,121 @@ class ClickHouseTest extends TestCase
         $this->assertFalse($stats['async_inserts']);
 
         $usage->purge();
+    }
+
+    public function testCursorAfterPaginatesEvents(): void
+    {
+        $this->usage->purge();
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'cursor-events', 'value' => 1, 'tags' => []],
+            ['metric' => 'cursor-events', 'value' => 2, 'tags' => []],
+            ['metric' => 'cursor-events', 'value' => 3, 'tags' => []],
+            ['metric' => 'cursor-events', 'value' => 4, 'tags' => []],
+            ['metric' => 'cursor-events', 'value' => 5, 'tags' => []],
+        ], Usage::TYPE_EVENT));
+
+        $page1 = $this->usage->find([
+            Query::equal('metric', ['cursor-events']),
+            Query::orderAsc('id'),
+            Query::limit(2),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(2, $page1);
+
+        $cursor = $page1[count($page1) - 1];
+
+        $page2 = $this->usage->find([
+            Query::equal('metric', ['cursor-events']),
+            Query::orderAsc('id'),
+            Query::limit(2),
+            Query::cursorAfter($cursor),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(2, $page2);
+        $this->assertNotEquals($page1[0]->getId(), $page2[0]->getId());
+        $this->assertNotEquals($page1[1]->getId(), $page2[0]->getId());
+    }
+
+    public function testCursorBeforeReversesPagination(): void
+    {
+        $this->usage->purge();
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'cursor-before', 'value' => 1, 'tags' => []],
+            ['metric' => 'cursor-before', 'value' => 2, 'tags' => []],
+            ['metric' => 'cursor-before', 'value' => 3, 'tags' => []],
+            ['metric' => 'cursor-before', 'value' => 4, 'tags' => []],
+        ], Usage::TYPE_EVENT));
+
+        $all = $this->usage->find([
+            Query::equal('metric', ['cursor-before']),
+            Query::orderAsc('id'),
+            Query::limit(10),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(4, $all);
+
+        $before = $this->usage->find([
+            Query::equal('metric', ['cursor-before']),
+            Query::orderAsc('id'),
+            Query::limit(2),
+            Query::cursorBefore($all[3]),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(2, $before);
+        $this->assertEquals($all[1]->getId(), $before[0]->getId());
+        $this->assertEquals($all[2]->getId(), $before[1]->getId());
+    }
+
+    public function testCursorAcceptsAssociativeArray(): void
+    {
+        $this->usage->purge();
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'cursor-array', 'value' => 1, 'tags' => []],
+            ['metric' => 'cursor-array', 'value' => 2, 'tags' => []],
+            ['metric' => 'cursor-array', 'value' => 3, 'tags' => []],
+        ], Usage::TYPE_EVENT));
+
+        $all = $this->usage->find([
+            Query::equal('metric', ['cursor-array']),
+            Query::orderAsc('id'),
+            Query::limit(10),
+        ], Usage::TYPE_EVENT);
+
+        $page = $this->usage->find([
+            Query::equal('metric', ['cursor-array']),
+            Query::orderAsc('id'),
+            Query::limit(10),
+            Query::cursorAfter(['id' => $all[0]->getId()]),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(2, $page);
+        $this->assertEquals($all[1]->getId(), $page[0]->getId());
+    }
+
+    public function testCursorWithoutTypeThrows(): void
+    {
+        $this->expectException(\Exception::class);
+
+        $this->usage->find([
+            Query::cursorAfter(['id' => 'whatever']),
+        ]);
+    }
+
+    public function testCursorWithGroupByIntervalThrows(): void
+    {
+        $this->expectException(\Exception::class);
+
+        $start = (new \DateTime())->modify('-1 hour')->format('Y-m-d\TH:i:s');
+        $end = (new \DateTime())->modify('+1 hour')->format('Y-m-d\TH:i:s');
+
+        $this->usage->find([
+            UsageQuery::groupByInterval('time', '1h'),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+            Query::cursorAfter(['id' => 'whatever']),
+        ], Usage::TYPE_EVENT);
     }
 }

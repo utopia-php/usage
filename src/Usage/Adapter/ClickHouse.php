@@ -1456,6 +1456,15 @@ class ClickHouse extends SQL
             return $this->findFromTable($queries, $type);
         }
 
+        // Cursor pagination is per-table — paginating across both events and
+        // gauges has no coherent ordering, so reject this combination upfront.
+        foreach ($queries as $query) {
+            $method = $query->getMethod();
+            if ($method === Query::TYPE_CURSOR_AFTER || $method === Query::TYPE_CURSOR_BEFORE) {
+                throw new Exception('Cursor pagination requires an explicit $type (event or gauge)');
+            }
+        }
+
         // Query both tables with UNION ALL
         $events = $this->findFromTable($queries, Usage::TYPE_EVENT);
         $gauges = $this->findFromTable($queries, Usage::TYPE_GAUGE);
@@ -1483,6 +1492,12 @@ class ClickHouse extends SQL
 
         $parsed = $this->parseQueries($queries, $type);
 
+        // Cursor pagination is incompatible with time-bucketed aggregation —
+        // aggregated rows have no stable identity to anchor a keyset cursor on.
+        if (isset($parsed['cursor']) && isset($parsed['groupByInterval'])) {
+            throw new Exception('Cursor pagination cannot be combined with groupByInterval');
+        }
+
         // Check if groupByInterval is requested
         if (isset($parsed['groupByInterval'])) {
             return $this->findAggregatedFromTable($parsed, $fromTable, $type);
@@ -1490,12 +1505,28 @@ class ClickHouse extends SQL
 
         $selectColumns = $this->getSelectColumns($type);
 
-        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+        $filters = $parsed['filters'];
+        $params = $parsed['params'];
+        $orderAttributes = $parsed['orderAttributes'] ?? [];
+        $cursorDirection = $parsed['cursorDirection'] ?? null;
+
+        if (isset($parsed['cursor'])) {
+            $resolvedOrder = $this->resolveCursorOrder($orderAttributes);
+            $cursorWhere = $this->buildCursorWhere($resolvedOrder, $parsed['cursor'], $cursorDirection ?? 'after', $params);
+            $filters[] = $cursorWhere['clause'];
+            $params = $cursorWhere['params'];
+            $orderAttributes = $resolvedOrder;
+        }
+
+        $whereData = $this->buildWhereClause($filters, $params);
         $whereClause = $whereData['clause'];
-        $parsed['params'] = $whereData['params'];
+        $params = $whereData['params'];
 
         $orderClause = '';
-        if (!empty($parsed['orderBy'])) {
+        if (isset($parsed['cursor']) && !empty($orderAttributes)) {
+            $orderSql = $this->buildOrderBySql($orderAttributes, flip: $cursorDirection === 'before');
+            $orderClause = ' ORDER BY ' . implode(', ', $orderSql);
+        } elseif (!empty($parsed['orderBy'])) {
             $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
         }
 
@@ -1508,9 +1539,15 @@ class ClickHouse extends SQL
             FORMAT JSON
         ";
 
-        $result = $this->query($sql, $parsed['params']);
+        $result = $this->query($sql, $params);
 
-        return $this->parseResults($result, $type);
+        $rows = $this->parseResults($result, $type);
+
+        if ($cursorDirection === 'before') {
+            $rows = array_reverse($rows);
+        }
+
+        return $rows;
     }
 
     /**
@@ -2381,11 +2418,185 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Normalize a user-supplied cursor row into a column-keyed array.
+     *
+     * Accepts a `Metric` (or any `ArrayObject`) or a plain associative array.
+     * `Metric` stores its identifier under `$id` (Appwrite convention) while
+     * the underlying column is `id` — this remaps `$id` → `id` so cursor
+     * pagination can match the SQL column.
+     *
+     * @param mixed $rawCursor
+     * @return array<string, mixed>
+     * @throws Exception
+     */
+    private function normalizeCursorRow(mixed $rawCursor): array
+    {
+        if ($rawCursor instanceof \ArrayObject) {
+            /** @var array<string, mixed> $row */
+            $row = $rawCursor->getArrayCopy();
+        } elseif (is_array($rawCursor)) {
+            /** @var array<string, mixed> $rawCursor */
+            $row = $rawCursor;
+        } else {
+            throw new Exception(
+                'Invalid cursor value: expected ArrayObject (Metric) or associative array, got '
+                . get_debug_type($rawCursor)
+            );
+        }
+
+        if (!array_key_exists('id', $row) && array_key_exists('$id', $row)) {
+            $row['id'] = $row['$id'];
+        }
+
+        return $row;
+    }
+
+    /**
+     * Resolve the effective order attributes for cursor pagination.
+     *
+     * Auto-appends `id` as a tiebreaker when not already present so keyset
+     * pagination is deterministic on non-unique columns (e.g. time).
+     *
+     * @param array<int, array{attribute: string, direction: string}> $orderAttributes
+     * @return array<int, array{attribute: string, direction: string}>
+     */
+    private function resolveCursorOrder(array $orderAttributes): array
+    {
+        foreach ($orderAttributes as $entry) {
+            if ($entry['attribute'] === 'id') {
+                return $orderAttributes;
+            }
+        }
+
+        $defaultDirection = 'ASC';
+        if (!empty($orderAttributes)) {
+            $last = $orderAttributes[count($orderAttributes) - 1];
+            $defaultDirection = $last['direction'];
+        }
+
+        $orderAttributes[] = ['attribute' => 'id', 'direction' => $defaultDirection];
+
+        return $orderAttributes;
+    }
+
+    /**
+     * Build keyset-pagination WHERE fragments for cursor support.
+     *
+     * Produces a tuple-compare clause across the order attributes:
+     *   (a > A) OR (a = A AND b > B) OR ...
+     *
+     * For cursor `before`, the comparison directions are flipped relative to
+     * the requested ORDER BY (the caller is responsible for also flipping the
+     * actual ORDER BY at SQL build time so the page comes back from the right
+     * side, then reversing the rows post-fetch).
+     *
+     * @param array<int, array{attribute: string, direction: string}> $orderAttributes
+     * @param array<string, mixed> $cursor
+     * @param string $cursorDirection 'after' or 'before'
+     * @param array<string, mixed> $params Existing params (mutated by adding cursor binds)
+     * @return array{clause: string, params: array<string, mixed>}
+     * @throws Exception
+     */
+    private function buildCursorWhere(array $orderAttributes, array $cursor, string $cursorDirection, array $params): array
+    {
+        $orderAttributes = $this->resolveCursorOrder($orderAttributes);
+
+        $tuples = [];
+        foreach ($orderAttributes as $i => $entry) {
+            $attr = $entry['attribute'];
+            $direction = $entry['direction'];
+
+            if (!array_key_exists($attr, $cursor)) {
+                throw new \Exception("Cursor is missing required attribute '{$attr}'");
+            }
+
+            // Flip comparison direction for `before` so we paginate to the previous page.
+            if ($cursorDirection === 'before') {
+                $direction = $direction === 'DESC' ? 'ASC' : 'DESC';
+            }
+
+            $conditions = [];
+
+            for ($j = 0; $j < $i; $j++) {
+                $prev = $orderAttributes[$j];
+                $prevAttr = $prev['attribute'];
+                if (!array_key_exists($prevAttr, $cursor)) {
+                    throw new \Exception("Cursor is missing required attribute '{$prevAttr}'");
+                }
+                $prevValue = $cursor[$prevAttr];
+                $prevEscaped = $this->escapeIdentifier($prevAttr);
+                $prevType = $this->getParamType($prevAttr);
+                $paramName = "cursor_eq_{$i}_{$j}";
+
+                if ($prevAttr === 'time') {
+                    /** @var \DateTime|string|null $timeValue */
+                    $timeValue = $prevValue;
+                    $conditions[] = "{$prevEscaped} = {{$paramName}:DateTime64(3)}";
+                    $params[$paramName] = $this->formatDateTime($timeValue);
+                } else {
+                    /** @var bool|float|int|string|null $scalarValue */
+                    $scalarValue = $prevValue;
+                    $conditions[] = "{$prevEscaped} = {{$paramName}:{$prevType}}";
+                    $params[$paramName] = $this->formatParamValue($scalarValue);
+                }
+            }
+
+            $value = $cursor[$attr];
+            $escaped = $this->escapeIdentifier($attr);
+            $chType = $this->getParamType($attr);
+            $operator = $direction === 'DESC' ? '<' : '>';
+            $paramName = "cursor_cmp_{$i}";
+
+            if ($attr === 'time') {
+                /** @var \DateTime|string|null $timeValue */
+                $timeValue = $value;
+                $conditions[] = "{$escaped} {$operator} {{$paramName}:DateTime64(3)}";
+                $params[$paramName] = $this->formatDateTime($timeValue);
+            } else {
+                /** @var bool|float|int|string|null $scalarValue */
+                $scalarValue = $value;
+                $conditions[] = "{$escaped} {$operator} {{$paramName}:{$chType}}";
+                $params[$paramName] = $this->formatParamValue($scalarValue);
+            }
+
+            $tuples[] = '(' . implode(' AND ', $conditions) . ')';
+        }
+
+        return [
+            'clause' => '(' . implode(' OR ', $tuples) . ')',
+            'params' => $params,
+        ];
+    }
+
+    /**
+     * Build the ORDER BY SQL fragment list, optionally flipping all directions.
+     *
+     * Used when cursor direction is `before` — we run the query in reverse to
+     * grab the previous-page rows, then `array_reverse` the result.
+     *
+     * @param array<int, array{attribute: string, direction: string}> $orderAttributes
+     * @param bool $flip Whether to flip ASC↔DESC
+     * @return array<string>
+     */
+    private function buildOrderBySql(array $orderAttributes, bool $flip = false): array
+    {
+        $sql = [];
+        foreach ($orderAttributes as $entry) {
+            $direction = $entry['direction'];
+            if ($flip) {
+                $direction = $direction === 'DESC' ? 'ASC' : 'DESC';
+            }
+            $sql[] = $this->escapeIdentifier($entry['attribute']) . ' ' . $direction;
+        }
+        return $sql;
+    }
+
+    /**
      * Parse Query objects into SQL clauses.
      *
      * @param array<Query> $queries
      * @param string $type 'event' or 'gauge' — used for attribute validation
-     * @return array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int, groupByInterval?: string}
+     * @return array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, orderAttributes?: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int, groupByInterval?: string, cursor?: array<string, mixed>, cursorDirection?: string}
      * @throws Exception
      */
     private function parseQueries(array $queries, string $type = 'event'): array
@@ -2393,9 +2604,12 @@ class ClickHouse extends SQL
         $filters = [];
         $params = [];
         $orderBy = [];
+        $orderAttributes = [];
         $limit = null;
         $offset = null;
         $groupByInterval = null;
+        $cursor = null;
+        $cursorDirection = null;
         $paramCounter = 0;
 
         foreach ($queries as $query) {
@@ -2504,12 +2718,28 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $orderBy[] = "{$escapedAttr} DESC";
+                    $orderAttributes[] = ['attribute' => $attribute, 'direction' => 'DESC'];
                     break;
 
                 case Query::TYPE_ORDER_ASC:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $orderBy[] = "{$escapedAttr} ASC";
+                    $orderAttributes[] = ['attribute' => $attribute, 'direction' => 'ASC'];
+                    break;
+
+                case Query::TYPE_CURSOR_AFTER:
+                case Query::TYPE_CURSOR_BEFORE:
+                    if ($cursor !== null) {
+                        // Keep the first cursor encountered (matches base groupByType semantics)
+                        break;
+                    }
+                    $rawCursor = $values[0] ?? null;
+                    if ($rawCursor === null) {
+                        break; // no-op cursor
+                    }
+                    $cursor = $this->normalizeCursorRow($rawCursor);
+                    $cursorDirection = $method === Query::TYPE_CURSOR_AFTER ? 'after' : 'before';
                     break;
 
                 case Query::TYPE_CONTAINS:
@@ -2627,6 +2857,7 @@ class ClickHouse extends SQL
 
         if (!empty($orderBy)) {
             $result['orderBy'] = $orderBy;
+            $result['orderAttributes'] = $orderAttributes;
         }
 
         if ($limit !== null) {
@@ -2639,6 +2870,11 @@ class ClickHouse extends SQL
 
         if ($groupByInterval !== null) {
             $result['groupByInterval'] = $groupByInterval;
+        }
+
+        if ($cursor !== null && $cursorDirection !== null) {
+            $result['cursor'] = $cursor;
+            $result['cursorDirection'] = $cursorDirection;
         }
 
         return $result;
