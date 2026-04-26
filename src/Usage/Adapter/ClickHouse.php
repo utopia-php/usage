@@ -1523,7 +1523,9 @@ class ClickHouse extends SQL
         $params = $whereData['params'];
 
         $orderClause = '';
-        if (isset($parsed['cursor']) && !empty($orderAttributes)) {
+        if (isset($parsed['cursor'])) {
+            // $orderAttributes is always non-empty here — resolveCursorOrder
+            // appends an `id` tiebreaker when no order is specified.
             $orderSql = $this->buildOrderBySql($orderAttributes, flip: $cursorDirection === 'before');
             $orderClause = ' ORDER BY ' . implode(', ', $orderSql);
         } elseif (!empty($parsed['orderBy'])) {
@@ -2446,6 +2448,7 @@ class ClickHouse extends SQL
 
         if (!array_key_exists('id', $row) && array_key_exists('$id', $row)) {
             $row['id'] = $row['$id'];
+            unset($row['$id']);
         }
 
         return $row;
@@ -2524,17 +2527,20 @@ class ClickHouse extends SQL
                     throw new \Exception("Cursor is missing required attribute '{$prevAttr}'");
                 }
                 $prevValue = $cursor[$prevAttr];
+                if ($prevValue === null) {
+                    throw new \Exception("Cursor value for '{$prevAttr}' cannot be null");
+                }
                 $prevEscaped = $this->escapeIdentifier($prevAttr);
                 $prevType = $this->getParamType($prevAttr);
                 $paramName = "cursor_eq_{$i}_{$j}";
 
                 if ($prevAttr === 'time') {
-                    /** @var \DateTime|string|null $timeValue */
+                    /** @var \DateTime|string $timeValue */
                     $timeValue = $prevValue;
                     $conditions[] = "{$prevEscaped} = {{$paramName}:DateTime64(3)}";
                     $params[$paramName] = $this->formatDateTime($timeValue);
                 } else {
-                    /** @var bool|float|int|string|null $scalarValue */
+                    /** @var bool|float|int|string $scalarValue */
                     $scalarValue = $prevValue;
                     $conditions[] = "{$prevEscaped} = {{$paramName}:{$prevType}}";
                     $params[$paramName] = $this->formatParamValue($scalarValue);
@@ -2542,18 +2548,21 @@ class ClickHouse extends SQL
             }
 
             $value = $cursor[$attr];
+            if ($value === null) {
+                throw new \Exception("Cursor value for '{$attr}' cannot be null");
+            }
             $escaped = $this->escapeIdentifier($attr);
             $chType = $this->getParamType($attr);
             $operator = $direction === 'DESC' ? '<' : '>';
             $paramName = "cursor_cmp_{$i}";
 
             if ($attr === 'time') {
-                /** @var \DateTime|string|null $timeValue */
+                /** @var \DateTime|string $timeValue */
                 $timeValue = $value;
                 $conditions[] = "{$escaped} {$operator} {{$paramName}:DateTime64(3)}";
                 $params[$paramName] = $this->formatDateTime($timeValue);
             } else {
-                /** @var bool|float|int|string|null $scalarValue */
+                /** @var bool|float|int|string $scalarValue */
                 $scalarValue = $value;
                 $conditions[] = "{$escaped} {$operator} {{$paramName}:{$chType}}";
                 $params[$paramName] = $this->formatParamValue($scalarValue);
