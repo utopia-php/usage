@@ -2407,16 +2407,49 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Get the ClickHouse parameter type string for a given attribute.
+     * Resolve the ClickHouse parameter type for a column.
      *
-     * Returns 'Int64' for the value column, 'String' for everything else.
+     * Used by both filter binding and cursor keyset comparison so values are
+     * bound with the column's actual SQL type — binding a numeric column as
+     * `String` would compare values lexicographically (`"9" > "10"`) and
+     * silently produce incorrect filter results or page boundaries. Add a
+     * branch here when introducing a new typed column.
      *
      * @param string $attribute
-     * @return string
+     * @return string ClickHouse parameter type (e.g. 'String', 'DateTime64(3)', 'Int64')
      */
     private function getParamType(string $attribute): string
     {
-        return $attribute === 'value' ? 'Int64' : 'String';
+        return match ($attribute) {
+            'time' => 'DateTime64(3)',
+            'value' => 'Int64',
+            default => 'String',
+        };
+    }
+
+    /**
+     * Format a value for the given ClickHouse parameter type.
+     *
+     * Routes DateTime-typed columns through formatDateTime() and everything
+     * else through formatParamValue(). Centralising this dispatch keeps
+     * parseQueries and buildCursorWhere consistent across libraries.
+     *
+     * @param string $chType ClickHouse parameter type as returned by getParamType()
+     * @param mixed $value
+     * @return string
+     * @throws Exception
+     */
+    private function formatTypedValue(string $chType, mixed $value): string
+    {
+        if ($chType === 'DateTime64(3)') {
+            if ($value === null) {
+                throw new Exception('DateTime parameter value cannot be null');
+            }
+            /** @var \DateTime|string $value */
+            return $this->formatDateTime($value);
+        }
+
+        return $this->formatParamValue($value);
     }
 
     /**
@@ -2524,49 +2557,31 @@ class ClickHouse extends SQL
                 $prev = $orderAttributes[$j];
                 $prevAttr = $prev['attribute'];
                 if (!array_key_exists($prevAttr, $cursor)) {
-                    throw new \Exception("Cursor is missing required attribute '{$prevAttr}'");
+                    throw new Exception("Cursor is missing required attribute '{$prevAttr}'");
                 }
                 $prevValue = $cursor[$prevAttr];
                 if ($prevValue === null) {
-                    throw new \Exception("Cursor value for '{$prevAttr}' cannot be null");
+                    throw new Exception("Cursor value for '{$prevAttr}' cannot be null");
                 }
                 $prevEscaped = $this->escapeIdentifier($prevAttr);
                 $prevType = $this->getParamType($prevAttr);
                 $paramName = "cursor_eq_{$i}_{$j}";
 
-                if ($prevAttr === 'time') {
-                    /** @var \DateTime|string $timeValue */
-                    $timeValue = $prevValue;
-                    $conditions[] = "{$prevEscaped} = {{$paramName}:DateTime64(3)}";
-                    $params[$paramName] = $this->formatDateTime($timeValue);
-                } else {
-                    /** @var bool|float|int|string $scalarValue */
-                    $scalarValue = $prevValue;
-                    $conditions[] = "{$prevEscaped} = {{$paramName}:{$prevType}}";
-                    $params[$paramName] = $this->formatParamValue($scalarValue);
-                }
+                $conditions[] = "{$prevEscaped} = {{$paramName}:{$prevType}}";
+                $params[$paramName] = $this->formatTypedValue($prevType, $prevValue);
             }
 
             $value = $cursor[$attr];
             if ($value === null) {
-                throw new \Exception("Cursor value for '{$attr}' cannot be null");
+                throw new Exception("Cursor value for '{$attr}' cannot be null");
             }
             $escaped = $this->escapeIdentifier($attr);
             $chType = $this->getParamType($attr);
             $operator = $direction === 'DESC' ? '<' : '>';
             $paramName = "cursor_cmp_{$i}";
 
-            if ($attr === 'time') {
-                /** @var \DateTime|string $timeValue */
-                $timeValue = $value;
-                $conditions[] = "{$escaped} {$operator} {{$paramName}:DateTime64(3)}";
-                $params[$paramName] = $this->formatDateTime($timeValue);
-            } else {
-                /** @var bool|float|int|string $scalarValue */
-                $scalarValue = $value;
-                $conditions[] = "{$escaped} {$operator} {{$paramName}:{$chType}}";
-                $params[$paramName] = $this->formatParamValue($scalarValue);
-            }
+            $conditions[] = "{$escaped} {$operator} {{$paramName}:{$chType}}";
+            $params[$paramName] = $this->formatTypedValue($chType, $value);
 
             $tuples[] = '(' . implode(' AND ', $conditions) . ')';
         }
@@ -2633,44 +2648,27 @@ class ClickHouse extends SQL
                     $chType = $this->getParamType($attribute);
 
                     if (count($values) > 1) {
-                        /** @var array<mixed> $arrayValues */
-                        $arrayValues = $values;
                         $inParams = [];
-                        foreach ($arrayValues as $value) {
+                        foreach ($values as $value) {
                             $paramName = 'param_' . $paramCounter++;
-                            if ($attribute === 'time') {
-                                $inParams[] = "{{$paramName}:DateTime64(3)}";
-                                /** @var \DateTime|string|null $timeValue */
-                                $timeValue = $value;
-                                $params[$paramName] = $this->formatDateTime($timeValue);
-                            } else {
-                                $inParams[] = "{{$paramName}:{$chType}}";
-                                /** @var bool|float|int|string $scalarValue */
-                                $scalarValue = $value;
-                                $params[$paramName] = $this->formatParamValue($scalarValue);
-                            }
+                            $inParams[] = "{{$paramName}:{$chType}}";
+                            $params[$paramName] = $this->formatTypedValue($chType, $value);
                         }
-
-                        /** @var int $inParamCount */
-                        $inParamCount = count($inParams);
-                        if ($inParamCount === 1) {
-                            $filters[] = "{$escapedAttr} = " . $inParams[0];
-                        } else {
-                            $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
-                        }
+                        $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
                     } else {
                         $paramName = 'param_' . $paramCounter++;
-                        if ($attribute === 'time') {
-                            /** @var array<\DateTime|string|null> $values */
-                            $formattedValue = $this->formatDateTime($values[0]);
-                            $filters[] = "{$escapedAttr} = {{$paramName}:DateTime64(3)}";
-                        } else {
-                            /** @var bool|float|int|string $formattedValue */
-                            $formattedValue = $this->formatParamValue($values[0]);
-                            $filters[] = "{$escapedAttr} = {{$paramName}:{$chType}}";
-                        }
-                        $params[$paramName] = $formattedValue;
+                        $filters[] = "{$escapedAttr} = {{$paramName}:{$chType}}";
+                        $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     }
+                    break;
+
+                case Query::TYPE_NOT_EQUAL:
+                    $this->validateAttributeName($attribute, $type);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $chType = $this->getParamType($attribute);
+                    $paramName = 'param_' . $paramCounter++;
+                    $filters[] = "{$escapedAttr} != {{$paramName}:{$chType}}";
+                    $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
 
                 case Query::TYPE_LESSER:
@@ -2678,14 +2676,8 @@ class ClickHouse extends SQL
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
                     $paramName = 'param_' . $paramCounter++;
-                    $value = is_array($values) && !empty($values) ? $values[0] : $values;
-                    if ($attribute === 'time') {
-                        $filters[] = "{$escapedAttr} < {{$paramName}:DateTime64(3)}";
-                        $params[$paramName] = $this->formatDateTime($value);
-                    } else {
-                        $filters[] = "{$escapedAttr} < {{$paramName}:{$chType}}";
-                        $params[$paramName] = $this->formatParamValue($value);
-                    }
+                    $filters[] = "{$escapedAttr} < {{$paramName}:{$chType}}";
+                    $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
 
                 case Query::TYPE_GREATER:
@@ -2693,14 +2685,8 @@ class ClickHouse extends SQL
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
                     $paramName = 'param_' . $paramCounter++;
-                    $value = is_array($values) && !empty($values) ? $values[0] : $values;
-                    if ($attribute === 'time') {
-                        $filters[] = "{$escapedAttr} > {{$paramName}:DateTime64(3)}";
-                        $params[$paramName] = $this->formatDateTime($value);
-                    } else {
-                        $filters[] = "{$escapedAttr} > {{$paramName}:{$chType}}";
-                        $params[$paramName] = $this->formatParamValue($value);
-                    }
+                    $filters[] = "{$escapedAttr} > {{$paramName}:{$chType}}";
+                    $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
 
                 case Query::TYPE_BETWEEN:
@@ -2709,18 +2695,20 @@ class ClickHouse extends SQL
                     $chType = $this->getParamType($attribute);
                     $paramName1 = 'param_' . $paramCounter++;
                     $paramName2 = 'param_' . $paramCounter++;
-                    $value1 = is_array($values) && isset($values[0]) ? $values[0] : $values;
-                    $value2 = is_array($values) && isset($values[1]) ? $values[1] : $values;
-                    if ($attribute === 'time') {
-                        $paramType = 'DateTime64(3)';
-                        $filters[] = "{$escapedAttr} BETWEEN {{$paramName1}:{$paramType}} AND {{$paramName2}:{$paramType}}";
-                        $params[$paramName1] = $this->formatDateTime($value1);
-                        $params[$paramName2] = $this->formatDateTime($value2);
-                    } else {
-                        $filters[] = "{$escapedAttr} BETWEEN {{$paramName1}:{$chType}} AND {{$paramName2}:{$chType}}";
-                        $params[$paramName1] = $this->formatParamValue($value1);
-                        $params[$paramName2] = $this->formatParamValue($value2);
-                    }
+                    $filters[] = "{$escapedAttr} BETWEEN {{$paramName1}:{$chType}} AND {{$paramName2}:{$chType}}";
+                    $params[$paramName1] = $this->formatTypedValue($chType, $values[0] ?? null);
+                    $params[$paramName2] = $this->formatTypedValue($chType, $values[1] ?? null);
+                    break;
+
+                case Query::TYPE_NOT_BETWEEN:
+                    $this->validateAttributeName($attribute, $type);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $chType = $this->getParamType($attribute);
+                    $paramName1 = 'param_' . $paramCounter++;
+                    $paramName2 = 'param_' . $paramCounter++;
+                    $filters[] = "{$escapedAttr} NOT BETWEEN {{$paramName1}:{$chType}} AND {{$paramName2}:{$chType}}";
+                    $params[$paramName1] = $this->formatTypedValue($chType, $values[0] ?? null);
+                    $params[$paramName2] = $this->formatTypedValue($chType, $values[1] ?? null);
                     break;
 
                 case Query::TYPE_ORDER_DESC:
@@ -2751,51 +2739,13 @@ class ClickHouse extends SQL
                     $cursorDirection = $method === Query::TYPE_CURSOR_AFTER ? 'after' : 'before';
                     break;
 
-                case Query::TYPE_CONTAINS:
-                    $this->validateAttributeName($attribute, $type);
-                    $escapedAttr = $this->escapeIdentifier($attribute);
-                    $chType = $this->getParamType($attribute);
-                    $inParams = [];
-                    foreach ($values as $value) {
-                        $paramName = 'param_' . $paramCounter++;
-                        if ($attribute === 'time') {
-                            $inParams[] = "{{$paramName}:DateTime64(3)}";
-                            /** @var \DateTime|string|null $singleValue */
-                            $singleValue = $value;
-                            $params[$paramName] = $this->formatDateTime($singleValue);
-                        } else {
-                            $inParams[] = "{{$paramName}:{$chType}}";
-                            /** @var bool|float|int|string $singleValue */
-                            $singleValue = $value;
-                            $params[$paramName] = $this->formatParamValue($singleValue);
-                        }
-                    }
-                    if (!empty($inParams)) {
-                        $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
-                    }
-                    break;
-
                 case Query::TYPE_LESSER_EQUAL:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
                     $paramName = 'param_' . $paramCounter++;
-                    $singleValue = null;
-                    if ($attribute === 'time') {
-                        if (is_array($values)) {
-                            /** @var \DateTime|string|null $singleValue */
-                            $singleValue = $values[0] ?? null;
-                        }
-                        $filters[] = "{$escapedAttr} <= {{$paramName}:DateTime64(3)}";
-                        $params[$paramName] = $this->formatDateTime($singleValue);
-                    } else {
-                        if (is_array($values)) {
-                            /** @var bool|float|int|string $singleValue */
-                            $singleValue = $values[0] ?? null;
-                        }
-                        $filters[] = "{$escapedAttr} <= {{$paramName}:{$chType}}";
-                        $params[$paramName] = $this->formatParamValue($singleValue);
-                    }
+                    $filters[] = "{$escapedAttr} <= {{$paramName}:{$chType}}";
+                    $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
 
                 case Query::TYPE_GREATER_EQUAL:
@@ -2803,22 +2753,74 @@ class ClickHouse extends SQL
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
                     $paramName = 'param_' . $paramCounter++;
-                    $singleValue = null;
-                    if ($attribute === 'time') {
-                        if (is_array($values)) {
-                            /** @var \DateTime|string|null $singleValue */
-                            $singleValue = $values[0] ?? null;
-                        }
-                        $filters[] = "{$escapedAttr} >= {{$paramName}:DateTime64(3)}";
-                        $params[$paramName] = $this->formatDateTime($singleValue);
-                    } else {
-                        if (is_array($values)) {
-                            /** @var bool|float|int|string $singleValue */
-                            $singleValue = $values[0] ?? null;
-                        }
-                        $filters[] = "{$escapedAttr} >= {{$paramName}:{$chType}}";
-                        $params[$paramName] = $this->formatParamValue($singleValue);
+                    $filters[] = "{$escapedAttr} >= {{$paramName}:{$chType}}";
+                    $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
+                    break;
+
+                case Query::TYPE_CONTAINS:
+                    $this->validateAttributeName($attribute, $type);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $chType = $this->getParamType($attribute);
+                    $inParams = [];
+                    foreach ($values as $value) {
+                        $paramName = 'param_' . $paramCounter++;
+                        $inParams[] = "{{$paramName}:{$chType}}";
+                        $params[$paramName] = $this->formatTypedValue($chType, $value);
                     }
+                    if (!empty($inParams)) {
+                        $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
+                    }
+                    break;
+
+                case Query::TYPE_NOT_CONTAINS:
+                    $this->validateAttributeName($attribute, $type);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $chType = $this->getParamType($attribute);
+                    $inParams = [];
+                    foreach ($values as $value) {
+                        $paramName = 'param_' . $paramCounter++;
+                        $inParams[] = "{{$paramName}:{$chType}}";
+                        $params[$paramName] = $this->formatTypedValue($chType, $value);
+                    }
+                    if (!empty($inParams)) {
+                        $filters[] = "{$escapedAttr} NOT IN (" . implode(', ', $inParams) . ")";
+                    }
+                    break;
+
+                case Query::TYPE_IS_NULL:
+                    $this->validateAttributeName($attribute, $type);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $filters[] = "{$escapedAttr} IS NULL";
+                    break;
+
+                case Query::TYPE_IS_NOT_NULL:
+                    $this->validateAttributeName($attribute, $type);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $filters[] = "{$escapedAttr} IS NOT NULL";
+                    break;
+
+                case Query::TYPE_STARTS_WITH:
+                    $this->validateAttributeName($attribute, $type);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $needle = $values[0] ?? null;
+                    if (!is_string($needle)) {
+                        throw new Exception("startsWith needle must be a string for attribute '{$attribute}'");
+                    }
+                    $paramName = 'param_' . $paramCounter++;
+                    $filters[] = "startsWith({$escapedAttr}, {{$paramName}:String})";
+                    $params[$paramName] = $needle;
+                    break;
+
+                case Query::TYPE_ENDS_WITH:
+                    $this->validateAttributeName($attribute, $type);
+                    $escapedAttr = $this->escapeIdentifier($attribute);
+                    $needle = $values[0] ?? null;
+                    if (!is_string($needle)) {
+                        throw new Exception("endsWith needle must be a string for attribute '{$attribute}'");
+                    }
+                    $paramName = 'param_' . $paramCounter++;
+                    $filters[] = "endsWith({$escapedAttr}, {{$paramName}:String})";
+                    $params[$paramName] = $needle;
                     break;
 
                 case Query::TYPE_LIMIT:

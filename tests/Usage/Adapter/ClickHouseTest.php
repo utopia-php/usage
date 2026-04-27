@@ -1093,4 +1093,71 @@ class ClickHouseTest extends TestCase
             Query::cursorAfter(['id' => 'whatever']),
         ], Usage::TYPE_EVENT);
     }
+
+    public function testNotEqualQuery(): void
+    {
+        // Fixture: requests x2, bandwidth x1 in events
+        $results = $this->usage->find([
+            Query::notEqual('metric', 'requests'),
+        ], Usage::TYPE_EVENT);
+        // bandwidth row only
+        $this->assertGreaterThanOrEqual(1, count($results));
+        foreach ($results as $row) {
+            $this->assertNotEquals('requests', $row->getMetric());
+        }
+    }
+
+    public function testNotContainsQuery(): void
+    {
+        $results = $this->usage->find([
+            Query::notContains('metric', ['requests', 'bandwidth']),
+        ], Usage::TYPE_EVENT);
+        $this->assertCount(0, $results);
+    }
+
+    public function testNotBetweenQuery(): void
+    {
+        $past = (new \DateTime())->modify('-2 hour')->format('Y-m-d H:i:s');
+        $oldPast = (new \DateTime())->modify('-3 hour')->format('Y-m-d H:i:s');
+
+        $results = $this->usage->find([
+            Query::notBetween('time', $oldPast, $past),
+        ], Usage::TYPE_EVENT);
+        $this->assertGreaterThanOrEqual(3, count($results));
+    }
+
+    public function testIsNullAndIsNotNullQueries(): void
+    {
+        // 'country' is a nullable column; fixture rows have no country tag set
+        // so depending on how addBatch persists tags, country may be null or empty.
+        $isNotNull = $this->usage->find([
+            Query::isNotNull('metric'),
+        ], Usage::TYPE_EVENT);
+        $this->assertGreaterThanOrEqual(3, count($isNotNull));
+
+        // metric is required so isNull returns nothing
+        $isNull = $this->usage->find([
+            Query::isNull('metric'),
+        ], Usage::TYPE_EVENT);
+        $this->assertCount(0, $isNull);
+    }
+
+    public function testStartsWithAndEndsWithQueries(): void
+    {
+        // Fixture: paths /v1/storage, /v1/databases, /v1/storage/files
+        $startsWith = $this->usage->find([
+            Query::startsWith('path', '/v1/'),
+        ], Usage::TYPE_EVENT);
+        $this->assertGreaterThanOrEqual(3, count($startsWith));
+
+        $endsWith = $this->usage->find([
+            Query::endsWith('path', '/files'),
+        ], Usage::TYPE_EVENT);
+        $this->assertGreaterThanOrEqual(1, count($endsWith));
+        foreach ($endsWith as $row) {
+            $path = $row->getAttribute('path', '');
+            $this->assertIsString($path);
+            $this->assertStringEndsWith('/files', $path);
+        }
+    }
 }
