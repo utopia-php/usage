@@ -2288,6 +2288,12 @@ class ClickHouse extends SQL
     /**
      * Get totals for multiple metrics in a single query.
      *
+     * When $type is null both tables are queried with their type-appropriate
+     * aggregator (SUM for events, argMax for gauges). If a metric appears in
+     * both tables the result of mixing those aggregators is meaningless, so
+     * the second occurrence raises an exception — callers must specify $type
+     * to disambiguate.
+     *
      * @param  array<string>  $metrics
      * @param  array<Query>  $queries
      * @param  string|null  $type  'event', 'gauge', or null (both)
@@ -2304,6 +2310,9 @@ class ClickHouse extends SQL
 
         // Initialize all metrics to 0
         $totals = \array_fill_keys($metrics, 0);
+
+        // Track which type contributed a non-zero value to detect ambiguous mixing.
+        $contributingType = [];
 
         $typesToQuery = [];
         if ($type === Usage::TYPE_EVENT || $type === null) {
@@ -2369,7 +2378,22 @@ class ClickHouse extends SQL
                         continue;
                     }
 
-                    $totals[$metricName] += (int) ($row['agg_val'] ?? 0);
+                    $rowValue = (int) ($row['agg_val'] ?? 0);
+                    if ($rowValue === 0) {
+                        continue;
+                    }
+
+                    if ($type === null
+                        && isset($contributingType[$metricName])
+                        && $contributingType[$metricName] !== $queryType) {
+                        throw new Exception(
+                            "Metric '{$metricName}' exists in both event and gauge tables. "
+                            . "Specify \$type explicitly to avoid ambiguous aggregation."
+                        );
+                    }
+
+                    $contributingType[$metricName] = $queryType;
+                    $totals[$metricName] = $rowValue;
                 }
             }
         }
@@ -2999,6 +3023,13 @@ class ClickHouse extends SQL
      * Purge usage metrics matching the given queries.
      * Deletes from the specified table(s).
      *
+     * For event purges, also deletes matching rows from the pre-aggregated
+     * daily table — materialized views are forward-only triggers, so deletes
+     * on the source table do not propagate to the MV target. Only daily-table
+     * compatible filters (metric, value, time, tenant) are forwarded; queries
+     * with event-only attributes (path/method/status/etc.) leave existing
+     * daily rows in place.
+     *
      * @param array<Query> $queries
      * @param string|null $type 'event', 'gauge', or null (purge both)
      * @throws Exception
@@ -3030,8 +3061,53 @@ class ClickHouse extends SQL
 
             $sql = "DELETE FROM {$escapedTable}{$whereClause}";
             $this->query($sql, $params);
+
+            if ($purgeType === Usage::TYPE_EVENT) {
+                $this->purgeDaily($queries);
+            }
         }
 
         return true;
+    }
+
+    /**
+     * Purge matching rows from the daily aggregated table.
+     *
+     * Only forwarded when every query attribute is daily-compatible
+     * (metric, value, time, tenant). If any query references an
+     * event-only column, the daily delete is skipped — silently
+     * leaving the daily rows in place is safer than throwing here
+     * because callers commonly purge by path/method/etc.
+     *
+     * @param array<Query> $queries
+     * @throws Exception
+     */
+    private function purgeDaily(array $queries): void
+    {
+        $dailyQueries = [];
+        foreach ($queries as $query) {
+            $attr = $query->getAttribute();
+            if (!empty($attr)) {
+                if ($attr !== 'id'
+                    && !in_array($attr, self::DAILY_COLUMNS, true)
+                    && !($attr === 'tenant' && $this->sharedTables)) {
+                    return;
+                }
+            }
+            $dailyQueries[] = $query;
+        }
+
+        $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());
+
+        $parsed = $this->parseQueries($dailyQueries, Usage::TYPE_EVENT);
+        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+        $whereClause = $whereData['clause'];
+
+        if (empty($whereClause)) {
+            $whereClause = ' WHERE 1=1';
+        }
+
+        $sql = "DELETE FROM {$dailyTable}{$whereClause}";
+        $this->query($sql, $whereData['params']);
     }
 }

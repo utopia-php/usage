@@ -77,6 +77,23 @@ class Database extends SQL
         $attributes = $this->getAttributeDocuments('event');
         $indexDocs = $this->getIndexDocuments('event');
 
+        // Append a `type` column so a single collection can disambiguate event vs gauge rows.
+        // ClickHouse uses separate tables instead, so this lives in the Database adapter only.
+        $attributes[] = new Document([
+            '$id' => 'type',
+            'type' => 'string',
+            'size' => 16,
+            'required' => false,
+            'signed' => true,
+            'array' => false,
+            'filters' => [],
+        ]);
+        $indexDocs[] = new Document([
+            '$id' => 'index-type',
+            'type' => 'key',
+            'attributes' => ['type'],
+        ]);
+
         try {
             $this->db->createCollection(
                 $this->collection,
@@ -125,6 +142,7 @@ class Database extends SQL
                     '$permissions' => [],
                     'metric' => $metric['metric'],
                     'value' => $metric['value'],
+                    'type' => $type,
                     'time' => (new \DateTime())->format('Y-m-d H:i:s.v'),
                     'tags' => $tags,
                 ];
@@ -189,10 +207,8 @@ class Database extends SQL
             Query::equal('metric', [$metric]),
         ]);
 
-        // If type is specified, query only that type
-        $queryType = $type;
         /** @var array<Metric> $results */
-        $results = $this->find($allQueries, $queryType);
+        $results = $this->find($allQueries, $type);
 
         if (empty($results)) {
             return 0;
@@ -213,17 +229,31 @@ class Database extends SQL
             return $sum;
         }
 
-        // Type is null — try to detect from results
-        $firstType = $results[0]->getType();
+        // Type is null — partition results by stored type and reject ambiguous mixes.
+        $eventResults = [];
+        $gaugeResults = [];
+        foreach ($results as $result) {
+            if ($result->getType() === Usage::TYPE_GAUGE) {
+                $gaugeResults[] = $result;
+            } else {
+                $eventResults[] = $result;
+            }
+        }
 
-        if ($firstType === 'gauge') {
-            $lastResult = end($results);
+        if (!empty($eventResults) && !empty($gaugeResults)) {
+            throw new \Exception(
+                "Metric '{$metric}' exists as both event and gauge. "
+                . "Specify \$type explicitly to avoid ambiguous aggregation."
+            );
+        }
+
+        if (!empty($gaugeResults)) {
+            $lastResult = end($gaugeResults);
             return $lastResult->getValue(0) ?? 0;
         }
 
-        // Default to SUM for events
         $sum = 0;
-        foreach ($results as $result) {
+        foreach ($eventResults as $result) {
             $sum += (int) ($result->getValue(0) ?? 0);
         }
 
@@ -412,6 +442,8 @@ class Database extends SQL
      */
     public function purge(array $queries = [], ?string $type = null): bool
     {
+        $queries = $this->withTypeFilter($queries, $type);
+
         $this->db->getAuthorization()->skip(function () use ($queries) {
             $dbQueries = $this->convertQueriesToDatabase($queries);
             $dbQueries[] = DatabaseQuery::limit(100);
@@ -434,12 +466,18 @@ class Database extends SQL
     /**
      * Find metrics using Query objects.
      *
+     * When $type is non-null an additional `type = $type` filter is applied
+     * so callers can isolate event vs gauge rows. When $type is null both
+     * are returned (caller distinguishes via Metric::getType()).
+     *
      * @param array<Query> $queries
      * @param string|null $type
      * @return array<Metric>
      */
     public function find(array $queries = [], ?string $type = null): array
     {
+        $queries = $this->withTypeFilter($queries, $type);
+
         /** @var array<Document> $result */
         $result = $this->db->getAuthorization()->skip(function () use ($queries) {
             $dbQueries = $this->convertQueriesToDatabase($queries);
@@ -466,6 +504,8 @@ class Database extends SQL
      */
     public function count(array $queries = [], ?string $type = null, ?int $max = null): int
     {
+        $queries = $this->withTypeFilter($queries, $type);
+
         /** @var int $count */
         $count = $this->db->getAuthorization()->skip(function () use ($queries, $max) {
             $dbQueries = $this->convertQueriesToDatabase($queries);
@@ -477,6 +517,26 @@ class Database extends SQL
         });
 
         return $count;
+    }
+
+    /**
+     * Append a `type = $type` filter to the query list when $type is non-null.
+     *
+     * @param array<Query> $queries
+     * @param string|null $type
+     * @return array<Query>
+     */
+    private function withTypeFilter(array $queries, ?string $type): array
+    {
+        if ($type === null) {
+            return $queries;
+        }
+
+        if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
+            throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: " . Usage::TYPE_EVENT . ', ' . Usage::TYPE_GAUGE);
+        }
+
+        return array_merge($queries, [Query::equal('type', [$type])]);
     }
 
     /**

@@ -266,12 +266,16 @@ class Usage
     /**
      * Set the namespace prefix for table names.
      *
+     * Flushes the buffer first so any pending metrics are written under the
+     * previous namespace — buffered entries don't carry adapter context.
+     *
      * @param string $namespace
      * @return $this
      * @throws \Exception
      */
     public function setNamespace(string $namespace): self
     {
+        $this->flush();
         $this->adapter->setNamespace($namespace);
         return $this;
     }
@@ -279,11 +283,16 @@ class Usage
     /**
      * Set the tenant ID for multi-tenant support.
      *
+     * Flushes the buffer first so any pending metrics are written under the
+     * previous tenant — buffered entries don't carry adapter context.
+     *
      * @param string|null $tenant
      * @return $this
+     * @throws \Exception
      */
     public function setTenant(?string $tenant): self
     {
+        $this->flush();
         $this->adapter->setTenant($tenant);
         return $this;
     }
@@ -291,11 +300,16 @@ class Usage
     /**
      * Enable or disable shared tables mode (multi-tenant with tenant column).
      *
+     * Flushes the buffer first so any pending metrics are written under the
+     * previous mode — buffered entries don't carry adapter context.
+     *
      * @param bool $sharedTables
      * @return $this
+     * @throws \Exception
      */
     public function setSharedTables(bool $sharedTables): self
     {
+        $this->flush();
         $this->adapter->setSharedTables($sharedTables);
         return $this;
     }
