@@ -1160,4 +1160,34 @@ class ClickHouseTest extends TestCase
             $this->assertStringEndsWith('/files', $path);
         }
     }
+
+    public function testContainsRejectsEmptyValues(): void
+    {
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('Contains queries require at least one value.');
+
+        $this->usage->find([
+            Query::contains('metric', []),
+        ], Usage::TYPE_EVENT);
+    }
+
+    public function testNotContainsRejectsEmptyValues(): void
+    {
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('NotContains queries require at least one value.');
+
+        $this->usage->find([
+            Query::notContains('metric', []),
+        ], Usage::TYPE_EVENT);
+    }
+
+    public function testEqualRejectsEmptyValues(): void
+    {
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('Equal queries require at least one value.');
+
+        $this->usage->find([
+            new Query(Query::TYPE_EQUAL, 'metric', []),
+        ], Usage::TYPE_EVENT);
+    }
 }
