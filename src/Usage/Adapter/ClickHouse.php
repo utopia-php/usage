@@ -888,11 +888,13 @@ class ClickHouse extends SQL
                 }
             },
             function (Exception $e, ?int $httpCode): bool {
-                $exceptionHttpCode = null;
-                if (preg_match('/\|HTTP_CODE:(\d+)$/', $e->getMessage(), $matches)) {
-                    $exceptionHttpCode = (int) $matches[1];
-                }
-                return $this->isRetryableError($exceptionHttpCode, $e->getMessage());
+                // Never retry inserts. The underlying MergeTree engine has
+                // no row-level deduplication, so a retried insert that hits
+                // the server twice (network blip + first request actually
+                // succeeded) leaves duplicate rows behind. Surface the
+                // failure to the caller instead — they can replay the
+                // batch from durable storage if they choose.
+                return false;
             },
             function (Exception $e, int $attempt) use ($table, $data): Exception {
                 $cleanMessage = preg_replace('/\|HTTP_CODE:\d+$/', '', $e->getMessage());
@@ -1099,6 +1101,10 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
+    // NOTE: setup() uses CREATE IF NOT EXISTS for idempotency. If sharedTables
+    // is toggled between calls, the original MV definition is kept (DROP+CREATE
+    // would lose buffered data). This is acceptable for v1 since setup() is
+    // expected to run once per environment lifecycle.
     private function createDailyMaterializedView(): void
     {
         $eventsTable = $this->getEventsTableName();
@@ -1157,14 +1163,11 @@ class ClickHouse extends SQL
             }
         }
 
-        // Also check the other type's attributes for cross-table queries
-        $otherType = $type === 'event' ? 'gauge' : 'event';
-        foreach ($this->getAttributes($otherType) as $attribute) {
-            if ($attribute['$id'] === $attributeName) {
-                return true;
-            }
-        }
-
+        // Reject attributes that don't exist on the target type's schema.
+        // Falling back to the other type's columns (e.g. allowing `path` on
+        // a gauge query because it exists on the event schema) compiles to
+        // SQL that references columns the gauge table doesn't have, which
+        // ClickHouse rejects with "Unknown identifier".
         throw new Exception("Invalid attribute name: {$attributeName}");
     }
 
@@ -1480,18 +1483,34 @@ class ClickHouse extends SQL
 
         // Cursor pagination is per-table — paginating across both events and
         // gauges has no coherent ordering, so reject this combination upfront.
+        $userLimit = null;
         foreach ($queries as $query) {
             $method = $query->getMethod();
             if ($method === Query::TYPE_CURSOR_AFTER || $method === Query::TYPE_CURSOR_BEFORE) {
                 throw new Exception('Cursor pagination requires an explicit $type (event or gauge)');
             }
+            if ($method === Query::TYPE_LIMIT) {
+                $values = $query->getValues();
+                if (!empty($values) && is_numeric($values[0])) {
+                    $userLimit = (int) $values[0];
+                }
+            }
         }
 
-        // Query both tables with UNION ALL
+        // Query both tables and merge. Each side already applied LIMIT, so
+        // without a final cap callers asking for `limit(N)` could receive
+        // up to 2N rows. Slice the merged result back down to the user's
+        // requested limit.
         $events = $this->findFromTable($queries, Usage::TYPE_EVENT);
         $gauges = $this->findFromTable($queries, Usage::TYPE_GAUGE);
 
-        return array_merge($events, $gauges);
+        $merged = array_merge($events, $gauges);
+
+        if ($userLimit !== null && count($merged) > $userLimit) {
+            $merged = array_slice($merged, 0, $userLimit);
+        }
+
+        return $merged;
     }
 
     /**
@@ -1607,10 +1626,22 @@ class ClickHouse extends SQL
         $whereClause = $whereData['clause'];
         $params = $whereData['params'];
 
-        // Use custom ORDER BY if specified, otherwise default to bucket ASC
+        // Use custom ORDER BY if specified, otherwise default to bucket ASC.
+        // In aggregated mode the SELECT exposes `bucket` instead of `time`,
+        // so any user-supplied ORDER BY on `time` must be rewritten to
+        // reference the bucket alias — otherwise ClickHouse errors with
+        // "Unknown identifier: time".
         $orderClause = ' ORDER BY bucket ASC';
         if (!empty($parsed['orderBy'])) {
-            $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
+            $rewrittenOrderBy = array_map(
+                fn (string $clause): string => preg_replace(
+                    '/^`time`(\s+(?:ASC|DESC))?$/',
+                    '`bucket`$1',
+                    $clause
+                ) ?? $clause,
+                $parsed['orderBy']
+            );
+            $orderClause = ' ORDER BY ' . implode(', ', $rewrittenOrderBy);
         }
 
         $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
@@ -1668,7 +1699,21 @@ class ClickHouse extends SQL
                     }
                     $document['time'] = $parsedTime;
                 } elseif ($key === 'value') {
-                    $document[$key] = $value !== null ? (int) $value : null;
+                    // Preserve numeric precision: SUM(value) over many rows
+                    // can exceed PHP_INT_MAX, and gauge averages are floats.
+                    // Casting to int truncates both cases — keep numeric
+                    // strings as int|float depending on shape.
+                    if ($value === null) {
+                        $document[$key] = null;
+                    } elseif (is_int($value) || is_float($value)) {
+                        $document[$key] = $value;
+                    } elseif (is_numeric($value)) {
+                        $document[$key] = (str_contains((string) $value, '.') || str_contains((string) $value, 'e') || str_contains((string) $value, 'E'))
+                            ? (float) $value
+                            : (int) $value;
+                    } else {
+                        $document[$key] = $value;
+                    }
                 } else {
                     $document[$key] = $value;
                 }
@@ -1704,9 +1749,17 @@ class ClickHouse extends SQL
             return $this->countFromTable($queries, $type, $max);
         }
 
-        // Count from both tables
-        return $this->countFromTable($queries, Usage::TYPE_EVENT, $max)
-             + $this->countFromTable($queries, Usage::TYPE_GAUGE, $max);
+        // Count from both tables. Each per-table count is independently
+        // capped at $max, so naively summing them could yield up to 2*$max.
+        // Cap the combined total at $max in PHP to honour the contract.
+        $total = $this->countFromTable($queries, Usage::TYPE_EVENT, $max)
+               + $this->countFromTable($queries, Usage::TYPE_GAUGE, $max);
+
+        if ($max !== null && $total > $max) {
+            $total = $max;
+        }
+
+        return $total;
     }
 
     /**
@@ -1847,7 +1900,10 @@ class ClickHouse extends SQL
         $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
         $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
 
-        $sql = "SELECT {$selectColumns} FROM {$fromTable}{$whereData['clause']}{$orderClause}{$limitClause}{$offsetClause} FORMAT JSON";
+        // The daily table is SummingMergeTree. Reading raw rows returns
+        // un-merged duplicates until background merges run. FINAL forces
+        // merge-on-read so callers always see fully-collapsed values.
+        $sql = "SELECT {$selectColumns} FROM {$fromTable} FINAL{$whereData['clause']}{$orderClause}{$limitClause}{$offsetClause} FORMAT JSON";
 
         return $this->parseResults($this->query($sql, $whereData['params']), Usage::TYPE_EVENT);
     }

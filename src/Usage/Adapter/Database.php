@@ -134,6 +134,10 @@ class Database extends SQL
                     throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: event, gauge");
                 }
 
+                if ($metric['value'] < 0) {
+                    throw new \InvalidArgumentException('Value cannot be negative');
+                }
+
                 $tags = $metric['tags'] ?? [];
                 ksort($tags);
 
@@ -207,17 +211,27 @@ class Database extends SQL
             Query::equal('metric', [$metric]),
         ]);
 
+        if ($type === Usage::TYPE_GAUGE) {
+            // For gauge, return the most recent value by time. find() does
+            // not guarantee any ordering, so we explicitly sort + limit
+            // here instead of relying on insertion order.
+            $gaugeQueries = array_merge($allQueries, [
+                Query::orderDesc('time'),
+                Query::limit(1),
+            ]);
+            /** @var array<Metric> $gaugeResults */
+            $gaugeResults = $this->find($gaugeQueries, $type);
+            if (empty($gaugeResults)) {
+                return 0;
+            }
+            return (int) ($gaugeResults[0]->getValue(0) ?? 0);
+        }
+
         /** @var array<Metric> $results */
         $results = $this->find($allQueries, $type);
 
         if (empty($results)) {
             return 0;
-        }
-
-        if ($type === Usage::TYPE_GAUGE) {
-            // For gauge, return the last (most recently inserted) value
-            $lastResult = end($results);
-            return $lastResult->getValue(0) ?? 0;
         }
 
         if ($type === Usage::TYPE_EVENT) {
@@ -248,8 +262,14 @@ class Database extends SQL
         }
 
         if (!empty($gaugeResults)) {
+            // find() returns rows in unspecified order; sort by time so the
+            // "latest" gauge sample is deterministic.
+            usort(
+                $gaugeResults,
+                fn (Metric $a, Metric $b): int => strcmp($a->getTime() ?? '', $b->getTime() ?? '')
+            );
             $lastResult = end($gaugeResults);
-            return $lastResult->getValue(0) ?? 0;
+            return (int) ($lastResult->getValue(0) ?? 0);
         }
 
         $sum = 0;

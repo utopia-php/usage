@@ -100,13 +100,19 @@ class Metric extends ArrayObject
      * Returns the numeric value associated with this metric.
      * For example, number of requests, bytes transferred, or execution count.
      *
-     * @param  int|null  $default  Default value to return if not set
-     * @return int|null The metric value, or the default if not set or invalid
+     * Aggregated queries (SUM, argMax, AVG) can produce values that exceed
+     * PHP_INT_MAX or include fractional parts, so this returns int|float.
+     *
+     * @param  int|float|null  $default  Default value to return if not set
+     * @return int|float|null The metric value, or the default if not set or invalid
      */
-    public function getValue(?int $default = null): ?int
+    public function getValue(int|float|null $default = null): int|float|null
     {
         $value = $this->getAttribute('value', $default ?? 0);
-        return is_int($value) ? $value : $default;
+        if (is_int($value) || is_float($value)) {
+            return $value;
+        }
+        return $default;
     }
 
     /**
@@ -238,6 +244,10 @@ class Metric extends ArrayObject
      *
      * @return array<string, mixed> Associative array of tags
      */
+    // NOTE: loks0n flagged this as a leftover from the previous Metric
+    // implementation. Kept because tests (MetricTest, ClickHouseTest) and
+    // downstream consumers still call it; remove once those callers are
+    // migrated to direct `tags` attribute access.
     public function getTags(): array
     {
         $tags = $this->getAttribute('tags', []);
