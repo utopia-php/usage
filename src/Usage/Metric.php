@@ -583,17 +583,10 @@ class Metric extends ArrayObject
      */
     public static function getEventIndexes(): array
     {
+        // Note: `metric` and `time` are part of the ClickHouse primary key
+        // (ORDER BY (tenant, metric, time, id)), so a separate bloom_filter
+        // index on either column would be redundant. They're omitted here.
         return [
-            [
-                '$id' => 'index-metric',
-                'type' => 'key',
-                'attributes' => ['metric'],
-            ],
-            [
-                '$id' => 'index-time',
-                'type' => 'key',
-                'attributes' => ['time'],
-            ],
             [
                 '$id' => 'index-path',
                 'type' => 'key',
@@ -639,18 +632,10 @@ class Metric extends ArrayObject
      */
     public static function getGaugeIndexes(): array
     {
-        return [
-            [
-                '$id' => 'index-metric',
-                'type' => 'key',
-                'attributes' => ['metric'],
-            ],
-            [
-                '$id' => 'index-time',
-                'type' => 'key',
-                'attributes' => ['time'],
-            ],
-        ];
+        // `metric` and `time` are part of the primary key; no secondary
+        // indexes needed. Returning an empty array keeps the table DDL
+        // free of redundant bloom_filter clauses.
+        return [];
     }
 
     /**

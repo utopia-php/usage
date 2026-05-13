@@ -108,27 +108,19 @@ class MetricTest extends TestCase
         $indexes = Metric::getEventIndexes();
 
         $this->assertIsArray($indexes);
-        $this->assertCount(9, $indexes);
+        // metric/time are now covered by the primary key (ORDER BY (tenant,
+        // metric, time, id)), so only event-specific secondary indexes
+        // remain: path, method, status, resource, resourceId, country,
+        // userAgent.
+        $this->assertCount(7, $indexes);
 
-        // Test metric index
-        $metricIndex = $indexes[0];
-        $this->assertEquals('index-metric', $metricIndex['$id']);
-        $this->assertEquals('key', $metricIndex['type']);
-        $this->assertEquals(['metric'], $metricIndex['attributes']);
-
-        // Test time index
-        $timeIndex = $indexes[1];
-        $this->assertEquals('index-time', $timeIndex['$id']);
-        $this->assertEquals(['time'], $timeIndex['attributes']);
-
-        // Test event-specific indexes
-        $this->assertEquals('index-path', $indexes[2]['$id']);
-        $this->assertEquals('index-method', $indexes[3]['$id']);
-        $this->assertEquals('index-status', $indexes[4]['$id']);
-        $this->assertEquals('index-resource', $indexes[5]['$id']);
-        $this->assertEquals('index-resourceId', $indexes[6]['$id']);
-        $this->assertEquals('index-country', $indexes[7]['$id']);
-        $this->assertEquals('index-userAgent', $indexes[8]['$id']);
+        $this->assertEquals('index-path', $indexes[0]['$id']);
+        $this->assertEquals('index-method', $indexes[1]['$id']);
+        $this->assertEquals('index-status', $indexes[2]['$id']);
+        $this->assertEquals('index-resource', $indexes[3]['$id']);
+        $this->assertEquals('index-resourceId', $indexes[4]['$id']);
+        $this->assertEquals('index-country', $indexes[5]['$id']);
+        $this->assertEquals('index-userAgent', $indexes[6]['$id']);
     }
 
     /**
@@ -138,11 +130,10 @@ class MetricTest extends TestCase
     {
         $indexes = Metric::getGaugeIndexes();
 
+        // Gauges only filter by metric and time, both in the primary key,
+        // so no secondary indexes are needed.
         $this->assertIsArray($indexes);
-        $this->assertCount(2, $indexes);
-
-        $this->assertEquals('index-metric', $indexes[0]['$id']);
-        $this->assertEquals('index-time', $indexes[1]['$id']);
+        $this->assertCount(0, $indexes);
     }
 
     /**

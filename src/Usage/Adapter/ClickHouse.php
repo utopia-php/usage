@@ -1035,7 +1035,12 @@ class ClickHouse extends SQL
         $columnDefs = implode(",\n                ", $columns);
         $indexDefsStr = !empty($indexDefs) ? ",\n                " . implode(",\n                ", $indexDefs) : '';
 
-        $orderByExpr = $this->sharedTables ? '(tenant, id)' : '(id)';
+        // Primary key matches the most common filter pattern:
+        // tenant (multi-tenant isolation) → metric (per-metric series) →
+        // time (range scans). id is the tiebreaker for stable physical
+        // ordering. This shape lets ClickHouse skip whole granules on
+        // metric+time predicates instead of doing a full-table scan.
+        $orderByExpr = $this->sharedTables ? '(tenant, metric, time, id)' : '(metric, time, id)';
 
         $createTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDatabaseAndTable} (
@@ -1073,19 +1078,15 @@ class ClickHouse extends SQL
             $columns[] = 'tenant Nullable(String)';
         }
 
-        $indexes = [
-            'INDEX index_metric (metric) TYPE bloom_filter GRANULARITY 1',
-            'INDEX index_time (time) TYPE bloom_filter GRANULARITY 1',
-        ];
-
         $columnDefs = implode(",\n                ", $columns);
-        $indexDefsStr = ",\n                " . implode(",\n                ", $indexes);
 
+        // metric and time are part of the ORDER BY (primary key) — no
+        // secondary bloom_filter indexes needed.
         $dailyOrderBy = $this->sharedTables ? '(tenant, metric, time)' : '(metric, time)';
 
         $createDailyTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDailyTable} (
-                {$columnDefs}{$indexDefsStr}
+                {$columnDefs}
             )
             ENGINE = SummingMergeTree()
             ORDER BY {$dailyOrderBy}
