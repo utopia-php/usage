@@ -411,6 +411,36 @@ class Database extends SQL
                     /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
                     $dbQueries[] = DatabaseQuery::contains($attribute, $values);
                     break;
+                case Query::TYPE_NOT_EQUAL:
+                    if (!empty($values)) {
+                        /** @var bool|float|int|string $value */
+                        $value = $values[0];
+                        $dbQueries[] = DatabaseQuery::notEqual($attribute, $value);
+                    }
+                    break;
+                case Query::TYPE_NOT_CONTAINS:
+                    /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
+                    $dbQueries[] = DatabaseQuery::notContains($attribute, $values);
+                    break;
+                case Query::TYPE_NOT_BETWEEN:
+                    if (count($values) >= 2) {
+                        /** @var bool|float|int|string $start */
+                        $start = $values[0];
+                        /** @var bool|float|int|string $end */
+                        $end = $values[1];
+                        $dbQueries[] = DatabaseQuery::notBetween($attribute, $start, $end);
+                    }
+                    break;
+                case Query::TYPE_STARTS_WITH:
+                    if (!empty($values) && is_string($values[0])) {
+                        $dbQueries[] = DatabaseQuery::startsWith($attribute, $values[0]);
+                    }
+                    break;
+                case Query::TYPE_ENDS_WITH:
+                    if (!empty($values) && is_string($values[0])) {
+                        $dbQueries[] = DatabaseQuery::endsWith($attribute, $values[0]);
+                    }
+                    break;
                 case Query::TYPE_LESSER_EQUAL:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */

@@ -1500,9 +1500,14 @@ class ClickHouse extends SQL
         // Query both tables and merge. Each side already applied LIMIT, so
         // without a final cap callers asking for `limit(N)` could receive
         // up to 2N rows. Slice the merged result back down to the user's
-        // requested limit.
-        $events = $this->findFromTable($queries, Usage::TYPE_EVENT);
-        $gauges = $this->findFromTable($queries, Usage::TYPE_GAUGE);
+        // requested limit. Tables whose schema doesn't support every filter
+        // attribute (e.g. `path` on a gauge query) are skipped.
+        $events = $this->queriesMatchType($queries, Usage::TYPE_EVENT)
+            ? $this->findFromTable($queries, Usage::TYPE_EVENT)
+            : [];
+        $gauges = $this->queriesMatchType($queries, Usage::TYPE_GAUGE)
+            ? $this->findFromTable($queries, Usage::TYPE_GAUGE)
+            : [];
 
         $merged = array_merge($events, $gauges);
 
@@ -1511,6 +1516,38 @@ class ClickHouse extends SQL
         }
 
         return $merged;
+    }
+
+    /**
+     * Check whether every filter attribute in $queries exists on the schema
+     * for the given type. Used by the null-$type code paths in find/count/sum
+     * so a query with event-only attributes (path/method/status/etc.) silently
+     * skips the gauges table instead of throwing "Invalid attribute name".
+     *
+     * @param array<Query> $queries
+     */
+    private function queriesMatchType(array $queries, string $type): bool
+    {
+        foreach ($queries as $query) {
+            $attribute = $query->getAttribute();
+            if ($attribute === '' || $attribute === 'id') {
+                continue;
+            }
+            if ($attribute === 'tenant' && $this->sharedTables) {
+                continue;
+            }
+            $matched = false;
+            foreach ($this->getAttributes($type) as $schemaAttribute) {
+                if ($schemaAttribute['$id'] === $attribute) {
+                    $matched = true;
+                    break;
+                }
+            }
+            if (!$matched) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -1752,8 +1789,15 @@ class ClickHouse extends SQL
         // Count from both tables. Each per-table count is independently
         // capped at $max, so naively summing them could yield up to 2*$max.
         // Cap the combined total at $max in PHP to honour the contract.
-        $total = $this->countFromTable($queries, Usage::TYPE_EVENT, $max)
-               + $this->countFromTable($queries, Usage::TYPE_GAUGE, $max);
+        // Skip a table when its schema can't satisfy every filter attribute.
+        $events = $this->queriesMatchType($queries, Usage::TYPE_EVENT)
+            ? $this->countFromTable($queries, Usage::TYPE_EVENT, $max)
+            : 0;
+        $gauges = $this->queriesMatchType($queries, Usage::TYPE_GAUGE)
+            ? $this->countFromTable($queries, Usage::TYPE_GAUGE, $max)
+            : 0;
+
+        $total = $events + $gauges;
 
         if ($max !== null && $total > $max) {
             $total = $max;
@@ -2055,6 +2099,13 @@ class ClickHouse extends SQL
         }
 
         foreach ($typesToQuery as $queryType) {
+            // Skip a table when its schema can't satisfy every filter attribute
+            // (e.g. `path` on a gauge query); avoids "Invalid attribute name"
+            // when the caller leaves $type null and only one side is applicable.
+            if (!$this->queriesMatchType($queries, $queryType)) {
+                continue;
+            }
+
             $typeResult = $this->getTimeSeriesFromTable($metrics, $interval, $startDate, $endDate, $queries, $queryType);
 
             // Merge results
