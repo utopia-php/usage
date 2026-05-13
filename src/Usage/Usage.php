@@ -276,7 +276,9 @@ class Usage
     public function setNamespace(string $namespace): self
     {
         $this->flush();
-        $this->adapter->setNamespace($namespace);
+        if (method_exists($this->adapter, 'setNamespace')) {
+            $this->adapter->setNamespace($namespace);
+        }
         return $this;
     }
 
@@ -293,7 +295,9 @@ class Usage
     public function setTenant(?string $tenant): self
     {
         $this->flush();
-        $this->adapter->setTenant($tenant);
+        if (method_exists($this->adapter, 'setTenant')) {
+            $this->adapter->setTenant($tenant);
+        }
         return $this;
     }
 
@@ -310,7 +314,9 @@ class Usage
     public function setSharedTables(bool $sharedTables): self
     {
         $this->flush();
-        $this->adapter->setSharedTables($sharedTables);
+        if (method_exists($this->adapter, 'setSharedTables')) {
+            $this->adapter->setSharedTables($sharedTables);
+        }
         return $this;
     }
 

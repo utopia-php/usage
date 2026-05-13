@@ -158,28 +158,4 @@ abstract class Adapter
      * @return array<string, int> Metric name => sum value
      */
     abstract public function sumDailyBatch(array $metrics, array $queries = []): array;
-
-    /**
-     * Set the namespace prefix for table names.
-     *
-     * @param string $namespace
-     * @return self
-     */
-    abstract public function setNamespace(string $namespace): self;
-
-    /**
-     * Set the tenant ID for multi-tenant support.
-     *
-     * @param string|null $tenant
-     * @return self
-     */
-    abstract public function setTenant(?string $tenant): self;
-
-    /**
-     * Enable or disable shared tables mode (multi-tenant with tenant column).
-     *
-     * @param bool $sharedTables
-     * @return self
-     */
-    abstract public function setSharedTables(bool $sharedTables): self;
 }
