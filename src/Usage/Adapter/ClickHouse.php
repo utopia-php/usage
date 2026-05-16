@@ -3,8 +3,8 @@
 namespace Utopia\Usage\Adapter;
 
 use Exception;
-use Utopia\Query\Query;
 use Utopia\Fetch\Client;
+use Utopia\Query\Query;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
@@ -56,18 +56,18 @@ class ClickHouse extends SQL
      * @var list<string>
      */
     private const VALUE_REQUIRED_METHODS = [
-        Query::TYPE_EQUAL,
-        Query::TYPE_NOT_EQUAL,
-        Query::TYPE_LESSER,
-        Query::TYPE_LESSER_EQUAL,
-        Query::TYPE_GREATER,
-        Query::TYPE_GREATER_EQUAL,
-        Query::TYPE_BETWEEN,
-        Query::TYPE_NOT_BETWEEN,
-        Query::TYPE_CONTAINS,
-        Query::TYPE_NOT_CONTAINS,
-        Query::TYPE_STARTS_WITH,
-        Query::TYPE_ENDS_WITH,
+        UsageQuery::TYPE_EQUAL,
+        UsageQuery::TYPE_NOT_EQUAL,
+        UsageQuery::TYPE_LESSER,
+        UsageQuery::TYPE_LESSER_EQUAL,
+        UsageQuery::TYPE_GREATER,
+        UsageQuery::TYPE_GREATER_EQUAL,
+        UsageQuery::TYPE_BETWEEN,
+        UsageQuery::TYPE_NOT_BETWEEN,
+        UsageQuery::TYPE_CONTAINS,
+        UsageQuery::TYPE_NOT_CONTAINS,
+        UsageQuery::TYPE_STARTS_WITH,
+        UsageQuery::TYPE_ENDS_WITH,
     ];
 
     private string $host;
@@ -1486,11 +1486,16 @@ class ClickHouse extends SQL
         // gauges has no coherent ordering, so reject this combination upfront.
         $userLimit = null;
         foreach ($queries as $query) {
+            /** @var mixed $method */
             $method = $query->getMethod();
-            if ($method === Query::TYPE_CURSOR_AFTER || $method === Query::TYPE_CURSOR_BEFORE) {
+            if ($method instanceof \BackedEnum) {
+                $method = $method->value;
+            }
+
+            if ($method === UsageQuery::TYPE_CURSOR_AFTER || $method === UsageQuery::TYPE_CURSOR_BEFORE) {
                 throw new Exception('Cursor pagination requires an explicit $type (event or gauge)');
             }
-            if ($method === Query::TYPE_LIMIT) {
+            if ($method === UsageQuery::TYPE_LIMIT) {
                 $values = $query->getValues();
                 if (!empty($values) && is_numeric($values[0])) {
                     $userLimit = (int) $values[0];
@@ -2791,7 +2796,12 @@ class ClickHouse extends SQL
         $paramCounter = 0;
 
         foreach ($queries as $query) {
+            /** @var mixed $method */
             $method = $query->getMethod();
+            if ($method instanceof \BackedEnum) {
+                $method = $method->value;
+            }
+
             $attribute = $query->getAttribute();
             $values = $query->getValues();
 
@@ -2805,7 +2815,7 @@ class ClickHouse extends SQL
             }
 
             switch ($method) {
-                case Query::TYPE_EQUAL:
+                case UsageQuery::TYPE_EQUAL:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
@@ -2825,7 +2835,7 @@ class ClickHouse extends SQL
                     }
                     break;
 
-                case Query::TYPE_NOT_EQUAL:
+                case UsageQuery::TYPE_NOT_EQUAL:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
@@ -2834,7 +2844,7 @@ class ClickHouse extends SQL
                     $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
 
-                case Query::TYPE_LESSER:
+                case UsageQuery::TYPE_LESSER:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
@@ -2843,7 +2853,7 @@ class ClickHouse extends SQL
                     $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
 
-                case Query::TYPE_GREATER:
+                case UsageQuery::TYPE_GREATER:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
@@ -2852,7 +2862,7 @@ class ClickHouse extends SQL
                     $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
 
-                case Query::TYPE_BETWEEN:
+                case UsageQuery::TYPE_BETWEEN:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
@@ -2863,7 +2873,7 @@ class ClickHouse extends SQL
                     $params[$paramName2] = $this->formatTypedValue($chType, $values[1] ?? null);
                     break;
 
-                case Query::TYPE_NOT_BETWEEN:
+                case UsageQuery::TYPE_NOT_BETWEEN:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
@@ -2874,22 +2884,22 @@ class ClickHouse extends SQL
                     $params[$paramName2] = $this->formatTypedValue($chType, $values[1] ?? null);
                     break;
 
-                case Query::TYPE_ORDER_DESC:
+                case UsageQuery::TYPE_ORDER_DESC:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $orderBy[] = "{$escapedAttr} DESC";
                     $orderAttributes[] = ['attribute' => $attribute, 'direction' => 'DESC'];
                     break;
 
-                case Query::TYPE_ORDER_ASC:
+                case UsageQuery::TYPE_ORDER_ASC:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $orderBy[] = "{$escapedAttr} ASC";
                     $orderAttributes[] = ['attribute' => $attribute, 'direction' => 'ASC'];
                     break;
 
-                case Query::TYPE_CURSOR_AFTER:
-                case Query::TYPE_CURSOR_BEFORE:
+                case UsageQuery::TYPE_CURSOR_AFTER:
+                case UsageQuery::TYPE_CURSOR_BEFORE:
                     if ($cursor !== null) {
                         // Keep the first cursor encountered (matches base groupByType semantics)
                         break;
@@ -2899,10 +2909,10 @@ class ClickHouse extends SQL
                         break; // no-op cursor
                     }
                     $cursor = $this->normalizeCursorRow($rawCursor);
-                    $cursorDirection = $method === Query::TYPE_CURSOR_AFTER ? 'after' : 'before';
+                    $cursorDirection = $method === UsageQuery::TYPE_CURSOR_AFTER ? 'after' : 'before';
                     break;
 
-                case Query::TYPE_LESSER_EQUAL:
+                case UsageQuery::TYPE_LESSER_EQUAL:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
@@ -2911,7 +2921,7 @@ class ClickHouse extends SQL
                     $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
 
-                case Query::TYPE_GREATER_EQUAL:
+                case UsageQuery::TYPE_GREATER_EQUAL:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
@@ -2920,7 +2930,7 @@ class ClickHouse extends SQL
                     $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
 
-                case Query::TYPE_CONTAINS:
+                case UsageQuery::TYPE_CONTAINS:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
@@ -2935,7 +2945,7 @@ class ClickHouse extends SQL
                     }
                     break;
 
-                case Query::TYPE_NOT_CONTAINS:
+                case UsageQuery::TYPE_NOT_CONTAINS:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
@@ -2950,19 +2960,19 @@ class ClickHouse extends SQL
                     }
                     break;
 
-                case Query::TYPE_IS_NULL:
+                case UsageQuery::TYPE_IS_NULL:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $filters[] = "{$escapedAttr} IS NULL";
                     break;
 
-                case Query::TYPE_IS_NOT_NULL:
+                case UsageQuery::TYPE_IS_NOT_NULL:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $filters[] = "{$escapedAttr} IS NOT NULL";
                     break;
 
-                case Query::TYPE_STARTS_WITH:
+                case UsageQuery::TYPE_STARTS_WITH:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $needle = $values[0] ?? null;
@@ -2974,7 +2984,7 @@ class ClickHouse extends SQL
                     $params[$paramName] = $needle;
                     break;
 
-                case Query::TYPE_ENDS_WITH:
+                case UsageQuery::TYPE_ENDS_WITH:
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $needle = $values[0] ?? null;
@@ -2986,7 +2996,7 @@ class ClickHouse extends SQL
                     $params[$paramName] = $needle;
                     break;
 
-                case Query::TYPE_LIMIT:
+                case UsageQuery::TYPE_LIMIT:
                     $limitVal = is_array($values) && !empty($values) ? $values[0] : $values;
                     if (!\is_int($limitVal)) {
                         throw new \Exception('Invalid limit value. Expected int');
@@ -2995,7 +3005,7 @@ class ClickHouse extends SQL
                     $params['limit'] = $limit;
                     break;
 
-                case Query::TYPE_OFFSET:
+                case UsageQuery::TYPE_OFFSET:
                     $offsetVal = is_array($values) && !empty($values) ? $values[0] : $values;
                     if (!\is_int($offsetVal)) {
                         throw new \Exception('Invalid offset value. Expected int');

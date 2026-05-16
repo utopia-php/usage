@@ -6,10 +6,10 @@ use Utopia\Database\Database as UtopiaDatabase;
 use Utopia\Database\Document;
 use Utopia\Database\Exception\Duplicate as DuplicateException;
 use Utopia\Database\Query as DatabaseQuery;
+use Utopia\Query\Query;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
-use Utopia\Query\Query;
 
 class Database extends SQL
 {
@@ -375,30 +375,35 @@ class Database extends SQL
     {
         $dbQueries = [];
         foreach ($queries as $query) {
+            /** @var mixed $method */
             $method = $query->getMethod();
+            if ($method instanceof \BackedEnum) {
+                $method = $method->value;
+            }
+
             $attribute = $query->getAttribute();
             $values = $query->getValues();
 
             switch ($method) {
-                case Query::TYPE_EQUAL:
+                case UsageQuery::TYPE_EQUAL:
                     /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
                     $dbQueries[] = DatabaseQuery::equal($attribute, $values);
                     break;
-                case Query::TYPE_GREATER:
+                case UsageQuery::TYPE_GREATER:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::greaterThan($attribute, $value);
                     }
                     break;
-                case Query::TYPE_LESSER:
+                case UsageQuery::TYPE_LESSER:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::lessThan($attribute, $value);
                     }
                     break;
-                case Query::TYPE_BETWEEN:
+                case UsageQuery::TYPE_BETWEEN:
                     if (count($values) >= 2) {
                         /** @var bool|float|int|string $start */
                         $start = $values[0];
@@ -407,22 +412,22 @@ class Database extends SQL
                         $dbQueries[] = DatabaseQuery::between($attribute, $start, $end);
                     }
                     break;
-                case Query::TYPE_CONTAINS:
+                case UsageQuery::TYPE_CONTAINS:
                     /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
                     $dbQueries[] = DatabaseQuery::contains($attribute, $values);
                     break;
-                case Query::TYPE_NOT_EQUAL:
+                case UsageQuery::TYPE_NOT_EQUAL:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::notEqual($attribute, $value);
                     }
                     break;
-                case Query::TYPE_NOT_CONTAINS:
+                case UsageQuery::TYPE_NOT_CONTAINS:
                     /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
                     $dbQueries[] = DatabaseQuery::notContains($attribute, $values);
                     break;
-                case Query::TYPE_NOT_BETWEEN:
+                case UsageQuery::TYPE_NOT_BETWEEN:
                     if (count($values) >= 2) {
                         /** @var bool|float|int|string $start */
                         $start = $values[0];
@@ -431,44 +436,44 @@ class Database extends SQL
                         $dbQueries[] = DatabaseQuery::notBetween($attribute, $start, $end);
                     }
                     break;
-                case Query::TYPE_STARTS_WITH:
+                case UsageQuery::TYPE_STARTS_WITH:
                     if (!empty($values) && is_string($values[0])) {
                         $dbQueries[] = DatabaseQuery::startsWith($attribute, $values[0]);
                     }
                     break;
-                case Query::TYPE_ENDS_WITH:
+                case UsageQuery::TYPE_ENDS_WITH:
                     if (!empty($values) && is_string($values[0])) {
                         $dbQueries[] = DatabaseQuery::endsWith($attribute, $values[0]);
                     }
                     break;
-                case Query::TYPE_LESSER_EQUAL:
+                case UsageQuery::TYPE_LESSER_EQUAL:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::lessThanEqual($attribute, $value);
                     }
                     break;
-                case Query::TYPE_GREATER_EQUAL:
+                case UsageQuery::TYPE_GREATER_EQUAL:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::greaterThanEqual($attribute, $value);
                     }
                     break;
-                case Query::TYPE_ORDER_DESC:
+                case UsageQuery::TYPE_ORDER_DESC:
                     $dbQueries[] = DatabaseQuery::orderDesc($attribute);
                     break;
-                case Query::TYPE_ORDER_ASC:
+                case UsageQuery::TYPE_ORDER_ASC:
                     $dbQueries[] = DatabaseQuery::orderAsc($attribute);
                     break;
-                case Query::TYPE_LIMIT:
+                case UsageQuery::TYPE_LIMIT:
                     if (!empty($values)) {
                         /** @var int|string $val */
                         $val = $values[0] ?? 0;
                         $dbQueries[] = DatabaseQuery::limit((int) $val);
                     }
                     break;
-                case Query::TYPE_OFFSET:
+                case UsageQuery::TYPE_OFFSET:
                     if (!empty($values)) {
                         /** @var int|string $val */
                         $val = $values[0] ?? 0;

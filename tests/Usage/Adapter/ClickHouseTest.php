@@ -1187,7 +1187,7 @@ class ClickHouseTest extends TestCase
         $this->expectExceptionMessage('Equal queries require at least one value.');
 
         $this->usage->find([
-            new Query(Query::TYPE_EQUAL, 'metric', []),
+            new Query(UsageQuery::TYPE_EQUAL, 'metric', []),
         ], Usage::TYPE_EVENT);
     }
 }

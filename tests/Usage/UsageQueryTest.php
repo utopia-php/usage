@@ -13,7 +13,7 @@ class UsageQueryTest extends TestCase
         $query = UsageQuery::groupByInterval('time', '1h');
 
         $this->assertInstanceOf(UsageQuery::class, $query);
-        $this->assertEquals(UsageQuery::TYPE_GROUP_BY_INTERVAL, $query->getMethod());
+        $this->assertTrue(UsageQuery::isGroupByInterval($query));
         $this->assertEquals('time', $query->getAttribute());
         $this->assertEquals(['1h'], $query->getValues());
         $this->assertEquals('1h', $query->getValue());
@@ -63,7 +63,7 @@ class UsageQueryTest extends TestCase
 
         $this->assertNotNull($extracted);
         $this->assertInstanceOf(Query::class, $extracted);
-        $this->assertEquals(UsageQuery::TYPE_GROUP_BY_INTERVAL, $extracted->getMethod());
+        $this->assertTrue(UsageQuery::isGroupByInterval($extracted));
         $this->assertEquals('1h', $extracted->getValue());
     }
 
@@ -78,7 +78,7 @@ class UsageQueryTest extends TestCase
         $extracted = UsageQuery::extractGroupByInterval($queries);
 
         $this->assertNotNull($extracted);
-        $this->assertEquals(UsageQuery::TYPE_GROUP_BY_INTERVAL, $extracted->getMethod());
+        $this->assertTrue(UsageQuery::isGroupByInterval($extracted));
         $this->assertEquals('1h', $extracted->getValue());
     }
 
@@ -104,7 +104,7 @@ class UsageQueryTest extends TestCase
         $this->assertCount(2, $remaining);
 
         foreach ($remaining as $query) {
-            $this->assertNotEquals(UsageQuery::TYPE_GROUP_BY_INTERVAL, $query->getMethod());
+            $this->assertFalse(UsageQuery::isGroupByInterval($query));
         }
     }
 

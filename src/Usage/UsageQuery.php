@@ -29,7 +29,47 @@ use Utopia\Query\Query;
  */
 class UsageQuery extends Query
 {
+    public const TYPE_BETWEEN = 'between';
+
+    public const TYPE_CONTAINS = 'contains';
+
+    public const TYPE_CURSOR_AFTER = 'cursorAfter';
+
+    public const TYPE_CURSOR_BEFORE = 'cursorBefore';
+
+    public const TYPE_ENDS_WITH = 'endsWith';
+
+    public const TYPE_EQUAL = 'equal';
+
+    public const TYPE_GREATER = 'greaterThan';
+
+    public const TYPE_GREATER_EQUAL = 'greaterThanEqual';
+
     public const TYPE_GROUP_BY_INTERVAL = 'groupByInterval';
+
+    public const TYPE_IS_NOT_NULL = 'isNotNull';
+
+    public const TYPE_IS_NULL = 'isNull';
+
+    public const TYPE_LESSER = 'lessThan';
+
+    public const TYPE_LESSER_EQUAL = 'lessThanEqual';
+
+    public const TYPE_LIMIT = 'limit';
+
+    public const TYPE_NOT_BETWEEN = 'notBetween';
+
+    public const TYPE_NOT_CONTAINS = 'notContains';
+
+    public const TYPE_NOT_EQUAL = 'notEqual';
+
+    public const TYPE_OFFSET = 'offset';
+
+    public const TYPE_ORDER_ASC = 'orderAsc';
+
+    public const TYPE_ORDER_DESC = 'orderDesc';
+
+    public const TYPE_STARTS_WITH = 'startsWith';
 
     /**
      * Valid interval values and their ClickHouse INTERVAL equivalents.
@@ -85,7 +125,12 @@ class UsageQuery extends Query
      */
     public static function isGroupByInterval(Query $query): bool
     {
-        return $query->getMethod() === self::TYPE_GROUP_BY_INTERVAL;
+        $method = $query->getMethod();
+        if ($method instanceof \BackedEnum) {
+            $method = $method->value;
+        }
+
+        return $method === self::TYPE_GROUP_BY_INTERVAL;
     }
 
     /**
@@ -100,7 +145,7 @@ class UsageQuery extends Query
     public static function extractGroupByInterval(array $queries): ?Query
     {
         foreach ($queries as $query) {
-            if ($query->getMethod() === self::TYPE_GROUP_BY_INTERVAL) {
+            if (self::isGroupByInterval($query)) {
                 return $query;
             }
         }
