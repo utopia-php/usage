@@ -40,7 +40,21 @@ class Metric extends ArrayObject
     /**
      * Event-specific column names that are extracted from tags into dedicated columns.
      */
-    public const EVENT_COLUMNS = ['path', 'method', 'status', 'resource', 'resourceId', 'country', 'userAgent'];
+    public const EVENT_COLUMNS = [
+        'path', 'method', 'status',
+        'service', 'resource', 'resourceId', 'resourceInternalId',
+        'teamId', 'teamInternalId',
+        'country', 'region', 'hostname',
+        'osCode', 'osName', 'osVersion',
+        'clientType', 'clientCode', 'clientName', 'clientVersion',
+        'clientEngine', 'clientEngineVersion',
+        'deviceName', 'deviceBrand', 'deviceModel',
+    ];
+
+    /**
+     * Gauge-specific column names that are extracted from tags into dedicated columns.
+     */
+    public const GAUGE_COLUMNS = ['teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
 
     /**
      * Construct a new metric object.

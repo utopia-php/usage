@@ -671,7 +671,25 @@ class MetricTest extends TestCase
      */
     public function testEventColumnsConstant(): void
     {
-        $expected = ['path', 'method', 'status', 'resource', 'resourceId', 'country', 'userAgent'];
-        $this->assertEquals($expected, Metric::EVENT_COLUMNS);
+        $expected = [
+            'path', 'method', 'status',
+            'service', 'resource', 'resourceId', 'resourceInternalId',
+            'teamId', 'teamInternalId',
+            'country', 'region', 'hostname',
+            'osCode', 'osName', 'osVersion',
+            'clientType', 'clientCode', 'clientName', 'clientVersion',
+            'clientEngine', 'clientEngineVersion',
+            'deviceName', 'deviceBrand', 'deviceModel',
+        ];
+        $this->assertSame($expected, Metric::EVENT_COLUMNS);
+    }
+
+    /**
+     * Test GAUGE_COLUMNS constant
+     */
+    public function testGaugeColumnsConstant(): void
+    {
+        $expected = ['teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
+        $this->assertSame($expected, Metric::GAUGE_COLUMNS);
     }
 }
