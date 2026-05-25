@@ -1405,41 +1405,36 @@ class ClickHouse extends SQL
 
                 $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
 
-                if ($type === Usage::TYPE_EVENT) {
-                    // Extract event-specific columns from tags into dedicated columns
-                    $eventColumns = [];
-                    foreach (Metric::EVENT_COLUMNS as $col) {
-                        if (isset($tags[$col])) {
-                            $tagValue = $tags[$col];
-                            $eventColumns[$col] = is_string($tagValue) ? $tagValue : (is_scalar($tagValue) ? (string) $tagValue : null);
-                            unset($tags[$col]);
-                        } else {
-                            $eventColumns[$col] = null;
-                        }
+                $allowed = $type === Usage::TYPE_EVENT ? Metric::EVENT_COLUMNS : Metric::GAUGE_COLUMNS;
+
+                $columns = [];
+                foreach ($allowed as $col) {
+                    $val = $tags[$col] ?? null;
+                    unset($tags[$col]);
+                    if (is_string($val)) {
+                        $val = $val === '' ? null : $val;
+                    } elseif (is_scalar($val)) {
+                        $val = (string) $val;
+                    } else {
+                        $val = null;
                     }
-
-                    ksort($tags);
-
-                    $row = array_merge([
-                        'id' => $this->generateId(),
-                        'metric' => $metric,
-                        'value' => $value,
-                        'time' => $this->formatDateTime(null),
-                    ], $eventColumns, [
-                        'tags' => $tags,
-                    ]);
-                } else {
-                    // Gauge: simple schema
-                    ksort($tags);
-
-                    $row = [
-                        'id' => $this->generateId(),
-                        'metric' => $metric,
-                        'value' => $value,
-                        'time' => $this->formatDateTime(null),
-                        'tags' => $tags,
-                    ];
+                    if (($col === 'country' || $col === 'region') && is_string($val)) {
+                        $val = strtolower($val);
+                    }
+                    $columns[$col] = $val;
                 }
+
+                if (!empty($tags)) {
+                    $unknown = array_key_first($tags);
+                    throw new Exception("Unknown column '{$unknown}' for {$type}");
+                }
+
+                $row = array_merge([
+                    'id'     => $this->generateId(),
+                    'metric' => $metric,
+                    'value'  => $value,
+                    'time'   => $this->formatDateTime(null),
+                ], $columns);
 
                 if ($this->sharedTables) {
                     $row['tenant'] = $tenant;
