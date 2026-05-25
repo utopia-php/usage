@@ -72,39 +72,54 @@ class MetricTest extends TestCase
     }
 
     /**
-     * Test Metric::getEventIndexes() returns correct index definitions
+     * Test Metric::getEventIndexes() returns one entry per indexed dimension.
      */
     public function testGetEventIndexesReturnsIndexDefinitions(): void
     {
         $indexes = Metric::getEventIndexes();
 
         $this->assertIsArray($indexes);
-        // metric/time are now covered by the primary key (ORDER BY (tenant,
-        // metric, time, id)), so only event-specific secondary indexes
-        // remain: path, method, status, resource, resourceId, country,
-        // userAgent.
-        $this->assertCount(7, $indexes);
 
-        $this->assertEquals('index-path', $indexes[0]['$id']);
-        $this->assertEquals('index-method', $indexes[1]['$id']);
-        $this->assertEquals('index-status', $indexes[2]['$id']);
-        $this->assertEquals('index-resource', $indexes[3]['$id']);
-        $this->assertEquals('index-resourceId', $indexes[4]['$id']);
-        $this->assertEquals('index-country', $indexes[5]['$id']);
-        $this->assertEquals('index-userAgent', $indexes[6]['$id']);
+        $ids = array_column($indexes, '$id');
+        $this->assertNotContains('index-userAgent', $ids, 'userAgent index must be dropped');
     }
 
     /**
-     * Test Metric::getGaugeIndexes() returns correct index definitions
+     * Test Metric::getGaugeIndexes() returns one entry per gauge dimension.
      */
     public function testGetGaugeIndexesReturnsIndexDefinitions(): void
     {
         $indexes = Metric::getGaugeIndexes();
 
-        // Gauges only filter by metric and time, both in the primary key,
-        // so no secondary indexes are needed.
         $this->assertIsArray($indexes);
-        $this->assertCount(0, $indexes);
+        $this->assertCount(count(Metric::GAUGE_COLUMNS), $indexes);
+    }
+
+    public function testEventIndexesCoverNewFilterableColumns(): void
+    {
+        $indexed = [];
+        foreach (Metric::getEventIndexes() as $idx) {
+            $indexed = array_merge($indexed, $idx['attributes']);
+        }
+        foreach ([
+            'path', 'method', 'status', 'service', 'resource',
+            'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId',
+            'country', 'region', 'hostname',
+            'osName', 'clientType', 'clientName', 'deviceName',
+        ] as $col) {
+            $this->assertContains($col, $indexed, "Event indexes missing {$col}");
+        }
+    }
+
+    public function testGaugeIndexesCoverIdColumns(): void
+    {
+        $indexed = [];
+        foreach (Metric::getGaugeIndexes() as $idx) {
+            $indexed = array_merge($indexed, $idx['attributes']);
+        }
+        foreach (['resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'] as $col) {
+            $this->assertContains($col, $indexed);
+        }
     }
 
     /**

@@ -692,46 +692,25 @@ class Metric extends ArrayObject
      */
     public static function getEventIndexes(): array
     {
-        // Note: `metric` and `time` are part of the ClickHouse primary key
-        // (ORDER BY (tenant, metric, time, id)), so a separate bloom_filter
-        // index on either column would be redundant. They're omitted here.
-        return [
-            [
-                '$id' => 'index-path',
-                'type' => 'key',
-                'attributes' => ['path'],
-            ],
-            [
-                '$id' => 'index-method',
-                'type' => 'key',
-                'attributes' => ['method'],
-            ],
-            [
-                '$id' => 'index-status',
-                'type' => 'key',
-                'attributes' => ['status'],
-            ],
-            [
-                '$id' => 'index-resource',
-                'type' => 'key',
-                'attributes' => ['resource'],
-            ],
-            [
-                '$id' => 'index-resourceId',
-                'type' => 'key',
-                'attributes' => ['resourceId'],
-            ],
-            [
-                '$id' => 'index-country',
-                'type' => 'key',
-                'attributes' => ['country'],
-            ],
-            [
-                '$id' => 'index-userAgent',
-                'type' => 'key',
-                'attributes' => ['userAgent'],
-            ],
+        // `metric` and `time` are part of the ClickHouse primary key
+        // (ORDER BY (tenant, metric, time, id)), so separate bloom_filter
+        // indexes on them would be redundant.
+        $indexed = [
+            'path', 'method', 'status',
+            'service', 'resource', 'resourceId', 'resourceInternalId',
+            'teamId', 'teamInternalId',
+            'country', 'region', 'hostname',
+            'osName', 'clientType', 'clientName', 'deviceName',
         ];
+
+        return array_map(
+            static fn (string $col): array => [
+                '$id' => 'index-' . $col,
+                'type' => 'key',
+                'attributes' => [$col],
+            ],
+            $indexed,
+        );
     }
 
     /**
@@ -741,10 +720,14 @@ class Metric extends ArrayObject
      */
     public static function getGaugeIndexes(): array
     {
-        // `metric` and `time` are part of the primary key; no secondary
-        // indexes needed. Returning an empty array keeps the table DDL
-        // free of redundant bloom_filter clauses.
-        return [];
+        return array_map(
+            static fn (string $col): array => [
+                '$id' => 'index-' . $col,
+                'type' => 'key',
+                'attributes' => [$col],
+            ],
+            ['resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'],
+        );
     }
 
     /**
