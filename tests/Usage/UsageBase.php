@@ -34,7 +34,7 @@ trait UsageBase
 
         // Gauges: point-in-time snapshots
         $this->assertTrue($this->usage->addBatch([
-            ['metric' => 'storage', 'value' => 10000, 'tags' => ['region' => 'us-east']],
+            ['metric' => 'storage', 'value' => 10000, 'tags' => ['resourceId' => 'p1']],
         ], Usage::TYPE_GAUGE));
     }
 
