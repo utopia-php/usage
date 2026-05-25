@@ -1248,8 +1248,13 @@ class ClickHouse extends SQL
             throw new Exception("Attribute {$id} not found in {$type} schema");
         }
 
-        // Country uses LowCardinality for efficient storage of low-cardinality values
-        if ($id === 'country') {
+        $lowCardinality = [
+            'country', 'region', 'service', 'resource',
+            'osCode', 'osName', 'clientType', 'clientCode', 'clientName',
+            'clientEngine', 'deviceName', 'deviceBrand',
+        ];
+
+        if (in_array($id, $lowCardinality, true)) {
             return 'LowCardinality(Nullable(String))';
         }
 
