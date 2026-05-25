@@ -23,9 +23,18 @@ use ArrayObject;
  *     'path' => '/v1/storage/files',
  *     'method' => 'POST',
  *     'status' => '201',
+ *     'service' => 'storage',
  *     'resource' => 'bucket',
  *     'resourceId' => 'abc123',
- *     'tags' => ['region' => 'us-east', 'country' => 'US']
+ *     'resourceInternalId' => '42',
+ *     'teamId' => 'team_x',
+ *     'teamInternalId' => '7',
+ *     'country' => 'us',
+ *     'region' => 'us-east',
+ *     'hostname' => 'app.example.com',
+ *     'osName' => 'iOS',
+ *     'clientName' => 'Appwrite SDK',
+ *     'deviceName' => 'smartphone',
  * ]);
  *
  * echo $metric->getMetric(); // 'bandwidth'
@@ -65,13 +74,21 @@ class Metric extends ArrayObject
      * - metric: Name/type of the metric being tracked
      * - value: Numeric value of the metric
      * - time: Timestamp when the metric was recorded
-     * - path: API endpoint path (events only)
-     * - method: HTTP method (events only)
-     * - status: HTTP status code (events only)
-     * - resource: Resource type (events only)
-     * - resourceId: Resource ID (events only)
-     * - tags: Additional metadata as key-value pairs
      * - tenant: Tenant ID for multi-tenant environments
+     *
+     * Event-only dimension columns (see EVENT_COLUMNS):
+     * - path / method / status: HTTP shape
+     * - service: API service segment (storage, databases, …)
+     * - resource / resourceId / resourceInternalId: resource identity
+     * - teamId / teamInternalId: owning team identity
+     * - country / region / hostname: geographic + caller origin
+     * - osCode / osName / osVersion: parsed user-agent OS fields
+     * - clientType / clientCode / clientName / clientVersion: parsed client
+     * - clientEngine / clientEngineVersion: parsed client engine
+     * - deviceName / deviceBrand / deviceModel: parsed device fields
+     *
+     * Gauge-only dimension columns (see GAUGE_COLUMNS):
+     * - teamId / teamInternalId / resourceId / resourceInternalId
      *
      * @param  array<string, mixed>  $input  Metric data
      */
