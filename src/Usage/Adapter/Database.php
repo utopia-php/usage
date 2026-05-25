@@ -73,7 +73,10 @@ class Database extends SQL
             throw new \Exception('You need to create the database before running Usage setup');
         }
 
-        // Use event attributes which is a superset (includes path/method/status/resource/resourceId)
+        // Event schema is a superset of the gauge schema for the dimensions
+        // that exist in both (resourceId, resourceInternalId, teamId,
+        // teamInternalId), so a single Database collection backed by the
+        // event schema works for both types.
         $attributes = $this->getAttributeDocuments('event');
         $indexDocs = $this->getIndexDocuments('event');
 
@@ -138,25 +141,41 @@ class Database extends SQL
                     throw new \InvalidArgumentException('Value cannot be negative');
                 }
 
+                /** @var array<string,mixed> $tags */
                 $tags = $metric['tags'] ?? [];
-                ksort($tags);
 
-                $docData = [
+                $allowed = $type === Usage::TYPE_EVENT ? Metric::EVENT_COLUMNS : Metric::GAUGE_COLUMNS;
+
+                $columns = [];
+                foreach ($allowed as $col) {
+                    $val = $tags[$col] ?? null;
+                    unset($tags[$col]);
+                    if (is_string($val)) {
+                        $val = $val === '' ? null : $val;
+                    } elseif (is_scalar($val)) {
+                        $val = (string) $val;
+                    } else {
+                        $val = null;
+                    }
+                    if (($col === 'country' || $col === 'region') && is_string($val)) {
+                        $val = strtolower($val);
+                    }
+                    $columns[$col] = $val;
+                }
+
+                if (!empty($tags)) {
+                    $unknown = array_key_first($tags);
+                    throw new \Exception("Unknown column '{$unknown}' for {$type}");
+                }
+
+                $docData = array_merge([
                     '$id' => $this->generateId(),
                     '$permissions' => [],
                     'metric' => $metric['metric'],
                     'value' => $metric['value'],
                     'type' => $type,
                     'time' => (new \DateTime())->format('Y-m-d H:i:s.v'),
-                    'tags' => $tags,
-                ];
-
-                // For events, extract event-specific columns from tags
-                if ($type === Usage::TYPE_EVENT) {
-                    foreach (Metric::EVENT_COLUMNS as $col) {
-                        $docData[$col] = $tags[$col] ?? null;
-                    }
-                }
+                ], $columns);
 
                 $documents[] = new Document($docData);
             }
