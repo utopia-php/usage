@@ -327,7 +327,6 @@ class MetricTest extends TestCase
             'status' => '201',
             'resource' => 'bucket',
             'resourceId' => 'abc123',
-            'tags' => ['env' => 'prod'],
         ];
 
         $metric = new Metric($data);
@@ -341,7 +340,6 @@ class MetricTest extends TestCase
         $this->assertEquals('201', $metric->getStatus());
         $this->assertEquals('bucket', $metric->getResource());
         $this->assertEquals('abc123', $metric->getResourceId());
-        $this->assertEquals(['env' => 'prod'], $metric->getTags());
     }
 
     /**
@@ -456,25 +454,6 @@ class MetricTest extends TestCase
     {
         $metric = new Metric([]);
         $this->assertNull($metric->getTime());
-    }
-
-    /**
-     * Test Metric::getTags() returns tags
-     */
-    public function testGetTagsReturnsTags(): void
-    {
-        $tags = ['region' => 'us-east', 'env' => 'prod'];
-        $metric = new Metric(['tags' => $tags]);
-        $this->assertEquals($tags, $metric->getTags());
-    }
-
-    /**
-     * Test Metric::getTags() returns empty array when not set
-     */
-    public function testGetTagsReturnsEmptyArrayWhenNotSet(): void
-    {
-        $metric = new Metric([]);
-        $this->assertEquals([], $metric->getTags());
     }
 
     /**
@@ -693,5 +672,45 @@ class MetricTest extends TestCase
             $this->assertContains($col, $ids);
         }
         $this->assertNotContains('tags', $ids);
+    }
+
+    /**
+     * Test the 18 new typed getters return the value passed via the constructor.
+     */
+    public function testNewGettersReturnString(): void
+    {
+        $m = new Metric([
+            'service' => 'storage', 'resourceInternalId' => '42',
+            'teamId' => 'org_x', 'teamInternalId' => '7',
+            'region' => 'fra', 'hostname' => 'app.example.com',
+            'osCode' => 'IOS', 'osName' => 'iOS', 'osVersion' => '17.4',
+            'clientType' => 'mobile-app', 'clientCode' => 'APW', 'clientName' => 'Appwrite SDK',
+            'clientVersion' => '15.0.0', 'clientEngine' => 'WebKit', 'clientEngineVersion' => '605',
+            'deviceName' => 'smartphone', 'deviceBrand' => 'Apple', 'deviceModel' => 'iPhone 13',
+        ]);
+        $this->assertSame('storage', $m->getService());
+        $this->assertSame('42', $m->getResourceInternalId());
+        $this->assertSame('org_x', $m->getTeamId());
+        $this->assertSame('7', $m->getTeamInternalId());
+        $this->assertSame('fra', $m->getRegion());
+        $this->assertSame('app.example.com', $m->getHostname());
+        $this->assertSame('IOS', $m->getOsCode());
+        $this->assertSame('iOS', $m->getOsName());
+        $this->assertSame('17.4', $m->getOsVersion());
+        $this->assertSame('mobile-app', $m->getClientType());
+        $this->assertSame('APW', $m->getClientCode());
+        $this->assertSame('Appwrite SDK', $m->getClientName());
+        $this->assertSame('15.0.0', $m->getClientVersion());
+        $this->assertSame('WebKit', $m->getClientEngine());
+        $this->assertSame('605', $m->getClientEngineVersion());
+        $this->assertSame('smartphone', $m->getDeviceName());
+        $this->assertSame('Apple', $m->getDeviceBrand());
+        $this->assertSame('iPhone 13', $m->getDeviceModel());
+    }
+
+    public function testDroppedGettersDoNotExist(): void
+    {
+        $this->assertFalse(method_exists(Metric::class, 'getUserAgent'));
+        $this->assertFalse(method_exists(Metric::class, 'getTags'));
     }
 }

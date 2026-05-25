@@ -231,41 +231,169 @@ class Metric extends ArrayObject
     }
 
     /**
-     * Get user agent (event metrics only).
+     * Get service (event metrics only).
      *
-     * @return string|null The user agent string, or null if not set
+     * @return string|null
      */
-    public function getUserAgent(): ?string
+    public function getService(): ?string
     {
-        $userAgent = $this->getAttribute('userAgent', null);
-        return is_string($userAgent) ? $userAgent : null;
+        $v = $this->getAttribute('service', null);
+        return is_string($v) ? $v : null;
     }
 
     /**
-     * Get tags.
+     * Get internal resource id (event/gauge metrics).
      *
-     * Returns additional metadata associated with this metric as key-value pairs.
-     * Tags are useful for filtering, grouping, and contextualizing metrics.
-     *
-     * Common tag examples:
-     * - region: Geographic region (us-east, eu-west)
-     * - userAgent: Client user agent
-     * - country: Country code
-     *
-     * Note: For event metrics, path/method/status/resource/resourceId are stored
-     * as dedicated columns, not in tags. Remaining metadata (region, userAgent, etc.)
-     * stays in the tags JSON.
-     *
-     * @return array<string, mixed> Associative array of tags
+     * @return string|null
      */
-    // NOTE: loks0n flagged this as a leftover from the previous Metric
-    // implementation. Kept because tests (MetricTest, ClickHouseTest) and
-    // downstream consumers still call it; remove once those callers are
-    // migrated to direct `tags` attribute access.
-    public function getTags(): array
+    public function getResourceInternalId(): ?string
     {
-        $tags = $this->getAttribute('tags', []);
-        return is_array($tags) ? $tags : [];
+        $v = $this->getAttribute('resourceInternalId', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get team id (event/gauge metrics).
+     */
+    public function getTeamId(): ?string
+    {
+        $v = $this->getAttribute('teamId', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get team internal id (event/gauge metrics).
+     */
+    public function getTeamInternalId(): ?string
+    {
+        $v = $this->getAttribute('teamInternalId', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get region (event metrics).
+     */
+    public function getRegion(): ?string
+    {
+        $v = $this->getAttribute('region', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get caller hostname (event metrics).
+     */
+    public function getHostname(): ?string
+    {
+        $v = $this->getAttribute('hostname', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get OS short code (event metrics).
+     */
+    public function getOsCode(): ?string
+    {
+        $v = $this->getAttribute('osCode', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get OS name (event metrics).
+     */
+    public function getOsName(): ?string
+    {
+        $v = $this->getAttribute('osName', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get OS version (event metrics).
+     */
+    public function getOsVersion(): ?string
+    {
+        $v = $this->getAttribute('osVersion', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get client type (event metrics).
+     */
+    public function getClientType(): ?string
+    {
+        $v = $this->getAttribute('clientType', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get client short code (event metrics).
+     */
+    public function getClientCode(): ?string
+    {
+        $v = $this->getAttribute('clientCode', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get client name (event metrics).
+     */
+    public function getClientName(): ?string
+    {
+        $v = $this->getAttribute('clientName', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get client version (event metrics).
+     */
+    public function getClientVersion(): ?string
+    {
+        $v = $this->getAttribute('clientVersion', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get client engine (event metrics).
+     */
+    public function getClientEngine(): ?string
+    {
+        $v = $this->getAttribute('clientEngine', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get client engine version (event metrics).
+     */
+    public function getClientEngineVersion(): ?string
+    {
+        $v = $this->getAttribute('clientEngineVersion', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get device name (event metrics).
+     */
+    public function getDeviceName(): ?string
+    {
+        $v = $this->getAttribute('deviceName', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get device brand (event metrics).
+     */
+    public function getDeviceBrand(): ?string
+    {
+        $v = $this->getAttribute('deviceBrand', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get device model (event metrics).
+     */
+    public function getDeviceModel(): ?string
+    {
+        $v = $this->getAttribute('deviceModel', null);
+        return is_string($v) ? $v : null;
     }
 
     /**
