@@ -131,7 +131,7 @@ class MetricTest extends TestCase
             'status' => '201',
             'resource' => 'bucket',
             'resourceId' => 'abc123',
-            'tags' => ['region' => 'us-east', 'env' => 'prod'],
+            'region' => 'us',
         ];
 
         // Should not throw exception
@@ -148,7 +148,8 @@ class MetricTest extends TestCase
             'metric' => 'storage',
             'value' => 10000,
             'time' => '2024-01-01 12:00:00',
-            'tags' => ['region' => 'us-east'],
+            'teamId' => 'team1',
+            'resourceId' => 'r1',
         ];
 
         Metric::validate($validData, 'gauge');
@@ -280,36 +281,6 @@ class MetricTest extends TestCase
             'value' => 100,
             'time' => 'invalid-date',
         ], 'event');
-    }
-
-    /**
-     * Test Metric::validate() rejects non-array tags
-     */
-    public function testValidateRejectsNonArrayTags(): void
-    {
-        $this->expectException(\Exception::class);
-        $this->expectExceptionMessage("Attribute 'tags' must be an array");
-
-        Metric::validate([
-            'metric' => 'requests',
-            'value' => 100,
-            'tags' => 'not-an-array',
-        ], 'event');
-    }
-
-    /**
-     * Test Metric::validate() accepts empty tags array
-     */
-    public function testValidateAcceptsEmptyTags(): void
-    {
-        $data = [
-            'metric' => 'requests',
-            'value' => 100,
-            'tags' => [],
-        ];
-
-        Metric::validate($data, 'event');
-        $this->assertTrue(true);
     }
 
     /**

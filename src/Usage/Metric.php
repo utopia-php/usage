@@ -798,14 +798,6 @@ class Metric extends ArrayObject
 
             $value = $data[$attrId];
 
-            // Special handling for tags: accept array (will be JSON-encoded)
-            if ($attrId === 'tags') {
-                if (!is_array($value)) {
-                    throw new \Exception("Attribute '{$attrId}' must be an array, got " . gettype($value));
-                }
-                continue;
-            }
-
             // Validate based on attribute type
             match ($attrType) {
                 'string' => self::validateStringAttribute($attrId, $value, $size),
