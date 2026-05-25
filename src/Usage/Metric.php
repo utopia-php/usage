@@ -422,6 +422,16 @@ class Metric extends ArrayObject
      */
     public static function getEventSchema(): array
     {
+        $stringColumn = static fn (string $id, int $size): array => [
+            '$id' => $id,
+            'type' => 'string',
+            'size' => $size,
+            'required' => false,
+            'signed' => true,
+            'array' => false,
+            'filters' => [],
+        ];
+
         return [
             [
                 '$id' => 'metric',
@@ -451,78 +461,30 @@ class Metric extends ArrayObject
                 'array' => false,
                 'filters' => ['datetime'],
             ],
-            [
-                '$id' => 'path',
-                'type' => 'string',
-                'size' => 255,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'method',
-                'type' => 'string',
-                'size' => 16,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'status',
-                'type' => 'string',
-                'size' => 16,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'resource',
-                'type' => 'string',
-                'size' => 255,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'resourceId',
-                'type' => 'string',
-                'size' => 255,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'country',
-                'type' => 'string',
-                'size' => 2,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'userAgent',
-                'type' => 'string',
-                'size' => 255,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'tags',
-                'type' => 'string',
-                'size' => 16777216,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => ['json'],
-            ],
+            $stringColumn('path', 1024),
+            $stringColumn('method', 16),
+            $stringColumn('status', 16),
+            $stringColumn('service', 256),
+            $stringColumn('resource', 256),
+            $stringColumn('resourceId', 255),
+            $stringColumn('resourceInternalId', 255),
+            $stringColumn('teamId', 255),
+            $stringColumn('teamInternalId', 255),
+            $stringColumn('country', 2),
+            $stringColumn('region', 2),
+            $stringColumn('hostname', 1024),
+            $stringColumn('osCode', 256),
+            $stringColumn('osName', 256),
+            $stringColumn('osVersion', 255),
+            $stringColumn('clientType', 256),
+            $stringColumn('clientCode', 256),
+            $stringColumn('clientName', 256),
+            $stringColumn('clientVersion', 255),
+            $stringColumn('clientEngine', 256),
+            $stringColumn('clientEngineVersion', 255),
+            $stringColumn('deviceName', 256),
+            $stringColumn('deviceBrand', 256),
+            $stringColumn('deviceModel', 255),
         ];
     }
 
@@ -536,6 +498,16 @@ class Metric extends ArrayObject
      */
     public static function getGaugeSchema(): array
     {
+        $stringColumn = static fn (string $id, int $size): array => [
+            '$id' => $id,
+            'type' => 'string',
+            'size' => $size,
+            'required' => false,
+            'signed' => true,
+            'array' => false,
+            'filters' => [],
+        ];
+
         return [
             [
                 '$id' => 'metric',
@@ -565,15 +537,10 @@ class Metric extends ArrayObject
                 'array' => false,
                 'filters' => ['datetime'],
             ],
-            [
-                '$id' => 'tags',
-                'type' => 'string',
-                'size' => 16777216,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => ['json'],
-            ],
+            $stringColumn('teamId', 255),
+            $stringColumn('teamInternalId', 255),
+            $stringColumn('resourceId', 255),
+            $stringColumn('resourceInternalId', 255),
         ];
     }
 

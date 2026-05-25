@@ -15,63 +15,29 @@ class MetricTest extends TestCase
         $schema = Metric::getEventSchema();
 
         $this->assertIsArray($schema);
-        $this->assertCount(11, $schema);
+        // 3 core (metric, value, time) + 24 dimension columns from EVENT_COLUMNS.
+        $this->assertCount(3 + count(Metric::EVENT_COLUMNS), $schema);
 
-        // Test metric attribute
         $metricAttr = $schema[0];
         $this->assertEquals('metric', $metricAttr['$id']);
         $this->assertEquals('string', $metricAttr['type']);
         $this->assertEquals(255, $metricAttr['size']);
         $this->assertTrue($metricAttr['required']);
 
-        // Test value attribute
         $valueAttr = $schema[1];
         $this->assertEquals('value', $valueAttr['$id']);
         $this->assertEquals('integer', $valueAttr['type']);
         $this->assertTrue($valueAttr['required']);
 
-        // Test time attribute (optional)
         $timeAttr = $schema[2];
         $this->assertEquals('time', $timeAttr['$id']);
         $this->assertEquals('datetime', $timeAttr['type']);
         $this->assertFalse($timeAttr['required']);
 
-        // Test event-specific columns
-        $pathAttr = $schema[3];
-        $this->assertEquals('path', $pathAttr['$id']);
-        $this->assertFalse($pathAttr['required']);
-
-        $methodAttr = $schema[4];
-        $this->assertEquals('method', $methodAttr['$id']);
-        $this->assertFalse($methodAttr['required']);
-
-        $statusAttr = $schema[5];
-        $this->assertEquals('status', $statusAttr['$id']);
-        $this->assertFalse($statusAttr['required']);
-
-        $resourceAttr = $schema[6];
-        $this->assertEquals('resource', $resourceAttr['$id']);
-        $this->assertFalse($resourceAttr['required']);
-
-        $resourceIdAttr = $schema[7];
-        $this->assertEquals('resourceId', $resourceIdAttr['$id']);
-        $this->assertFalse($resourceIdAttr['required']);
-
-        // Test country attribute (optional)
-        $countryAttr = $schema[8];
-        $this->assertEquals('country', $countryAttr['$id']);
-        $this->assertFalse($countryAttr['required']);
-
-        // Test userAgent attribute (optional)
-        $userAgentAttr = $schema[9];
-        $this->assertEquals('userAgent', $userAgentAttr['$id']);
-        $this->assertFalse($userAgentAttr['required']);
-
-        // Test tags attribute (optional)
-        $tagsAttr = $schema[10];
-        $this->assertEquals('tags', $tagsAttr['$id']);
-        $this->assertEquals('string', $tagsAttr['type']);
-        $this->assertFalse($tagsAttr['required']);
+        $ids = array_column($schema, '$id');
+        foreach (Metric::EVENT_COLUMNS as $col) {
+            $this->assertContains($col, $ids, "Event schema missing dimension column {$col}");
+        }
     }
 
     /**
@@ -82,12 +48,17 @@ class MetricTest extends TestCase
         $schema = Metric::getGaugeSchema();
 
         $this->assertIsArray($schema);
-        $this->assertCount(4, $schema);
+        // 3 core (metric, value, time) + 4 GAUGE_COLUMNS.
+        $this->assertCount(3 + count(Metric::GAUGE_COLUMNS), $schema);
 
         $this->assertEquals('metric', $schema[0]['$id']);
         $this->assertEquals('value', $schema[1]['$id']);
         $this->assertEquals('time', $schema[2]['$id']);
-        $this->assertEquals('tags', $schema[3]['$id']);
+
+        $ids = array_column($schema, '$id');
+        foreach (Metric::GAUGE_COLUMNS as $col) {
+            $this->assertContains($col, $ids);
+        }
     }
 
     /**
@@ -691,5 +662,36 @@ class MetricTest extends TestCase
     {
         $expected = ['teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
         $this->assertSame($expected, Metric::GAUGE_COLUMNS);
+    }
+
+    /**
+     * Test that the event schema contains every new dimension column.
+     */
+    public function testEventSchemaHasAllNewColumns(): void
+    {
+        $ids = array_column(Metric::getEventSchema(), '$id');
+        foreach ([
+            'service', 'resourceInternalId', 'teamId', 'teamInternalId',
+            'region', 'hostname', 'osCode', 'osName', 'osVersion',
+            'clientType', 'clientCode', 'clientName', 'clientVersion',
+            'clientEngine', 'clientEngineVersion',
+            'deviceName', 'deviceBrand', 'deviceModel',
+        ] as $col) {
+            $this->assertContains($col, $ids, "Event schema missing {$col}");
+        }
+        $this->assertNotContains('userAgent', $ids, 'userAgent must be removed');
+        $this->assertNotContains('tags', $ids, 'tags must be removed');
+    }
+
+    /**
+     * Test that the gauge schema contains the new team and resource id columns.
+     */
+    public function testGaugeSchemaHasTeamAndResourceColumns(): void
+    {
+        $ids = array_column(Metric::getGaugeSchema(), '$id');
+        foreach (['teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'] as $col) {
+            $this->assertContains($col, $ids);
+        }
+        $this->assertNotContains('tags', $ids);
     }
 }
