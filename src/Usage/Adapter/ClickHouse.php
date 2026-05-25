@@ -1072,6 +1072,11 @@ class ClickHouse extends SQL
             'metric String',
             'value Int64',
             'time DateTime64(3)',
+            'resource LowCardinality(Nullable(String))',
+            'resourceId Nullable(String)',
+            'resourceInternalId Nullable(String)',
+            'teamId Nullable(String)',
+            'teamInternalId Nullable(String)',
         ];
 
         if ($this->sharedTables) {
@@ -1080,9 +1085,9 @@ class ClickHouse extends SQL
 
         $columnDefs = implode(",\n                ", $columns);
 
-        // metric and time are part of the ORDER BY (primary key) — no
-        // secondary bloom_filter indexes needed.
-        $dailyOrderBy = $this->sharedTables ? '(tenant, metric, time)' : '(metric, time)';
+        $dailyOrderBy = $this->sharedTables
+            ? '(tenant, metric, time, resource, resourceId, resourceInternalId, teamId, teamInternalId)'
+            : '(metric, time, resource, resourceId, resourceInternalId, teamId, teamInternalId)';
 
         $createDailyTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDailyTable} (
@@ -1113,17 +1118,19 @@ class ClickHouse extends SQL
         $dailyMvName = $this->getTableName() . '_events_daily_mv';
 
         $escapedEventsTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($eventsTable);
-        $escapedDailyTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyTableName);
-        $escapedDailyMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyMvName);
+        $escapedDailyTable  = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyTableName);
+        $escapedDailyMv     = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyMvName);
+
+        $dimensions = 'resource, resourceId, resourceInternalId, teamId, teamInternalId';
 
         if ($this->sharedTables) {
-            $innerSelect = "metric, tenant, sum(value) as value, toStartOfDay(time) as d";
-            $innerGroupBy = "metric, tenant, d";
-            $outerSelect = "metric, value, d as time, tenant";
+            $innerSelect  = "metric, tenant, {$dimensions}, sum(value) as value, toStartOfDay(time) as d";
+            $innerGroupBy = "metric, tenant, {$dimensions}, d";
+            $outerSelect  = "metric, value, d as time, tenant, {$dimensions}";
         } else {
-            $innerSelect = "metric, sum(value) as value, toStartOfDay(time) as d";
-            $innerGroupBy = "metric, d";
-            $outerSelect = "metric, value, d as time";
+            $innerSelect  = "metric, {$dimensions}, sum(value) as value, toStartOfDay(time) as d";
+            $innerGroupBy = "metric, {$dimensions}, d";
+            $outerSelect  = "metric, value, d as time, {$dimensions}";
         }
 
         $createDailyMvSql = "
@@ -1175,7 +1182,11 @@ class ClickHouse extends SQL
     /**
      * Columns available in the events daily (pre-aggregated) table.
      */
-    private const DAILY_COLUMNS = ['metric', 'value', 'time'];
+    private const DAILY_COLUMNS = [
+        'metric', 'value', 'time',
+        'resource', 'resourceId', 'resourceInternalId',
+        'teamId', 'teamInternalId',
+    ];
 
     /**
      * Validate that a query attribute exists in the daily table schema.
@@ -1197,9 +1208,10 @@ class ClickHouse extends SQL
             return true;
         }
 
+        $allowed = implode(', ', self::DAILY_COLUMNS) . ($this->sharedTables ? ', tenant' : '');
         throw new Exception(
             "Invalid attribute '{$attributeName}' for daily table. "
-            . "Only metric, value, time" . ($this->sharedTables ? ", tenant" : "") . " are available."
+            . "Allowed: {$allowed}."
         );
     }
 
