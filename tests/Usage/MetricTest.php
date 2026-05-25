@@ -99,7 +99,9 @@ class MetricTest extends TestCase
     {
         $indexed = [];
         foreach (Metric::getEventIndexes() as $idx) {
-            $indexed = array_merge($indexed, $idx['attributes']);
+            /** @var array<int, string> $attrs */
+            $attrs = $idx['attributes'];
+            $indexed = array_merge($indexed, $attrs);
         }
         foreach ([
             'path', 'method', 'status', 'service', 'resource',
@@ -115,7 +117,9 @@ class MetricTest extends TestCase
     {
         $indexed = [];
         foreach (Metric::getGaugeIndexes() as $idx) {
-            $indexed = array_merge($indexed, $idx['attributes']);
+            /** @var array<int, string> $attrs */
+            $attrs = $idx['attributes'];
+            $indexed = array_merge($indexed, $attrs);
         }
         foreach (['resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'] as $col) {
             $this->assertContains($col, $indexed);

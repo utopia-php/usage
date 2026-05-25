@@ -402,7 +402,7 @@ class ClickHouseTest extends TestCase
         // Filtering on each indexed dimension should be schema-valid.
         foreach (['service', 'resourceInternalId', 'teamId', 'teamInternalId', 'region', 'hostname', 'osName', 'clientName', 'deviceName'] as $col) {
             $value = $tags[$col];
-            $expected = ($col === 'country' || $col === 'region') ? strtolower($value) : $value;
+            $expected = $col === 'region' ? strtolower($value) : $value;
             $rows = $this->usage->find([
                 \Utopia\Query\Query::equal('metric', ['schema-roundtrip']),
                 \Utopia\Query\Query::equal($col, [$expected]),
