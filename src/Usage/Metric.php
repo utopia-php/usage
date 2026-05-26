@@ -617,7 +617,7 @@ class Metric extends ArrayObject
             $stringColumn('teamInternalId', 255),
             $stringColumn('country', 2),
             $stringColumn('region', 64),
-            $stringColumn('hostname', 1024),
+            $stringColumn('hostname', 255),
             $stringColumn('osCode', 256),
             $stringColumn('osName', 256),
             $stringColumn('osVersion', 255),
@@ -721,11 +721,20 @@ class Metric extends ArrayObject
         ];
 
         return array_map(
-            static fn (string $col): array => [
-                '$id' => 'index-' . $col,
-                'type' => 'key',
-                'attributes' => [$col],
-            ],
+            static function (string $col): array {
+                $entry = [
+                    '$id' => 'index-' . $col,
+                    'type' => 'key',
+                    'attributes' => [$col],
+                ];
+                // path is sized 1024 for data fidelity; cap the index key at
+                // 255 so the MariaDB single-attribute index stays within the
+                // 768-byte InnoDB key prefix limit.
+                if ($col === 'path') {
+                    $entry['lengths'] = [255];
+                }
+                return $entry;
+            },
             $indexed,
         );
     }
