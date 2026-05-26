@@ -144,29 +144,7 @@ class Database extends SQL
                 /** @var array<string,mixed> $tags */
                 $tags = $metric['tags'] ?? [];
 
-                $allowed = $type === Usage::TYPE_EVENT ? Metric::EVENT_COLUMNS : Metric::GAUGE_COLUMNS;
-
-                $columns = [];
-                foreach ($allowed as $col) {
-                    $val = $tags[$col] ?? null;
-                    unset($tags[$col]);
-                    if (is_string($val)) {
-                        $val = $val === '' ? null : $val;
-                    } elseif (is_scalar($val)) {
-                        $val = (string) $val;
-                    } else {
-                        $val = null;
-                    }
-                    if (($col === 'country' || $col === 'region') && is_string($val)) {
-                        $val = strtolower($val);
-                    }
-                    $columns[$col] = $val;
-                }
-
-                if (!empty($tags)) {
-                    $unknown = array_key_first($tags);
-                    throw new \Exception("Unknown column '{$unknown}' for {$type}");
-                }
+                $columns = Metric::extractColumns($tags, $type);
 
                 $docData = array_merge([
                     '$id' => $this->generateId(),

@@ -616,7 +616,7 @@ class Metric extends ArrayObject
             $stringColumn('teamId', 255),
             $stringColumn('teamInternalId', 255),
             $stringColumn('country', 2),
-            $stringColumn('region', 2),
+            $stringColumn('region', 64),
             $stringColumn('hostname', 1024),
             $stringColumn('osCode', 256),
             $stringColumn('osName', 256),
@@ -758,6 +758,49 @@ class Metric extends ArrayObject
     public static function getIndexes(): array
     {
         return self::getEventIndexes();
+    }
+
+    /**
+     * Extract and normalize dimension columns from a tags array.
+     *
+     * For the given metric type ('event' or 'gauge'):
+     * - Pulls every known column out of $tags.
+     * - Coerces scalars to string, empty string to null.
+     * - Lowercases country and region.
+     * - Throws if $tags contains any unknown key (strict — no JSON catch-all).
+     *
+     * @param  array<string, mixed>  $tags
+     * @param  string  $type  'event' or 'gauge'
+     * @return array<string, string|null>
+     * @throws \Exception When an unknown column key is present in $tags.
+     */
+    public static function extractColumns(array $tags, string $type): array
+    {
+        $allowed = $type === 'gauge' ? self::GAUGE_COLUMNS : self::EVENT_COLUMNS;
+
+        $columns = [];
+        foreach ($allowed as $col) {
+            $val = $tags[$col] ?? null;
+            unset($tags[$col]);
+            if (is_string($val)) {
+                $val = $val === '' ? null : $val;
+            } elseif (is_scalar($val)) {
+                $val = (string) $val;
+            } else {
+                $val = null;
+            }
+            if (($col === 'country' || $col === 'region') && is_string($val)) {
+                $val = strtolower($val);
+            }
+            $columns[$col] = $val;
+        }
+
+        if (!empty($tags)) {
+            $unknown = array_key_first($tags);
+            throw new \Exception("Unknown column '{$unknown}' for {$type}");
+        }
+
+        return $columns;
     }
 
     /**
