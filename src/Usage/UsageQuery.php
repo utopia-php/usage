@@ -30,6 +30,7 @@ use Utopia\Query\Query;
 class UsageQuery extends Query
 {
     public const TYPE_GROUP_BY_INTERVAL = 'groupByInterval';
+    public const TYPE_GROUP_BY = 'groupBy';
 
     /**
      * Valid interval values and their ClickHouse INTERVAL equivalents.
@@ -45,11 +46,11 @@ class UsageQuery extends Query
     ];
 
     /**
-     * Override isMethod to accept groupByInterval in addition to all base Query methods.
+     * Override isMethod to accept groupByInterval and groupBy in addition to all base Query methods.
      */
     public static function isMethod(string $value): bool
     {
-        if ($value === self::TYPE_GROUP_BY_INTERVAL) {
+        if ($value === self::TYPE_GROUP_BY_INTERVAL || $value === self::TYPE_GROUP_BY) {
             return true;
         }
 
@@ -120,6 +121,62 @@ class UsageQuery extends Query
     {
         return array_values(array_filter($queries, function (Query $query) {
             return !self::isGroupByInterval($query);
+        }));
+    }
+
+    /**
+     * Create a groupBy query for dimensional aggregation.
+     *
+     * Buckets results by the given attribute in addition to the time bucket
+     * supplied via `groupByInterval`. Multiple `groupBy` queries may be
+     * combined to bucket by several dimensions at once (e.g. service x status).
+     *
+     * @param string $attribute The dimension column to bucket on (service, path, status, ...).
+     * @return self
+     */
+    public static function groupBy(string $attribute): self
+    {
+        return new self(self::TYPE_GROUP_BY, $attribute, []);
+    }
+
+    /**
+     * Check if a query is a groupBy query.
+     *
+     * @param Query $query
+     * @return bool
+     */
+    public static function isGroupBy(Query $query): bool
+    {
+        return $query->getMethod() === self::TYPE_GROUP_BY;
+    }
+
+    /**
+     * Extract all groupBy queries from an array of queries.
+     *
+     * Multiple groupBy queries can coexist (group by service AND status), so
+     * this returns every match rather than the single-instance form used by
+     * groupByInterval.
+     *
+     * @param array<Query> $queries
+     * @return array<Query>
+     */
+    public static function extractGroupBy(array $queries): array
+    {
+        return array_values(array_filter($queries, function (Query $query) {
+            return self::isGroupBy($query);
+        }));
+    }
+
+    /**
+     * Remove all groupBy queries from an array of queries.
+     *
+     * @param array<Query> $queries
+     * @return array<Query>
+     */
+    public static function removeGroupBy(array $queries): array
+    {
+        return array_values(array_filter($queries, function (Query $query) {
+            return !self::isGroupBy($query);
         }));
     }
 }
