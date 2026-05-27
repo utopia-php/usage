@@ -639,4 +639,27 @@ trait UsageBase
 
         $this->assertGreaterThanOrEqual(1, count($results));
     }
+
+    public function testGroupByUnknownAttributeThrows(): void
+    {
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessageMatches("/groupBy attribute 'not_a_column'/");
+
+        $this->usage->find([
+            UsageQuery::groupByInterval('time', '1h'),
+            UsageQuery::groupBy('not_a_column'),
+            Query::equal('metric', ['gbi-requests']),
+        ], Usage::TYPE_EVENT);
+    }
+
+    public function testGroupByWithoutGroupByIntervalThrows(): void
+    {
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessageMatches('/groupBy requires groupByInterval/');
+
+        $this->usage->find([
+            UsageQuery::groupBy('service'),
+            Query::equal('metric', ['gbi-requests']),
+        ], Usage::TYPE_EVENT);
+    }
 }

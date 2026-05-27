@@ -367,9 +367,13 @@ class Database extends SQL
      *
      * @param array<Query> $queries
      * @return array<DatabaseQuery>
+     * @throws \Exception When a groupBy attribute is not a valid dimension column,
+     *                    or when groupBy is used without groupByInterval.
      */
     private function convertQueriesToDatabase(array $queries): array
     {
+        $this->validateGroupByQueries($queries);
+
         $dbQueries = [];
         foreach ($queries as $query) {
             $method = $query->getMethod();
@@ -474,13 +478,60 @@ class Database extends SQL
                     break;
 
                 case UsageQuery::TYPE_GROUP_BY_INTERVAL:
-                    // groupByInterval is not supported by the Database adapter.
-                    // Silently skip — callers get raw (non-aggregated) results.
+                case UsageQuery::TYPE_GROUP_BY:
+                    // groupByInterval and groupBy are not pushed down to the
+                    // Database adapter; callers get raw (non-aggregated) results.
+                    // Validation runs in validateGroupByQueries() before this loop.
                     break;
             }
         }
 
         return $dbQueries;
+    }
+
+    /**
+     * Validate groupBy / groupByInterval interactions in the supplied queries.
+     *
+     * Mirrors the ClickHouse adapter contract: groupBy attributes must exist on
+     * the matching schema (event vs gauge — we default to the broader event set
+     * for the Database adapter since both share one collection), and groupBy
+     * must always be paired with groupByInterval so the cloud-facing API stays
+     * consistent across backends.
+     *
+     * @param array<Query> $queries
+     * @throws \Exception
+     */
+    private function validateGroupByQueries(array $queries): void
+    {
+        $hasGroupBy = false;
+        $hasGroupByInterval = false;
+        $allowed = array_unique(array_merge(Metric::EVENT_COLUMNS, Metric::GAUGE_COLUMNS));
+
+        foreach ($queries as $query) {
+            $method = $query->getMethod();
+
+            if ($method === UsageQuery::TYPE_GROUP_BY_INTERVAL) {
+                $hasGroupByInterval = true;
+                continue;
+            }
+
+            if ($method !== UsageQuery::TYPE_GROUP_BY) {
+                continue;
+            }
+
+            $hasGroupBy = true;
+            $attribute = $query->getAttribute();
+
+            if (!in_array($attribute, $allowed, true)) {
+                throw new \Exception(
+                    "Invalid groupBy attribute '{$attribute}'. Allowed: " . implode(', ', $allowed)
+                );
+            }
+        }
+
+        if ($hasGroupBy && !$hasGroupByInterval) {
+            throw new \Exception('groupBy requires groupByInterval to be specified');
+        }
     }
 
     /**
