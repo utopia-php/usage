@@ -1180,6 +1180,27 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Validate that a groupBy attribute is an aggregable dimension column.
+     *
+     * Restricted to the indexed dimension columns for the table type — `metric`,
+     * `value` and `time` are excluded since they are already part of the
+     * aggregation (metric is in the SELECT, time is bucketed via
+     * groupByInterval, value is the measured quantity).
+     *
+     * @throws Exception
+     */
+    private function validateGroupByAttribute(string $attribute, string $type): bool
+    {
+        $allowed = $type === Usage::TYPE_GAUGE ? Metric::GAUGE_COLUMNS : Metric::EVENT_COLUMNS;
+
+        if (in_array($attribute, $allowed, true)) {
+            return true;
+        }
+
+        throw new Exception("Invalid groupBy attribute '{$attribute}' for {$type}. Allowed: " . implode(', ', $allowed));
+    }
+
+    /**
      * Columns available in the events daily (pre-aggregated) table.
      */
     private const DAILY_COLUMNS = [
@@ -1567,6 +1588,10 @@ class ClickHouse extends SQL
             throw new Exception('Cursor pagination cannot be combined with groupByInterval');
         }
 
+        if (!empty($parsed['groupBy']) && !isset($parsed['groupByInterval'])) {
+            throw new Exception('groupBy requires groupByInterval to be specified');
+        }
+
         // Check if groupByInterval is requested
         if (isset($parsed['groupByInterval'])) {
             return $this->findAggregatedFromTable($parsed, $fromTable, $type);
@@ -1629,7 +1654,7 @@ class ClickHouse extends SQL
      *          toStartOfInterval(time, INTERVAL 1 HOUR) as time
      *   FROM table WHERE ... GROUP BY metric, time ORDER BY time ASC
      *
-     * @param array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int, groupByInterval?: string} $parsed Parsed query data from parseQueries()
+     * @param array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>} $parsed Parsed query data from parseQueries()
      * @param string $fromTable Fully qualified table reference
      * @param string $type 'event' or 'gauge'
      * @return array<Metric>
@@ -1649,6 +1674,18 @@ class ClickHouse extends SQL
         // Use 'bucket' alias to avoid collision with the raw 'time' column,
         // then alias back to 'time' in outer context for consistent Metric parsing.
         $timeBucketExpr = "toStartOfInterval(time, {$intervalSql})";
+
+        $groupByDims = $parsed['groupBy'] ?? [];
+        $dimSelect = '';
+        $dimGroup = '';
+        if (!empty($groupByDims)) {
+            $escapedDims = array_map(
+                fn (string $dim): string => $this->escapeIdentifier($dim),
+                $groupByDims
+            );
+            $dimSelect = ', ' . implode(', ', $escapedDims);
+            $dimGroup = ', ' . implode(', ', $escapedDims);
+        }
 
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
         $whereClause = $whereData['clause'];
@@ -1676,9 +1713,9 @@ class ClickHouse extends SQL
         $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
 
         $sql = "
-            SELECT metric, {$valueExpr}, {$timeBucketExpr} as bucket
+            SELECT metric, {$valueExpr}, {$timeBucketExpr} as bucket{$dimSelect}
             FROM {$fromTable}{$whereClause}
-            GROUP BY metric, bucket{$orderClause}{$limitClause}{$offsetClause}
+            GROUP BY metric, bucket{$dimGroup}{$orderClause}{$limitClause}{$offsetClause}
             FORMAT JSON
         ";
 
@@ -2764,7 +2801,7 @@ class ClickHouse extends SQL
      *
      * @param array<Query> $queries
      * @param string $type 'event' or 'gauge' — used for attribute validation
-     * @return array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, orderAttributes?: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int, groupByInterval?: string, cursor?: array<string, mixed>, cursorDirection?: string}
+     * @return array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, orderAttributes?: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, cursor?: array<string, mixed>, cursorDirection?: string}
      * @throws Exception
      */
     private function parseQueries(array $queries, string $type = 'event'): array
@@ -2776,6 +2813,7 @@ class ClickHouse extends SQL
         $limit = null;
         $offset = null;
         $groupByInterval = null;
+        $groupBy = [];
         $cursor = null;
         $cursorDirection = null;
         $paramCounter = 0;
@@ -3011,6 +3049,13 @@ class ClickHouse extends SQL
                     }
                     $groupByInterval = $interval;
                     break;
+
+                case UsageQuery::TYPE_GROUP_BY:
+                    $this->validateGroupByAttribute($attribute, $type);
+                    if (!in_array($attribute, $groupBy, true)) {
+                        $groupBy[] = $attribute;
+                    }
+                    break;
             }
         }
 
@@ -3034,6 +3079,10 @@ class ClickHouse extends SQL
 
         if ($groupByInterval !== null) {
             $result['groupByInterval'] = $groupByInterval;
+        }
+
+        if (!empty($groupBy)) {
+            $result['groupBy'] = $groupBy;
         }
 
         if ($cursor !== null && $cursorDirection !== null) {

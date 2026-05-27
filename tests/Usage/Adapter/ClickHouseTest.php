@@ -1241,6 +1241,79 @@ class ClickHouseTest extends TestCase
         ], Usage::TYPE_EVENT);
     }
 
+    public function testGroupByServiceDailyAggregates(): void
+    {
+        $this->usage->purge();
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'gb-service', 'value' => 10, 'tags' => ['service' => 'storage']],
+            ['metric' => 'gb-service', 'value' => 25, 'tags' => ['service' => 'storage']],
+            ['metric' => 'gb-service', 'value' => 5, 'tags' => ['service' => 'databases']],
+        ], Usage::TYPE_EVENT));
+
+        $start = (new \DateTime())->modify('-1 day')->format('Y-m-d\TH:i:s');
+        $end = (new \DateTime())->modify('+1 day')->format('Y-m-d\TH:i:s');
+
+        $results = $this->usage->find([
+            UsageQuery::groupByInterval('time', '1d'),
+            UsageQuery::groupBy('service'),
+            Query::equal('metric', ['gb-service']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertGreaterThanOrEqual(2, count($results));
+
+        $byService = [];
+        foreach ($results as $row) {
+            $service = $row->getService();
+            $this->assertNotNull($service, 'groupBy(service) should surface the service dimension on each Metric');
+            $byService[$service] = ($byService[$service] ?? 0) + $row->getValue();
+        }
+
+        $this->assertEquals(35, $byService['storage'] ?? null);
+        $this->assertEquals(5, $byService['databases'] ?? null);
+    }
+
+    public function testGroupByMultipleDimensionsHourly(): void
+    {
+        $this->usage->purge();
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'gb-multi', 'value' => 1, 'tags' => ['service' => 'storage', 'path' => '/v1/a']],
+            ['metric' => 'gb-multi', 'value' => 2, 'tags' => ['service' => 'storage', 'path' => '/v1/a']],
+            ['metric' => 'gb-multi', 'value' => 4, 'tags' => ['service' => 'storage', 'path' => '/v1/b']],
+            ['metric' => 'gb-multi', 'value' => 8, 'tags' => ['service' => 'databases', 'path' => '/v1/a']],
+        ], Usage::TYPE_EVENT));
+
+        $start = (new \DateTime())->modify('-1 hour')->format('Y-m-d\TH:i:s');
+        $end = (new \DateTime())->modify('+1 hour')->format('Y-m-d\TH:i:s');
+
+        $results = $this->usage->find([
+            UsageQuery::groupByInterval('time', '1h'),
+            UsageQuery::groupBy('service'),
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', ['gb-multi']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertGreaterThanOrEqual(3, count($results));
+
+        $byPair = [];
+        foreach ($results as $row) {
+            $svc = $row->getService();
+            $path = $row->getPath();
+            $this->assertNotNull($svc);
+            $this->assertNotNull($path);
+            $byPair["{$svc}|{$path}"] = ($byPair["{$svc}|{$path}"] ?? 0) + $row->getValue();
+        }
+
+        $this->assertEquals(3, $byPair['storage|/v1/a'] ?? null);
+        $this->assertEquals(4, $byPair['storage|/v1/b'] ?? null);
+        $this->assertEquals(8, $byPair['databases|/v1/a'] ?? null);
+    }
+
     public function testNotEqualQuery(): void
     {
         // Fixture: requests x2, bandwidth x1 in events
