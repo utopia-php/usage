@@ -23,9 +23,18 @@ use ArrayObject;
  *     'path' => '/v1/storage/files',
  *     'method' => 'POST',
  *     'status' => '201',
+ *     'service' => 'storage',
  *     'resource' => 'bucket',
  *     'resourceId' => 'abc123',
- *     'tags' => ['region' => 'us-east', 'country' => 'US']
+ *     'resourceInternalId' => '42',
+ *     'teamId' => 'team_x',
+ *     'teamInternalId' => '7',
+ *     'country' => 'us',
+ *     'region' => 'us-east',
+ *     'hostname' => 'app.example.com',
+ *     'osName' => 'iOS',
+ *     'clientName' => 'Appwrite SDK',
+ *     'deviceName' => 'smartphone',
  * ]);
  *
  * echo $metric->getMetric(); // 'bandwidth'
@@ -40,7 +49,21 @@ class Metric extends ArrayObject
     /**
      * Event-specific column names that are extracted from tags into dedicated columns.
      */
-    public const EVENT_COLUMNS = ['path', 'method', 'status', 'resource', 'resourceId', 'country', 'userAgent'];
+    public const EVENT_COLUMNS = [
+        'path', 'method', 'status',
+        'service', 'resource', 'resourceId', 'resourceInternalId',
+        'teamId', 'teamInternalId',
+        'country', 'region', 'hostname',
+        'osCode', 'osName', 'osVersion',
+        'clientType', 'clientCode', 'clientName', 'clientVersion',
+        'clientEngine', 'clientEngineVersion',
+        'deviceName', 'deviceBrand', 'deviceModel',
+    ];
+
+    /**
+     * Gauge-specific column names that are extracted from tags into dedicated columns.
+     */
+    public const GAUGE_COLUMNS = ['teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
 
     /**
      * Construct a new metric object.
@@ -51,13 +74,21 @@ class Metric extends ArrayObject
      * - metric: Name/type of the metric being tracked
      * - value: Numeric value of the metric
      * - time: Timestamp when the metric was recorded
-     * - path: API endpoint path (events only)
-     * - method: HTTP method (events only)
-     * - status: HTTP status code (events only)
-     * - resource: Resource type (events only)
-     * - resourceId: Resource ID (events only)
-     * - tags: Additional metadata as key-value pairs
      * - tenant: Tenant ID for multi-tenant environments
+     *
+     * Event-only dimension columns (see EVENT_COLUMNS):
+     * - path / method / status: HTTP shape
+     * - service: API service segment (storage, databases, …)
+     * - resource / resourceId / resourceInternalId: resource identity
+     * - teamId / teamInternalId: owning team identity
+     * - country / region / hostname: geographic + caller origin
+     * - osCode / osName / osVersion: parsed user-agent OS fields
+     * - clientType / clientCode / clientName / clientVersion: parsed client
+     * - clientEngine / clientEngineVersion: parsed client engine
+     * - deviceName / deviceBrand / deviceModel: parsed device fields
+     *
+     * Gauge-only dimension columns (see GAUGE_COLUMNS):
+     * - teamId / teamInternalId / resourceId / resourceInternalId
      *
      * @param  array<string, mixed>  $input  Metric data
      */
@@ -217,41 +248,169 @@ class Metric extends ArrayObject
     }
 
     /**
-     * Get user agent (event metrics only).
+     * Get service (event metrics only).
      *
-     * @return string|null The user agent string, or null if not set
+     * @return string|null
      */
-    public function getUserAgent(): ?string
+    public function getService(): ?string
     {
-        $userAgent = $this->getAttribute('userAgent', null);
-        return is_string($userAgent) ? $userAgent : null;
+        $v = $this->getAttribute('service', null);
+        return is_string($v) ? $v : null;
     }
 
     /**
-     * Get tags.
+     * Get internal resource id (event/gauge metrics).
      *
-     * Returns additional metadata associated with this metric as key-value pairs.
-     * Tags are useful for filtering, grouping, and contextualizing metrics.
-     *
-     * Common tag examples:
-     * - region: Geographic region (us-east, eu-west)
-     * - userAgent: Client user agent
-     * - country: Country code
-     *
-     * Note: For event metrics, path/method/status/resource/resourceId are stored
-     * as dedicated columns, not in tags. Remaining metadata (region, userAgent, etc.)
-     * stays in the tags JSON.
-     *
-     * @return array<string, mixed> Associative array of tags
+     * @return string|null
      */
-    // NOTE: loks0n flagged this as a leftover from the previous Metric
-    // implementation. Kept because tests (MetricTest, ClickHouseTest) and
-    // downstream consumers still call it; remove once those callers are
-    // migrated to direct `tags` attribute access.
-    public function getTags(): array
+    public function getResourceInternalId(): ?string
     {
-        $tags = $this->getAttribute('tags', []);
-        return is_array($tags) ? $tags : [];
+        $v = $this->getAttribute('resourceInternalId', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get team id (event/gauge metrics).
+     */
+    public function getTeamId(): ?string
+    {
+        $v = $this->getAttribute('teamId', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get team internal id (event/gauge metrics).
+     */
+    public function getTeamInternalId(): ?string
+    {
+        $v = $this->getAttribute('teamInternalId', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get region (event metrics).
+     */
+    public function getRegion(): ?string
+    {
+        $v = $this->getAttribute('region', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get caller hostname (event metrics).
+     */
+    public function getHostname(): ?string
+    {
+        $v = $this->getAttribute('hostname', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get OS short code (event metrics).
+     */
+    public function getOsCode(): ?string
+    {
+        $v = $this->getAttribute('osCode', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get OS name (event metrics).
+     */
+    public function getOsName(): ?string
+    {
+        $v = $this->getAttribute('osName', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get OS version (event metrics).
+     */
+    public function getOsVersion(): ?string
+    {
+        $v = $this->getAttribute('osVersion', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get client type (event metrics).
+     */
+    public function getClientType(): ?string
+    {
+        $v = $this->getAttribute('clientType', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get client short code (event metrics).
+     */
+    public function getClientCode(): ?string
+    {
+        $v = $this->getAttribute('clientCode', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get client name (event metrics).
+     */
+    public function getClientName(): ?string
+    {
+        $v = $this->getAttribute('clientName', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get client version (event metrics).
+     */
+    public function getClientVersion(): ?string
+    {
+        $v = $this->getAttribute('clientVersion', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get client engine (event metrics).
+     */
+    public function getClientEngine(): ?string
+    {
+        $v = $this->getAttribute('clientEngine', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get client engine version (event metrics).
+     */
+    public function getClientEngineVersion(): ?string
+    {
+        $v = $this->getAttribute('clientEngineVersion', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get device name (event metrics).
+     */
+    public function getDeviceName(): ?string
+    {
+        $v = $this->getAttribute('deviceName', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get device brand (event metrics).
+     */
+    public function getDeviceBrand(): ?string
+    {
+        $v = $this->getAttribute('deviceBrand', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get device model (event metrics).
+     */
+    public function getDeviceModel(): ?string
+    {
+        $v = $this->getAttribute('deviceModel', null);
+        return is_string($v) ? $v : null;
     }
 
     /**
@@ -408,6 +567,16 @@ class Metric extends ArrayObject
      */
     public static function getEventSchema(): array
     {
+        $stringColumn = static fn (string $id, int $size): array => [
+            '$id' => $id,
+            'type' => 'string',
+            'size' => $size,
+            'required' => false,
+            'signed' => true,
+            'array' => false,
+            'filters' => [],
+        ];
+
         return [
             [
                 '$id' => 'metric',
@@ -437,78 +606,30 @@ class Metric extends ArrayObject
                 'array' => false,
                 'filters' => ['datetime'],
             ],
-            [
-                '$id' => 'path',
-                'type' => 'string',
-                'size' => 255,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'method',
-                'type' => 'string',
-                'size' => 16,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'status',
-                'type' => 'string',
-                'size' => 16,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'resource',
-                'type' => 'string',
-                'size' => 255,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'resourceId',
-                'type' => 'string',
-                'size' => 255,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'country',
-                'type' => 'string',
-                'size' => 2,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'userAgent',
-                'type' => 'string',
-                'size' => 255,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => [],
-            ],
-            [
-                '$id' => 'tags',
-                'type' => 'string',
-                'size' => 16777216,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => ['json'],
-            ],
+            $stringColumn('path', 1024),
+            $stringColumn('method', 16),
+            $stringColumn('status', 16),
+            $stringColumn('service', 256),
+            $stringColumn('resource', 256),
+            $stringColumn('resourceId', 255),
+            $stringColumn('resourceInternalId', 255),
+            $stringColumn('teamId', 255),
+            $stringColumn('teamInternalId', 255),
+            $stringColumn('country', 2),
+            $stringColumn('region', 64),
+            $stringColumn('hostname', 255),
+            $stringColumn('osCode', 256),
+            $stringColumn('osName', 256),
+            $stringColumn('osVersion', 255),
+            $stringColumn('clientType', 256),
+            $stringColumn('clientCode', 256),
+            $stringColumn('clientName', 256),
+            $stringColumn('clientVersion', 255),
+            $stringColumn('clientEngine', 256),
+            $stringColumn('clientEngineVersion', 255),
+            $stringColumn('deviceName', 256),
+            $stringColumn('deviceBrand', 256),
+            $stringColumn('deviceModel', 255),
         ];
     }
 
@@ -522,6 +643,16 @@ class Metric extends ArrayObject
      */
     public static function getGaugeSchema(): array
     {
+        $stringColumn = static fn (string $id, int $size): array => [
+            '$id' => $id,
+            'type' => 'string',
+            'size' => $size,
+            'required' => false,
+            'signed' => true,
+            'array' => false,
+            'filters' => [],
+        ];
+
         return [
             [
                 '$id' => 'metric',
@@ -551,15 +682,10 @@ class Metric extends ArrayObject
                 'array' => false,
                 'filters' => ['datetime'],
             ],
-            [
-                '$id' => 'tags',
-                'type' => 'string',
-                'size' => 16777216,
-                'required' => false,
-                'signed' => true,
-                'array' => false,
-                'filters' => ['json'],
-            ],
+            $stringColumn('teamId', 255),
+            $stringColumn('teamInternalId', 255),
+            $stringColumn('resourceId', 255),
+            $stringColumn('resourceInternalId', 255),
         ];
     }
 
@@ -583,46 +709,34 @@ class Metric extends ArrayObject
      */
     public static function getEventIndexes(): array
     {
-        // Note: `metric` and `time` are part of the ClickHouse primary key
-        // (ORDER BY (tenant, metric, time, id)), so a separate bloom_filter
-        // index on either column would be redundant. They're omitted here.
-        return [
-            [
-                '$id' => 'index-path',
-                'type' => 'key',
-                'attributes' => ['path'],
-            ],
-            [
-                '$id' => 'index-method',
-                'type' => 'key',
-                'attributes' => ['method'],
-            ],
-            [
-                '$id' => 'index-status',
-                'type' => 'key',
-                'attributes' => ['status'],
-            ],
-            [
-                '$id' => 'index-resource',
-                'type' => 'key',
-                'attributes' => ['resource'],
-            ],
-            [
-                '$id' => 'index-resourceId',
-                'type' => 'key',
-                'attributes' => ['resourceId'],
-            ],
-            [
-                '$id' => 'index-country',
-                'type' => 'key',
-                'attributes' => ['country'],
-            ],
-            [
-                '$id' => 'index-userAgent',
-                'type' => 'key',
-                'attributes' => ['userAgent'],
-            ],
+        // `metric` and `time` are part of the ClickHouse primary key
+        // (ORDER BY (tenant, metric, time, id)), so separate bloom_filter
+        // indexes on them would be redundant.
+        $indexed = [
+            'path', 'method', 'status',
+            'service', 'resource', 'resourceId', 'resourceInternalId',
+            'teamId', 'teamInternalId',
+            'country', 'region', 'hostname',
+            'osName', 'clientType', 'clientName', 'deviceName',
         ];
+
+        return array_map(
+            static function (string $col): array {
+                $entry = [
+                    '$id' => 'index-' . $col,
+                    'type' => 'key',
+                    'attributes' => [$col],
+                ];
+                // path is sized 1024 for data fidelity; cap the index key at
+                // 255 so the MariaDB single-attribute index stays within the
+                // 768-byte InnoDB key prefix limit.
+                if ($col === 'path') {
+                    $entry['lengths'] = [255];
+                }
+                return $entry;
+            },
+            $indexed,
+        );
     }
 
     /**
@@ -632,10 +746,14 @@ class Metric extends ArrayObject
      */
     public static function getGaugeIndexes(): array
     {
-        // `metric` and `time` are part of the primary key; no secondary
-        // indexes needed. Returning an empty array keeps the table DDL
-        // free of redundant bloom_filter clauses.
-        return [];
+        return array_map(
+            static fn (string $col): array => [
+                '$id' => 'index-' . $col,
+                'type' => 'key',
+                'attributes' => [$col],
+            ],
+            ['resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'],
+        );
     }
 
     /**
@@ -649,6 +767,49 @@ class Metric extends ArrayObject
     public static function getIndexes(): array
     {
         return self::getEventIndexes();
+    }
+
+    /**
+     * Extract and normalize dimension columns from a tags array.
+     *
+     * For the given metric type ('event' or 'gauge'):
+     * - Pulls every known column out of $tags.
+     * - Coerces scalars to string, empty string to null.
+     * - Lowercases country and region.
+     * - Throws if $tags contains any unknown key (strict — no JSON catch-all).
+     *
+     * @param  array<string, mixed>  $tags
+     * @param  string  $type  'event' or 'gauge'
+     * @return array<string, string|null>
+     * @throws \Exception When an unknown column key is present in $tags.
+     */
+    public static function extractColumns(array $tags, string $type): array
+    {
+        $allowed = $type === 'gauge' ? self::GAUGE_COLUMNS : self::EVENT_COLUMNS;
+
+        $columns = [];
+        foreach ($allowed as $col) {
+            $val = $tags[$col] ?? null;
+            unset($tags[$col]);
+            if (is_string($val)) {
+                $val = $val === '' ? null : $val;
+            } elseif (is_scalar($val)) {
+                $val = (string) $val;
+            } else {
+                $val = null;
+            }
+            if (($col === 'country' || $col === 'region') && is_string($val)) {
+                $val = strtolower($val);
+            }
+            $columns[$col] = $val;
+        }
+
+        if (!empty($tags)) {
+            $unknown = array_key_first($tags);
+            throw new \Exception("Unknown column '{$unknown}' for {$type}");
+        }
+
+        return $columns;
     }
 
     /**
@@ -688,14 +849,6 @@ class Metric extends ArrayObject
             }
 
             $value = $data[$attrId];
-
-            // Special handling for tags: accept array (will be JSON-encoded)
-            if ($attrId === 'tags') {
-                if (!is_array($value)) {
-                    throw new \Exception("Attribute '{$attrId}' must be an array, got " . gettype($value));
-                }
-                continue;
-            }
 
             // Validate based on attribute type
             match ($attrType) {

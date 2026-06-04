@@ -21,8 +21,12 @@ class DatabaseTest extends TestCase
 
     protected function initializeUsage(): void
     {
-        $dbHost = 'mariadb';
-        $dbPort = '3306';
+        if (!extension_loaded('pdo_mysql')) {
+            $this->markTestSkipped('pdo_mysql extension is not installed in this environment');
+        }
+
+        $dbHost = getenv('MARIADB_HOST') ?: 'mariadb';
+        $dbPort = getenv('MARIADB_PORT') ?: '3306';
         $dbUser = 'root';
         $dbPass = 'password';
 
@@ -48,6 +52,149 @@ class DatabaseTest extends TestCase
         } catch (Duplicate $ex) {
             // ignore duplicate exception
         }
+    }
+
+    /**
+     * Round-trip a row with the full event dimension set through the
+     * Database adapter.
+     */
+    public function testEventColumnsExtractedFromTags(): void
+    {
+        if (!extension_loaded('pdo_mysql')) {
+            $this->markTestSkipped('pdo_mysql extension is not installed');
+        }
+
+        $this->usage->purge([], Usage::TYPE_EVENT);
+
+        $this->assertTrue($this->usage->addBatch([
+            [
+                'metric' => 'event-cols-db',
+                'value' => 42,
+                'tags' => [
+                    'path' => '/v1/storage/files',
+                    'method' => 'POST',
+                    'status' => '201',
+                    'service' => 'storage',
+                    'resource' => 'bucket',
+                    'resourceId' => 'bucket123',
+                    'resourceInternalId' => '42',
+                    'teamId' => 'team_x',
+                    'teamInternalId' => '7',
+                    'country' => 'US',
+                    'region' => 'us-east',
+                    'hostname' => 'app.example.com',
+                    'osName' => 'iOS',
+                    'clientName' => 'Appwrite SDK',
+                    'deviceName' => 'smartphone',
+                ],
+            ],
+        ], Usage::TYPE_EVENT));
+
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('metric', ['event-cols-db']),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(1, $results);
+        $metric = $results[0];
+        $this->assertEquals('/v1/storage/files', $metric->getPath());
+        $this->assertEquals('storage', $metric->getService());
+        $this->assertEquals('42', $metric->getResourceInternalId());
+        $this->assertEquals('team_x', $metric->getTeamId());
+        $this->assertEquals('7', $metric->getTeamInternalId());
+        $this->assertEquals('us', $metric->getCountry());
+        $this->assertEquals('us-east', $metric->getRegion());
+        $this->assertEquals('app.example.com', $metric->getHostname());
+        $this->assertEquals('iOS', $metric->getOsName());
+        $this->assertEquals('Appwrite SDK', $metric->getClientName());
+        $this->assertEquals('smartphone', $metric->getDeviceName());
+    }
+
+    /**
+     * Gauge rows round-trip the four gauge dimension columns.
+     */
+    public function testGaugeColumnsRoundTrip(): void
+    {
+        if (!extension_loaded('pdo_mysql')) {
+            $this->markTestSkipped('pdo_mysql extension is not installed');
+        }
+
+        $this->usage->purge([], Usage::TYPE_GAUGE);
+
+        $this->assertTrue($this->usage->addBatch([
+            [
+                'metric' => 'gauge-cols-db',
+                'value' => 500,
+                'tags' => [
+                    'teamId' => 'team_x',
+                    'teamInternalId' => '7',
+                    'resourceId' => 'r1',
+                    'resourceInternalId' => '42',
+                ],
+            ],
+        ], Usage::TYPE_GAUGE));
+
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('metric', ['gauge-cols-db']),
+        ], Usage::TYPE_GAUGE);
+
+        $this->assertCount(1, $results);
+        $metric = $results[0];
+        $this->assertEquals('team_x', $metric->getTeamId());
+        $this->assertEquals('7', $metric->getTeamInternalId());
+        $this->assertEquals('r1', $metric->getResourceId());
+        $this->assertEquals('42', $metric->getResourceInternalId());
+    }
+
+    public function testUnknownTagKeyThrows(): void
+    {
+        if (!extension_loaded('pdo_mysql')) {
+            $this->markTestSkipped('pdo_mysql extension is not installed');
+        }
+
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessageMatches("/Unknown column 'bogus'/");
+        $this->usage->addBatch([
+            ['metric' => 'x', 'value' => 1, 'tags' => ['bogus' => 'v']],
+        ], Usage::TYPE_EVENT);
+    }
+
+    public function testCountryAndRegionLowercased(): void
+    {
+        if (!extension_loaded('pdo_mysql')) {
+            $this->markTestSkipped('pdo_mysql extension is not installed');
+        }
+
+        $this->usage->purge([], Usage::TYPE_EVENT);
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'lc-db', 'value' => 1, 'tags' => ['country' => 'US', 'region' => 'FR']],
+        ], Usage::TYPE_EVENT));
+
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('metric', ['lc-db']),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(1, $results);
+        $this->assertSame('us', $results[0]->getCountry());
+        $this->assertSame('fr', $results[0]->getRegion());
+    }
+
+    public function testEmptyStringCoercedToNull(): void
+    {
+        if (!extension_loaded('pdo_mysql')) {
+            $this->markTestSkipped('pdo_mysql extension is not installed');
+        }
+
+        $this->usage->purge([], Usage::TYPE_EVENT);
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'empty-db', 'value' => 1, 'tags' => ['osName' => '']],
+        ], Usage::TYPE_EVENT));
+
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('metric', ['empty-db']),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(1, $results);
+        $this->assertNull($results[0]->getOsName());
     }
 
     /**
@@ -78,9 +225,13 @@ class DatabaseTest extends TestCase
      */
     public function testHealthCheckWithNonExistentDatabase(): void
     {
+        if (!extension_loaded('pdo_mysql')) {
+            $this->markTestSkipped('pdo_mysql extension is not installed');
+        }
+
         // Create a new database instance pointing to a non-existent database
-        $dbHost = 'mariadb';
-        $dbPort = '3306';
+        $dbHost = getenv('MARIADB_HOST') ?: 'mariadb';
+        $dbPort = getenv('MARIADB_PORT') ?: '3306';
         $dbUser = 'root';
         $dbPass = 'password';
 

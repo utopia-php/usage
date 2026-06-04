@@ -129,7 +129,7 @@ class ClickHouseTest extends TestCase
             $metrics[] = [
                 'metric' => 'large-batch-metric',
                 'value' => $i,
-                'tags' => ['index' => (string) $i],
+                'tags' => ['resourceId' => (string) $i],
             ];
         }
 
@@ -210,7 +210,9 @@ class ClickHouseTest extends TestCase
     }
 
     /**
-     * Test event-specific columns are extracted from tags
+     * Test event-specific columns are extracted from tags into dedicated columns
+     * and surfaced via the new typed getters. Verifies the full dimension set
+     * round-trips through ClickHouse.
      */
     public function testEventColumnsExtractedFromTags(): void
     {
@@ -224,11 +226,27 @@ class ClickHouseTest extends TestCase
                     'path' => '/v1/storage/files',
                     'method' => 'POST',
                     'status' => '201',
+                    'service' => 'storage',
                     'resource' => 'bucket',
                     'resourceId' => 'bucket123',
+                    'resourceInternalId' => '42',
+                    'teamId' => 'team_x',
+                    'teamInternalId' => '7',
                     'country' => 'US',
-                    'userAgent' => 'test-agent',
                     'region' => 'us-east',
+                    'hostname' => 'app.example.com',
+                    'osCode' => 'IOS',
+                    'osName' => 'iOS',
+                    'osVersion' => '17.4',
+                    'clientType' => 'mobile-app',
+                    'clientCode' => 'APW',
+                    'clientName' => 'Appwrite SDK',
+                    'clientVersion' => '15.0.0',
+                    'clientEngine' => 'WebKit',
+                    'clientEngineVersion' => '605',
+                    'deviceName' => 'smartphone',
+                    'deviceBrand' => 'Apple',
+                    'deviceModel' => 'iPhone 13',
                 ],
             ],
         ];
@@ -242,25 +260,155 @@ class ClickHouseTest extends TestCase
         $this->assertCount(1, $results);
         $metric = $results[0];
 
-        // Event-specific columns should be set
         $this->assertEquals('/v1/storage/files', $metric->getPath());
         $this->assertEquals('POST', $metric->getMethod());
         $this->assertEquals('201', $metric->getStatus());
+        $this->assertEquals('storage', $metric->getService());
         $this->assertEquals('bucket', $metric->getResource());
         $this->assertEquals('bucket123', $metric->getResourceId());
-        $this->assertEquals('US', $metric->getCountry());
-        $this->assertEquals('test-agent', $metric->getUserAgent());
+        $this->assertEquals('42', $metric->getResourceInternalId());
+        $this->assertEquals('team_x', $metric->getTeamId());
+        $this->assertEquals('7', $metric->getTeamInternalId());
+        // country and region are lowercased on write
+        $this->assertEquals('us', $metric->getCountry());
+        $this->assertEquals('us-east', $metric->getRegion());
+        $this->assertEquals('app.example.com', $metric->getHostname());
+        $this->assertEquals('IOS', $metric->getOsCode());
+        $this->assertEquals('iOS', $metric->getOsName());
+        $this->assertEquals('17.4', $metric->getOsVersion());
+        $this->assertEquals('mobile-app', $metric->getClientType());
+        $this->assertEquals('APW', $metric->getClientCode());
+        $this->assertEquals('Appwrite SDK', $metric->getClientName());
+        $this->assertEquals('15.0.0', $metric->getClientVersion());
+        $this->assertEquals('WebKit', $metric->getClientEngine());
+        $this->assertEquals('605', $metric->getClientEngineVersion());
+        $this->assertEquals('smartphone', $metric->getDeviceName());
+        $this->assertEquals('Apple', $metric->getDeviceBrand());
+        $this->assertEquals('iPhone 13', $metric->getDeviceModel());
+    }
 
-        // Remaining tags should only contain non-event fields
-        $tags = $metric->getTags();
-        $this->assertEquals('us-east', $tags['region'] ?? null);
-        $this->assertArrayNotHasKey('path', $tags);
-        $this->assertArrayNotHasKey('method', $tags);
-        $this->assertArrayNotHasKey('status', $tags);
-        $this->assertArrayNotHasKey('resource', $tags);
-        $this->assertArrayNotHasKey('resourceId', $tags);
-        $this->assertArrayNotHasKey('country', $tags);
-        $this->assertArrayNotHasKey('userAgent', $tags);
+    /**
+     * Gauge rows round-trip the four gauge dimension columns.
+     */
+    public function testGaugeColumnsRoundTrip(): void
+    {
+        $this->usage->purge([], Usage::TYPE_GAUGE);
+
+        $this->assertTrue($this->usage->addBatch([
+            [
+                'metric' => 'gauge-cols-test',
+                'value' => 500,
+                'tags' => [
+                    'teamId' => 'team_x',
+                    'teamInternalId' => '7',
+                    'resourceId' => 'r1',
+                    'resourceInternalId' => '42',
+                ],
+            ],
+        ], Usage::TYPE_GAUGE));
+
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('metric', ['gauge-cols-test']),
+        ], Usage::TYPE_GAUGE);
+
+        $this->assertCount(1, $results);
+        $metric = $results[0];
+        $this->assertEquals('team_x', $metric->getTeamId());
+        $this->assertEquals('7', $metric->getTeamInternalId());
+        $this->assertEquals('r1', $metric->getResourceId());
+        $this->assertEquals('42', $metric->getResourceInternalId());
+    }
+
+    public function testUnknownTagKeyThrows(): void
+    {
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessageMatches("/Unknown column 'bogus'/");
+        $this->usage->addBatch([
+            ['metric' => 'x', 'value' => 1, 'tags' => ['bogus' => 'v']],
+        ], Usage::TYPE_EVENT);
+    }
+
+    public function testCountryLowercased(): void
+    {
+        $this->usage->purge([], Usage::TYPE_EVENT);
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'lc-country', 'value' => 1, 'tags' => ['country' => 'US']],
+        ], Usage::TYPE_EVENT));
+
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('metric', ['lc-country']),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(1, $results);
+        $this->assertSame('us', $results[0]->getCountry());
+    }
+
+    public function testRegionLowercased(): void
+    {
+        $this->usage->purge([], Usage::TYPE_EVENT);
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'lc-region', 'value' => 1, 'tags' => ['region' => 'FR']],
+        ], Usage::TYPE_EVENT));
+
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('metric', ['lc-region']),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(1, $results);
+        $this->assertSame('fr', $results[0]->getRegion());
+    }
+
+    public function testEmptyStringCoercedToNull(): void
+    {
+        $this->usage->purge([], Usage::TYPE_EVENT);
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'empty-string', 'value' => 1, 'tags' => ['osName' => '']],
+        ], Usage::TYPE_EVENT));
+
+        $results = $this->usage->find([
+            \Utopia\Query\Query::equal('metric', ['empty-string']),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(1, $results);
+        $this->assertNull($results[0]->getOsName());
+    }
+
+    /**
+     * Round-trip a row that exercises every queryable dimension column to
+     * confirm the events table schema accepts and persists each one.
+     */
+    public function testEventsSchemaPersistsAllNewColumns(): void
+    {
+        $this->usage->purge([], Usage::TYPE_EVENT);
+
+        $tags = [
+            'path' => '/v1/x', 'method' => 'GET', 'status' => '200',
+            'service' => 'storage', 'resource' => 'bucket',
+            'resourceId' => 'r1', 'resourceInternalId' => '42',
+            'teamId' => 't1', 'teamInternalId' => '7',
+            'country' => 'us', 'region' => 'fra', 'hostname' => 'h.example.com',
+            'osCode' => 'IOS', 'osName' => 'iOS', 'osVersion' => '17.4',
+            'clientType' => 'browser', 'clientCode' => 'CH',
+            'clientName' => 'Chrome', 'clientVersion' => '125',
+            'clientEngine' => 'Blink', 'clientEngineVersion' => '125',
+            'deviceName' => 'desktop', 'deviceBrand' => 'Apple',
+            'deviceModel' => 'MacBook',
+        ];
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'schema-roundtrip', 'value' => 1, 'tags' => $tags],
+        ], Usage::TYPE_EVENT));
+
+        // Filtering on each indexed dimension should be schema-valid.
+        foreach (['service', 'resourceInternalId', 'teamId', 'teamInternalId', 'region', 'hostname', 'osName', 'clientName', 'deviceName'] as $col) {
+            $value = $tags[$col];
+            $expected = $col === 'region' ? strtolower($value) : $value;
+            $rows = $this->usage->find([
+                \Utopia\Query\Query::equal('metric', ['schema-roundtrip']),
+                \Utopia\Query\Query::equal($col, [$expected]),
+            ], Usage::TYPE_EVENT);
+            $this->assertGreaterThanOrEqual(1, count($rows), "Filter on {$col} returned no rows");
+        }
     }
 
     /**
@@ -317,7 +465,7 @@ class ClickHouseTest extends TestCase
         $this->usage->purge([], Usage::TYPE_GAUGE);
 
         $this->assertTrue($this->usage->addBatch([
-            ['metric' => 'gauge-simple', 'value' => 500, 'tags' => ['region' => 'us-east']],
+            ['metric' => 'gauge-simple', 'value' => 500, 'tags' => ['resourceId' => 'r1']],
         ], Usage::TYPE_GAUGE));
 
         $results = $this->usage->find([
@@ -333,7 +481,7 @@ class ClickHouseTest extends TestCase
         $this->assertNull($results[0]->getMethod());
         $this->assertNull($results[0]->getStatus());
         $this->assertNull($results[0]->getResource());
-        $this->assertNull($results[0]->getResourceId());
+        $this->assertEquals('r1', $results[0]->getResourceId());
     }
 
     /**
@@ -430,7 +578,7 @@ class ClickHouseTest extends TestCase
     {
         $specialVal = "Text with \n newline, \t tab, \"quote\", and unicode \u{1F600}";
         $this->assertTrue($this->usage->addBatch([
-            ['metric' => 'special-metric', 'value' => 1, 'tags' => ['s' => $specialVal]],
+            ['metric' => 'special-metric', 'value' => 1, 'tags' => ['hostname' => $specialVal]],
         ], Usage::TYPE_EVENT));
 
         $results = $this->usage->find([
@@ -439,8 +587,7 @@ class ClickHouseTest extends TestCase
 
         $this->assertEquals(1, count($results));
         $this->assertEquals('special-metric', $results[0]->getMetric());
-        $tags = $results[0]->getTags();
-        $this->assertEquals($specialVal, $tags['s']);
+        $this->assertEquals($specialVal, $results[0]->getHostname());
     }
 
     /**
@@ -453,10 +600,10 @@ class ClickHouseTest extends TestCase
 
         // Setup test data
         $this->usage->addBatch([
-            ['metric' => 'metric-A', 'value' => 10, 'tags' => ['category' => 'cat1']],
+            ['metric' => 'metric-A', 'value' => 10, 'tags' => ['service' => 'cat1']],
         ], Usage::TYPE_EVENT);
         $this->usage->addBatch([
-            ['metric' => 'metric-B', 'value' => 20, 'tags' => ['category' => 'cat2']],
+            ['metric' => 'metric-B', 'value' => 20, 'tags' => ['service' => 'cat2']],
         ], Usage::TYPE_EVENT);
 
         // 1. Array Equal (IN)
@@ -707,9 +854,9 @@ class ClickHouseTest extends TestCase
 
         // Insert data using addBatch with compression enabled
         $batchResult = $usage->addBatch([
-            ['metric' => 'compression.test.batch', 'value' => 50, 'tags' => ['type' => 'batch']],
-            ['metric' => 'compression.test.batch', 'value' => 75, 'tags' => ['type' => 'batch']],
-            ['metric' => 'compression.test.single', 'value' => 100, 'tags' => ['type' => 'single']],
+            ['metric' => 'compression.test.batch', 'value' => 50, 'tags' => ['service' => 'batch']],
+            ['metric' => 'compression.test.batch', 'value' => 75, 'tags' => ['service' => 'batch']],
+            ['metric' => 'compression.test.single', 'value' => 100, 'tags' => ['service' => 'single']],
         ], Usage::TYPE_EVENT);
         $this->assertTrue($batchResult);
 
@@ -774,7 +921,7 @@ class ClickHouseTest extends TestCase
 
         // Make some requests
         $usage->addBatch([
-            ['metric' => 'pooling.test', 'value' => 100, 'tags' => ['test' => 'value']],
+            ['metric' => 'pooling.test', 'value' => 100, 'tags' => ['service' => 'value']],
         ], Usage::TYPE_EVENT);
         $usage->find([], Usage::TYPE_EVENT);
         $usage->count([], Usage::TYPE_EVENT);
@@ -885,7 +1032,7 @@ class ClickHouseTest extends TestCase
 
         // These operations should succeed on first attempt (no retries needed)
         $result = $usage->addBatch([
-            ['metric' => 'retry.test', 'value' => 100, 'tags' => ['test' => 'success']],
+            ['metric' => 'retry.test', 'value' => 100, 'tags' => ['service' => 'success']],
         ], Usage::TYPE_EVENT);
         $this->assertTrue($result);
 
@@ -1092,6 +1239,79 @@ class ClickHouseTest extends TestCase
             Query::lessThanEqual('time', $end),
             Query::cursorAfter(['id' => 'whatever']),
         ], Usage::TYPE_EVENT);
+    }
+
+    public function testGroupByServiceDailyAggregates(): void
+    {
+        $this->usage->purge();
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'gb-service', 'value' => 10, 'tags' => ['service' => 'storage']],
+            ['metric' => 'gb-service', 'value' => 25, 'tags' => ['service' => 'storage']],
+            ['metric' => 'gb-service', 'value' => 5, 'tags' => ['service' => 'databases']],
+        ], Usage::TYPE_EVENT));
+
+        $start = (new \DateTime())->modify('-1 day')->format('Y-m-d\TH:i:s');
+        $end = (new \DateTime())->modify('+1 day')->format('Y-m-d\TH:i:s');
+
+        $results = $this->usage->find([
+            UsageQuery::groupByInterval('time', '1d'),
+            UsageQuery::groupBy('service'),
+            Query::equal('metric', ['gb-service']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertGreaterThanOrEqual(2, count($results));
+
+        $byService = [];
+        foreach ($results as $row) {
+            $service = $row->getService();
+            $this->assertNotNull($service, 'groupBy(service) should surface the service dimension on each Metric');
+            $byService[$service] = ($byService[$service] ?? 0) + $row->getValue();
+        }
+
+        $this->assertEquals(35, $byService['storage'] ?? null);
+        $this->assertEquals(5, $byService['databases'] ?? null);
+    }
+
+    public function testGroupByMultipleDimensionsHourly(): void
+    {
+        $this->usage->purge();
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => 'gb-multi', 'value' => 1, 'tags' => ['service' => 'storage', 'path' => '/v1/a']],
+            ['metric' => 'gb-multi', 'value' => 2, 'tags' => ['service' => 'storage', 'path' => '/v1/a']],
+            ['metric' => 'gb-multi', 'value' => 4, 'tags' => ['service' => 'storage', 'path' => '/v1/b']],
+            ['metric' => 'gb-multi', 'value' => 8, 'tags' => ['service' => 'databases', 'path' => '/v1/a']],
+        ], Usage::TYPE_EVENT));
+
+        $start = (new \DateTime())->modify('-1 hour')->format('Y-m-d\TH:i:s');
+        $end = (new \DateTime())->modify('+1 hour')->format('Y-m-d\TH:i:s');
+
+        $results = $this->usage->find([
+            UsageQuery::groupByInterval('time', '1h'),
+            UsageQuery::groupBy('service'),
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', ['gb-multi']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertGreaterThanOrEqual(3, count($results));
+
+        $byPair = [];
+        foreach ($results as $row) {
+            $svc = $row->getService();
+            $path = $row->getPath();
+            $this->assertNotNull($svc);
+            $this->assertNotNull($path);
+            $byPair["{$svc}|{$path}"] = ($byPair["{$svc}|{$path}"] ?? 0) + $row->getValue();
+        }
+
+        $this->assertEquals(3, $byPair['storage|/v1/a'] ?? null);
+        $this->assertEquals(4, $byPair['storage|/v1/b'] ?? null);
+        $this->assertEquals(8, $byPair['databases|/v1/a'] ?? null);
     }
 
     public function testNotEqualQuery(): void

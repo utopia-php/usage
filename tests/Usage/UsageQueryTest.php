@@ -131,4 +131,104 @@ class UsageQueryTest extends TestCase
         $query = UsageQuery::groupByInterval('time', '1h');
         $this->assertInstanceOf(Query::class, $query);
     }
+
+    public function testGroupByCreation(): void
+    {
+        $query = UsageQuery::groupBy('service');
+
+        $this->assertInstanceOf(UsageQuery::class, $query);
+        $this->assertEquals(UsageQuery::TYPE_GROUP_BY, $query->getMethod());
+        $this->assertEquals('service', $query->getAttribute());
+        $this->assertEquals([], $query->getValues());
+    }
+
+    public function testGroupByIsMethod(): void
+    {
+        $this->assertTrue(UsageQuery::isMethod(UsageQuery::TYPE_GROUP_BY));
+        $this->assertTrue(UsageQuery::isMethod(UsageQuery::TYPE_GROUP_BY_INTERVAL));
+        $this->assertTrue(UsageQuery::isMethod(Query::TYPE_EQUAL));
+        $this->assertFalse(UsageQuery::isMethod('notARealMethod'));
+    }
+
+    public function testIsGroupBy(): void
+    {
+        $groupBy = UsageQuery::groupBy('service');
+        $groupByInterval = UsageQuery::groupByInterval('time', '1h');
+        $regular = Query::equal('metric', ['bandwidth']);
+
+        $this->assertTrue(UsageQuery::isGroupBy($groupBy));
+        $this->assertFalse(UsageQuery::isGroupBy($groupByInterval));
+        $this->assertFalse(UsageQuery::isGroupBy($regular));
+    }
+
+    public function testExtractGroupByReturnsAllMatches(): void
+    {
+        $byService = UsageQuery::groupBy('service');
+        $byPath = UsageQuery::groupBy('path');
+        $interval = UsageQuery::groupByInterval('time', '1h');
+        $equal = Query::equal('metric', ['bandwidth']);
+
+        $queries = [$equal, $byService, $interval, $byPath];
+
+        $extracted = UsageQuery::extractGroupBy($queries);
+
+        $this->assertCount(2, $extracted);
+        $this->assertEquals('service', $extracted[0]->getAttribute());
+        $this->assertEquals('path', $extracted[1]->getAttribute());
+    }
+
+    public function testExtractGroupByReturnsEmptyWhenAbsent(): void
+    {
+        $queries = [
+            Query::equal('metric', ['bandwidth']),
+            UsageQuery::groupByInterval('time', '1h'),
+        ];
+
+        $this->assertSame([], UsageQuery::extractGroupBy($queries));
+    }
+
+    public function testRemoveGroupBy(): void
+    {
+        $byService = UsageQuery::groupBy('service');
+        $byPath = UsageQuery::groupBy('path');
+        $interval = UsageQuery::groupByInterval('time', '1h');
+        $equal = Query::equal('metric', ['bandwidth']);
+
+        $queries = [$equal, $byService, $interval, $byPath];
+
+        $remaining = UsageQuery::removeGroupBy($queries);
+
+        $this->assertCount(2, $remaining);
+        foreach ($remaining as $query) {
+            $this->assertNotEquals(UsageQuery::TYPE_GROUP_BY, $query->getMethod());
+        }
+    }
+
+    public function testGroupByParseRoundTrip(): void
+    {
+        $json = json_encode([
+            'method' => UsageQuery::TYPE_GROUP_BY,
+            'attribute' => 'service',
+            'values' => [],
+        ]);
+        $this->assertIsString($json);
+
+        $parsed = UsageQuery::parse($json);
+
+        $this->assertEquals(UsageQuery::TYPE_GROUP_BY, $parsed->getMethod());
+        $this->assertEquals('service', $parsed->getAttribute());
+        $this->assertEquals([], $parsed->getValues());
+    }
+
+    public function testExtractGroupByFromParsedQuery(): void
+    {
+        // Queries created via Query::parse() are base Query objects, not UsageQuery.
+        $parsedGroupBy = new Query(UsageQuery::TYPE_GROUP_BY, 'service', []);
+        $equal = Query::equal('metric', ['bandwidth']);
+
+        $extracted = UsageQuery::extractGroupBy([$equal, $parsedGroupBy]);
+
+        $this->assertCount(1, $extracted);
+        $this->assertEquals('service', $extracted[0]->getAttribute());
+    }
 }

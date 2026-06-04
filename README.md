@@ -10,7 +10,7 @@ Although this library is part of the [Utopia Framework](https://github.com/utopi
 ## Features
 
 - **Two Table Architecture**: Separate events and gauges tables optimized for their access patterns
-- **Events Table**: Request-level metrics with dedicated columns (path, method, status, resource, country, userAgent)
+- **Events Table**: Request-level metrics with dedicated columns for every dimension we filter on (path/method/status, service/resource ids, team ids, country/region, hostname, parsed UA fields)
 - **Gauges Table**: Simple resource snapshots (storage size, user count, etc.)
 - **Query-Time Aggregation**: No write-time period fan-out — aggregate by any interval at query time
 - **Daily Materialized View**: Pre-aggregated daily SummingMergeTree for fast billing queries
@@ -72,7 +72,12 @@ $usage->setup();
 
 Events are request-level metrics like bandwidth, executions, API calls. They are summed when aggregated.
 
-Event-specific columns: `path`, `method`, `status`, `resource`, `resourceId`, `country`, `userAgent`
+Event-specific columns (see `Metric::EVENT_COLUMNS`): `path`, `method`, `status`,
+`service`, `resource`, `resourceId`, `resourceInternalId`, `teamId`,
+`teamInternalId`, `country`, `region`, `hostname`, `osCode`, `osName`,
+`osVersion`, `clientType`, `clientCode`, `clientName`, `clientVersion`,
+`clientEngine`, `clientEngineVersion`, `deviceName`, `deviceBrand`,
+`deviceModel`.
 
 ```php
 // Collect events — values accumulate in-memory buffer (summed per metric)
@@ -80,26 +85,43 @@ $usage->collect('bandwidth', 5000, Usage::TYPE_EVENT, [
     'path' => '/v1/storage/files',
     'method' => 'POST',
     'status' => '201',
+    'service' => 'storage',
     'resource' => 'bucket',
     'resourceId' => 'abc123',
+    'resourceInternalId' => '42',
+    'teamId' => 'team_x',
+    'teamInternalId' => '7',
     'country' => 'US',
-    'userAgent' => 'AppwriteSDK/1.0',
+    'region' => 'us-east',
+    'hostname' => 'app.example.com',
+    'osName' => 'iOS',
+    'clientName' => 'Appwrite SDK',
+    'deviceName' => 'smartphone',
 ]);
-
-// Event columns are auto-extracted from tags into dedicated columns
-// Remaining tags stay in the JSON tags column
 ```
+
+### Strict tag keys
+
+All keys passed in the `tags` array must map to a known event or gauge
+column (see `Metric::EVENT_COLUMNS` and `Metric::GAUGE_COLUMNS`). Unknown
+keys throw at write time — there is no JSON catch-all. To add a new
+dimension, widen the schema and bump the library version.
 
 ### Gauges (Point-in-Time)
 
 Gauges are resource snapshots like storage size, user count, file count. Last-write-wins semantics.
 
+Gauge-specific columns (see `Metric::GAUGE_COLUMNS`): `teamId`,
+`teamInternalId`, `resourceId`, `resourceInternalId`.
+
 ```php
 // Collect gauges — last value wins per metric in buffer
 $usage->collect('users', 1500, Usage::TYPE_GAUGE);
 $usage->collect('storage.size', 1048576, Usage::TYPE_GAUGE, [
-    'resource' => 'bucket',
+    'teamId' => 'team_x',
+    'teamInternalId' => '7',
     'resourceId' => 'abc123',
+    'resourceInternalId' => '42',
 ]);
 ```
 
@@ -121,12 +143,12 @@ $usage->setFlushInterval(10);     // Flush after 10 seconds (default: 20)
 ```php
 // Write directly without buffering
 $usage->addBatch([
-    ['metric' => 'requests', 'value' => 100, 'tags' => ['path' => '/v1/users']],
-    ['metric' => 'bandwidth', 'value' => 50000, 'tags' => ['country' => 'DE']],
+    ['metric' => 'requests', 'value' => 100, 'tags' => ['path' => '/v1/users', 'method' => 'GET']],
+    ['metric' => 'bandwidth', 'value' => 50000, 'tags' => ['country' => 'DE', 'region' => 'fra']],
 ], Usage::TYPE_EVENT);
 
 $usage->addBatch([
-    ['metric' => 'users', 'value' => 42, 'tags' => []],
+    ['metric' => 'users', 'value' => 42, 'tags' => ['teamId' => 'team_x']],
 ], Usage::TYPE_GAUGE);
 ```
 
@@ -250,11 +272,21 @@ $usage->purge([], Usage::TYPE_GAUGE);
 | path | Nullable(String) | API endpoint path |
 | method | Nullable(String) | HTTP method |
 | status | Nullable(String) | HTTP status code |
-| resource | Nullable(String) | Resource type |
-| resourceId | Nullable(String) | Resource ID |
-| country | LowCardinality(Nullable(String)) | ISO country code |
-| userAgent | Nullable(String) | User agent string |
-| tags | Nullable(String) | JSON for extra metadata |
+| service | LowCardinality(Nullable(String)) | API service (storage, databases, …) |
+| resource | LowCardinality(Nullable(String)) | Resource type (bucket, file, …) |
+| resourceId | Nullable(String) | External resource id |
+| resourceInternalId | Nullable(String) | Internal resource sequence |
+| teamId | Nullable(String) | External team id |
+| teamInternalId | Nullable(String) | Internal team sequence |
+| country | LowCardinality(Nullable(String)) | ISO country code (lowercased) |
+| region | LowCardinality(Nullable(String)) | Region code (lowercased) |
+| hostname | Nullable(String) | Caller origin host |
+| osCode, osName | LowCardinality(Nullable(String)) | Parsed OS short code / name |
+| osVersion | Nullable(String) | Parsed OS version |
+| clientType, clientCode, clientName, clientEngine | LowCardinality(Nullable(String)) | Parsed client identity |
+| clientVersion, clientEngineVersion | Nullable(String) | Parsed client versions |
+| deviceName, deviceBrand | LowCardinality(Nullable(String)) | Parsed device identity |
+| deviceModel | Nullable(String) | Parsed device model |
 | tenant | Nullable(String) | Tenant ID (shared tables) |
 
 ### Gauges Table Schema
@@ -265,7 +297,10 @@ $usage->purge([], Usage::TYPE_GAUGE);
 | metric | String | Metric name |
 | value | Int64 | Current value |
 | time | DateTime64(3) | Snapshot timestamp |
-| tags | Nullable(String) | JSON metadata |
+| teamId | Nullable(String) | External team id |
+| teamInternalId | Nullable(String) | Internal team sequence |
+| resourceId | Nullable(String) | External resource id |
+| resourceInternalId | Nullable(String) | Internal resource sequence |
 | tenant | Nullable(String) | Tenant ID (shared tables) |
 
 ### Daily Table Schema
@@ -275,6 +310,11 @@ $usage->purge([], Usage::TYPE_GAUGE);
 | metric | String | Metric name |
 | value | Int64 | Aggregated daily sum |
 | time | DateTime64(3) | Day start timestamp |
+| resource | LowCardinality(Nullable(String)) | Resource type |
+| resourceId | Nullable(String) | External resource id |
+| resourceInternalId | Nullable(String) | Internal resource sequence |
+| teamId | Nullable(String) | External team id |
+| teamInternalId | Nullable(String) | Internal team sequence |
 | tenant | Nullable(String) | Tenant ID (shared tables) |
 
 ### Creating Custom Adapters
