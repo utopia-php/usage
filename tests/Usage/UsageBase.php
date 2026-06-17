@@ -652,14 +652,20 @@ trait UsageBase
         ], Usage::TYPE_EVENT);
     }
 
-    public function testGroupByWithoutGroupByIntervalThrows(): void
+    public function testGroupByWithoutGroupByIntervalReturnsDimOnlyAggregate(): void
     {
-        $this->expectException(\Exception::class);
-        $this->expectExceptionMessageMatches('/groupBy requires groupByInterval/');
-
-        $this->usage->find([
+        // Without groupByInterval the result is a flat aggregate per
+        // (metric, …dims) — no time bucketing, ordered by value DESC by
+        // default (top-N table semantics).
+        $rows = $this->usage->find([
             UsageQuery::groupBy('service'),
             Query::equal('metric', ['gbi-requests']),
         ], Usage::TYPE_EVENT);
+
+        $this->assertIsArray($rows);
+        foreach ($rows as $row) {
+            $this->assertArrayNotHasKey('time', $row->getArrayCopy());
+            $this->assertArrayHasKey('service', $row->getArrayCopy());
+        }
     }
 }

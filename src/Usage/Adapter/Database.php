@@ -495,31 +495,20 @@ class Database extends SQL
      * Mirrors the ClickHouse adapter contract: groupBy attributes must exist on
      * the matching schema (event vs gauge — we default to the broader event set
      * for the Database adapter since both share one collection), and groupBy
-     * must always be paired with groupByInterval so the cloud-facing API stays
-     * consistent across backends.
+     * does not push the aggregation hints down to SQL — it just validates them.
      *
      * @param array<Query> $queries
      * @throws \Exception
      */
     private function validateGroupByQueries(array $queries): void
     {
-        $hasGroupBy = false;
-        $hasGroupByInterval = false;
         $allowed = array_unique(array_merge(Metric::EVENT_COLUMNS, Metric::GAUGE_COLUMNS));
 
         foreach ($queries as $query) {
-            $method = $query->getMethod();
-
-            if ($method === UsageQuery::TYPE_GROUP_BY_INTERVAL) {
-                $hasGroupByInterval = true;
+            if ($query->getMethod() !== UsageQuery::TYPE_GROUP_BY) {
                 continue;
             }
 
-            if ($method !== UsageQuery::TYPE_GROUP_BY) {
-                continue;
-            }
-
-            $hasGroupBy = true;
             $attribute = $query->getAttribute();
 
             if (!in_array($attribute, $allowed, true)) {
@@ -527,10 +516,6 @@ class Database extends SQL
                     "Invalid groupBy attribute '{$attribute}'. Allowed: " . implode(', ', $allowed)
                 );
             }
-        }
-
-        if ($hasGroupBy && !$hasGroupByInterval) {
-            throw new \Exception('groupBy requires groupByInterval to be specified');
         }
     }
 
