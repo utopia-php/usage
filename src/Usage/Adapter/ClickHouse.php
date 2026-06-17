@@ -1588,12 +1588,9 @@ class ClickHouse extends SQL
             throw new Exception('Cursor pagination cannot be combined with groupByInterval');
         }
 
-        if (!empty($parsed['groupBy']) && !isset($parsed['groupByInterval'])) {
-            throw new Exception('groupBy requires groupByInterval to be specified');
-        }
-
-        // Check if groupByInterval is requested
-        if (isset($parsed['groupByInterval'])) {
+        // Route through the aggregated path whenever any aggregation
+        // hint is present — time bucketing, dimension breakdown, or both.
+        if (isset($parsed['groupByInterval']) || !empty($parsed['groupBy'])) {
             return $this->findAggregatedFromTable($parsed, $fromTable, $type);
         }
 
@@ -1662,18 +1659,23 @@ class ClickHouse extends SQL
      */
     private function findAggregatedFromTable(array $parsed, string $fromTable, string $type): array
     {
-        /** @var string $interval */
-        $interval = $parsed['groupByInterval'] ?? '1h';
-        $intervalSql = UsageQuery::VALID_INTERVALS[$interval];
+        $hasInterval = isset($parsed['groupByInterval']);
 
         // Choose aggregation function based on metric type
         $valueExpr = $type === Usage::TYPE_GAUGE
             ? 'argMax(value, time) as value'
             : 'SUM(value) as value';
 
-        // Use 'bucket' alias to avoid collision with the raw 'time' column,
-        // then alias back to 'time' in outer context for consistent Metric parsing.
-        $timeBucketExpr = "toStartOfInterval(time, {$intervalSql})";
+        // Bucket column is only emitted when time bucketing is requested.
+        // Without it the result is a flat aggregate per (metric, …dims).
+        $bucketSelect = '';
+        $bucketGroup = '';
+        if ($hasInterval) {
+            $interval = $parsed['groupByInterval'];
+            $intervalSql = UsageQuery::VALID_INTERVALS[$interval];
+            $bucketSelect = ", toStartOfInterval(time, {$intervalSql}) as bucket";
+            $bucketGroup = ', bucket';
+        }
 
         $groupByDims = $parsed['groupBy'] ?? [];
         $dimSelect = '';
@@ -1691,31 +1693,46 @@ class ClickHouse extends SQL
         $whereClause = $whereData['clause'];
         $params = $whereData['params'];
 
-        // Use custom ORDER BY if specified, otherwise default to bucket ASC.
-        // In aggregated mode the SELECT exposes `bucket` instead of `time`,
-        // so any user-supplied ORDER BY on `time` must be rewritten to
-        // reference the bucket alias — otherwise ClickHouse errors with
-        // "Unknown identifier: time".
-        $orderClause = ' ORDER BY bucket ASC';
-        if (!empty($parsed['orderBy'])) {
-            $rewrittenOrderBy = array_map(
-                fn (string $clause): string => preg_replace(
-                    '/^`time`(\s+(?:ASC|DESC))?$/',
-                    '`bucket`$1',
-                    $clause
-                ) ?? $clause,
-                $parsed['orderBy']
-            );
-            $orderClause = ' ORDER BY ' . implode(', ', $rewrittenOrderBy);
+        // Default ORDER BY:
+        // - With time bucketing: bucket ASC (chronological time series).
+        // - Dim-only: value DESC (top-N table semantics).
+        // For caller-supplied ORDER BY, `time` is rewritten to `bucket`
+        // only when bucket is present; otherwise sorting by time is
+        // invalid (the column is no longer in the SELECT after GROUP BY).
+        if ($hasInterval) {
+            $orderClause = ' ORDER BY bucket ASC';
+            if (!empty($parsed['orderBy'])) {
+                $rewrittenOrderBy = array_map(
+                    fn (string $clause): string => preg_replace(
+                        '/^`time`(\s+(?:ASC|DESC))?$/',
+                        '`bucket`$1',
+                        $clause
+                    ) ?? $clause,
+                    $parsed['orderBy']
+                );
+                $orderClause = ' ORDER BY ' . implode(', ', $rewrittenOrderBy);
+            }
+        } else {
+            $orderClause = ' ORDER BY value DESC';
+            if (!empty($parsed['orderBy'])) {
+                foreach ($parsed['orderBy'] as $clause) {
+                    if (preg_match('/^`time`/', $clause)) {
+                        throw new Exception(
+                            'orderBy("time") requires groupByInterval — without time bucketing the result has no time column'
+                        );
+                    }
+                }
+                $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
+            }
         }
 
         $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
         $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
 
         $sql = "
-            SELECT metric, {$valueExpr}, {$timeBucketExpr} as bucket{$dimSelect}
+            SELECT metric, {$valueExpr}{$bucketSelect}{$dimSelect}
             FROM {$fromTable}{$whereClause}
-            GROUP BY metric, bucket{$dimGroup}{$orderClause}{$limitClause}{$offsetClause}
+            GROUP BY metric{$bucketGroup}{$dimGroup}{$orderClause}{$limitClause}{$offsetClause}
             FORMAT JSON
         ";
 
