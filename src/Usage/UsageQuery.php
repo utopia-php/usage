@@ -39,6 +39,7 @@ class UsageQuery extends Query
         '1m' => 'INTERVAL 1 MINUTE',
         '5m' => 'INTERVAL 5 MINUTE',
         '15m' => 'INTERVAL 15 MINUTE',
+        '30m' => 'INTERVAL 30 MINUTE',
         '1h' => 'INTERVAL 1 HOUR',
         '1d' => 'INTERVAL 1 DAY',
         '1w' => 'INTERVAL 1 WEEK',
