@@ -21,7 +21,7 @@ class UsageQueryTest extends TestCase
 
     public function testGroupByIntervalAllValidIntervals(): void
     {
-        $validIntervals = ['1m', '5m', '15m', '1h', '1d', '1w', '1M'];
+        $validIntervals = ['1m', '5m', '15m', '30m', '1h', '1d', '1w', '1M'];
 
         foreach ($validIntervals as $interval) {
             $query = UsageQuery::groupByInterval('time', $interval);
@@ -114,6 +114,7 @@ class UsageQueryTest extends TestCase
         $this->assertArrayHasKey('1m', UsageQuery::VALID_INTERVALS);
         $this->assertArrayHasKey('5m', UsageQuery::VALID_INTERVALS);
         $this->assertArrayHasKey('15m', UsageQuery::VALID_INTERVALS);
+        $this->assertArrayHasKey('30m', UsageQuery::VALID_INTERVALS);
         $this->assertArrayHasKey('1h', UsageQuery::VALID_INTERVALS);
         $this->assertArrayHasKey('1d', UsageQuery::VALID_INTERVALS);
         $this->assertArrayHasKey('1w', UsageQuery::VALID_INTERVALS);
