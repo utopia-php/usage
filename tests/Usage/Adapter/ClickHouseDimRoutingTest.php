@@ -357,6 +357,44 @@ class ClickHouseDimRoutingTest extends TestCase
         $this->adapter->setDualReadSampleRate(0.0);
     }
 
+    public function testDualReadSamplerLogsWarningOnPerGroupDivergenceWithSameTotal(): void
+    {
+        // The raw side has 50 for /v1/group-a and 50 for /v1/group-b
+        // (total 100). The rollup is seeded with the SAME total but the
+        // wrong distribution: 80 + 20. The old sampler compared totals
+        // only — this regression test proves per-group comparison fires.
+        $metric = 'dim.routing.per-group-divergent';
+
+        $this->seedHistoricalRow($metric, 50, '-5 days', ['path' => '/v1/group-a', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']);
+        $this->seedHistoricalRow($metric, 50, '-5 days', ['path' => '/v1/group-b', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']);
+
+        $this->insertRollupRow('by_path', $metric, 80, '-5 days', ['path' => '/v1/group-a']);
+        $this->insertRollupRow('by_path', $metric, 20, '-5 days', ['path' => '/v1/group-b']);
+
+        $this->adapter->setDualReadSampleRate(1.0);
+        $this->adapter->clearRouteLog();
+
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+
+        $this->usage->find([
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', [$metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $operations = array_column($log, 'operation');
+        $this->assertContains(
+            'dual_read_warning',
+            $operations,
+            'sampler must compare per-group, not just totals — the divergence here cancels out across groups'
+        );
+
+        $this->adapter->setDualReadSampleRate(0.0);
+    }
+
     public function testDualReadSamplerDoesNotWarnOnAgreement(): void
     {
         $this->adapter->setDualReadSampleRate(1.0);

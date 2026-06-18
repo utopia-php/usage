@@ -3090,8 +3090,15 @@ class ClickHouse extends SQL
 
     /**
      * Dual-read sampler: with probability `$dualReadSampleRate`, re-run
-     * the same logical query against raw events and log a warning if the
-     * totals diverge by more than 1%.
+     * the same logical query against raw events / gauges and log a
+     * warning when results diverge.
+     *
+     * For flat (non-grouped) reads the comparison is against the total —
+     * a single number on each side. For grouped reads the comparison is
+     * per-group, keyed by the dimension tuple. Totals-only comparison
+     * misses the kind of bug the sampler is supposed to catch: a rollup
+     * that inflates one group and deflates another by the same amount
+     * keeps the total but every individual reading is wrong.
      *
      * @param array<Query> $queries
      * @param string $type
@@ -3114,6 +3121,11 @@ class ClickHouse extends SQL
             return;
         }
 
+        if (!empty($plan['dimensions'])) {
+            $this->compareDualReadPerGroup($plan, $route, $rolledResult, $rawResult);
+            return;
+        }
+
         $rolledTotal = $this->sumMetricValues($rolledResult);
         $rawTotal = $this->sumMetricValues($rawResult);
         if ($rawTotal === 0 && $rolledTotal === 0) {
@@ -3133,6 +3145,92 @@ class ClickHouse extends SQL
                 'interval' => $plan['interval'],
             ]);
         }
+    }
+
+    /**
+     * Number of diverging groups to log when many groups disagree, to
+     * keep the route log bounded even when a rollup is broadly stale.
+     */
+    private const DUAL_READ_MAX_GROUP_WARNINGS = 10;
+
+    /**
+     * Compare per-group values between the routed result and the raw
+     * result. Both sides are keyed by the dimension tuple; a group on
+     * one side without a match on the other counts as a 100% divergence
+     * for that group.
+     *
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
+     * @param array<Metric> $rolledResult
+     * @param array<Metric> $rawResult
+     */
+    private function compareDualReadPerGroup(array $plan, string $route, array $rolledResult, array $rawResult): void
+    {
+        $dimensions = $plan['dimensions'];
+        $rolledByKey = $this->indexMetricsByGroup($rolledResult, $dimensions);
+        $rawByKey = $this->indexMetricsByGroup($rawResult, $dimensions);
+
+        $allKeys = array_unique(array_merge(array_keys($rolledByKey), array_keys($rawByKey)));
+        $divergences = [];
+
+        foreach ($allKeys as $key) {
+            $rolledValue = $rolledByKey[$key] ?? 0;
+            $rawValue = $rawByKey[$key] ?? 0;
+            if ($rolledValue === 0 && $rawValue === 0) {
+                continue;
+            }
+            $denominator = $rawValue === 0 ? max(abs($rolledValue), 1) : abs($rawValue);
+            $delta = abs($rolledValue - $rawValue) / $denominator;
+            if ($delta > 0.01) {
+                $divergences[] = ['key' => $key, 'delta' => $delta];
+            }
+        }
+
+        if (empty($divergences)) {
+            return;
+        }
+
+        usort($divergences, fn (array $a, array $b): int => $b['delta'] <=> $a['delta']);
+        $top = array_slice($divergences, 0, self::DUAL_READ_MAX_GROUP_WARNINGS);
+
+        foreach ($top as $divergence) {
+            $this->appendRouteLogEntry([
+                'operation' => 'dual_read_warning',
+                'metric' => $plan['metric'],
+                'route' => $route . ':group=' . $divergence['key'] . ':delta=' . round($divergence['delta'], 4),
+                'start' => $plan['start'],
+                'end' => $plan['end'],
+                'dimensions' => $dimensions,
+                'interval' => $plan['interval'],
+            ]);
+        }
+    }
+
+    /**
+     * Build a per-group value map from a metrics list. The key is the
+     * dimension tuple joined with a separator that's safe across the dim
+     * column values we emit (path / country / service / method / status /
+     * resource — none of these contain the pipe character we use).
+     *
+     * @param array<Metric> $metrics
+     * @param array<int, string> $dimensions
+     * @return array<string, int>
+     */
+    private function indexMetricsByGroup(array $metrics, array $dimensions): array
+    {
+        $indexed = [];
+        foreach ($metrics as $metric) {
+            $parts = [];
+            foreach ($dimensions as $dim) {
+                $raw = $metric->getAttribute($dim);
+                $parts[] = is_scalar($raw) ? (string) $raw : '';
+            }
+            $key = implode('|', $parts);
+
+            $value = $metric->getValue(0);
+            $intValue = is_int($value) ? $value : (is_float($value) ? (int) $value : 0);
+            $indexed[$key] = ($indexed[$key] ?? 0) + $intValue;
+        }
+        return $indexed;
     }
 
     /**
