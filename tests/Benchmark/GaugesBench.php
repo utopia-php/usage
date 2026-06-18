@@ -4,6 +4,7 @@ namespace Utopia\Tests\Benchmark;
 
 use Utopia\Query\Query;
 use Utopia\Usage\Usage;
+use Utopia\Usage\UsageQuery;
 
 class GaugesBench extends BenchmarkBase
 {
@@ -20,20 +21,58 @@ class GaugesBench extends BenchmarkBase
 
     public function testBenchmarks(): void
     {
-        $start = (new \DateTime('-30 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('+1 day'))->format('Y-m-d H:i:s');
+        $start30d = (new \DateTime('-30 days'))->format('Y-m-d H:i:s');
+        $endClosed = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $endPartial = (new \DateTime('+1 day'))->format('Y-m-d H:i:s');
 
-        $this->runBench('bench_gauges_latest_in_window', function (string $queryId) use ($start, $end): void {
+        $this->runBench('bench_gauges_latest_in_window', function (string $queryId) use ($start30d, $endPartial): void {
             $this->adapter->setNextQueryId($queryId);
             $this->usage->getTotal(
                 $this->metric,
                 [
-                    Query::greaterThanEqual('time', $start),
-                    Query::lessThanEqual('time', $end),
+                    Query::greaterThanEqual('time', $start30d),
+                    Query::lessThanEqual('time', $endPartial),
                 ],
                 Usage::TYPE_GAUGE
             );
         });
+
+        $this->adapter->setUseDailyRollups(true);
+
+        $this->runBench('bench_gauges_topN_service_30d', function (string $queryId) use ($start30d, $endClosed): void {
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->find([
+                UsageQuery::groupBy('service'),
+                Query::equal('metric', [$this->metric]),
+                Query::greaterThanEqual('time', $start30d),
+                Query::lessThanEqual('time', $endClosed),
+                Query::limit(10),
+            ], Usage::TYPE_GAUGE);
+        });
+
+        $this->runBench('bench_gauges_topN_resource_30d', function (string $queryId) use ($start30d, $endClosed): void {
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->find([
+                UsageQuery::groupBy('resource'),
+                Query::equal('metric', [$this->metric]),
+                Query::greaterThanEqual('time', $start30d),
+                Query::lessThanEqual('time', $endClosed),
+                Query::limit(10),
+            ], Usage::TYPE_GAUGE);
+        });
+
+        $this->runBench('bench_gauges_topN_service_today_partial', function (string $queryId) use ($start30d, $endPartial): void {
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->find([
+                UsageQuery::groupBy('service'),
+                Query::equal('metric', [$this->metric]),
+                Query::greaterThanEqual('time', $start30d),
+                Query::lessThanEqual('time', $endPartial),
+                Query::limit(10),
+            ], Usage::TYPE_GAUGE);
+        });
+
+        $this->adapter->setUseDailyRollups(false);
 
         $this->assertNotEmpty($this->results, 'Benchmark scenarios must record results');
     }

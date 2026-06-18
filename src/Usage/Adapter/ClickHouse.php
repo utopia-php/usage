@@ -1896,7 +1896,7 @@ class ClickHouse extends SQL
         if ($type !== null) {
             if ($this->useDailyRollups && $type === Usage::TYPE_EVENT) {
                 $plan = $this->extractRoutingPlan($queries);
-                $route = $this->selectAggregateSource($plan);
+                $route = $this->selectAggregateSource($plan, Usage::TYPE_EVENT);
                 $this->recordRoute('find', $plan, $route);
 
                 if (str_starts_with($route, 'daily_by_')) {
@@ -1918,6 +1918,32 @@ class ClickHouse extends SQL
                     }
                 }
             }
+
+            if ($this->useDailyRollups && $type === Usage::TYPE_GAUGE) {
+                $plan = $this->extractRoutingPlan($queries);
+                $route = $this->selectAggregateSource($plan, Usage::TYPE_GAUGE);
+                $this->recordRoute('find', $plan, $route);
+
+                if (str_starts_with($route, 'gauges_daily_by_')) {
+                    $name = substr($route, strlen('gauges_daily_'));
+                    $rollup = $this->getGaugeRollupByName($name);
+                    if ($rollup !== null) {
+                        $result = $this->findFromGaugeDailyByDim($rollup, $queries);
+                        $this->maybeDualRead($queries, $type, $route, $plan, $result);
+                        return $result;
+                    }
+                }
+                if (str_starts_with($route, 'gauges_hybrid_by_')) {
+                    $name = substr($route, strlen('gauges_hybrid_'));
+                    $rollup = $this->getGaugeRollupByName($name);
+                    if ($rollup !== null) {
+                        $result = $this->findHybridFromGaugeDailyByDim($rollup, $queries);
+                        $this->maybeDualRead($queries, $type, $route, $plan, $result);
+                        return $result;
+                    }
+                }
+            }
+
             return $this->findFromTable($queries, $type);
         }
 
@@ -2434,22 +2460,25 @@ class ClickHouse extends SQL
      * Pure routing decision: which physical table satisfies this read.
      *
      * Returns one of:
-     *   - 'raw'    — scan the events table.
-     *   - 'daily'  — read the existing daily MV (no grouping, only
+     *   - 'raw'    — scan the raw events / gauges table.
+     *   - 'daily'  — read the existing events daily MV (no grouping, only
      *                daily-MV-compatible filters, window in closed days).
-     *   - 'hybrid' — closed days from daily MV, today's partial from raw.
+     *   - 'hybrid' — closed days from events daily MV, today's partial from raw.
      *   - 'daily_by_path' / 'daily_by_country' / 'daily_by_service' /
-     *     'daily_by_method_status' — read a per-dim rollup when the
-     *     requested dimensions[] and filter columns match one of the
-     *     four MVs.
-     *   - 'hybrid_by_<dim>' — multi-dim MV closed days + raw today's partial.
+     *     'daily_by_method_status' — read an events per-dim rollup.
+     *   - 'hybrid_by_<dim>' — events multi-dim MV closed days + raw today's
+     *     partial.
+     *   - 'gauges_daily_by_service' / 'gauges_daily_by_resource' — read a
+     *     gauges per-dim AMT rollup.
+     *   - 'gauges_hybrid_by_<dim>' — gauges multi-dim AMT MV closed days +
+     *     raw today's partial.
      *
      * Any caller-requested sub-day interval forces 'raw' because the
      * rollups are day-grained.
      *
      * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
      */
-    private function selectAggregateSource(array $plan): string
+    private function selectAggregateSource(array $plan, string $type = Usage::TYPE_EVENT): string
     {
         if ($plan['interval'] !== null) {
             return 'raw';
@@ -2466,6 +2495,27 @@ class ClickHouse extends SQL
             return 'raw';
         }
         $straddlesToday = $endDt >= $boundaryDt;
+
+        if ($type === Usage::TYPE_GAUGE) {
+            if (empty($plan['dimensions'])) {
+                return 'raw';
+            }
+
+            $dimMatch = $this->matchGaugeDimRollup($plan['dimensions']);
+            if ($dimMatch === null) {
+                return 'raw';
+            }
+
+            $allowedFilters = array_merge(['metric', 'time', 'tenant'], $dimMatch['dims']);
+            foreach ($plan['filterColumns'] as $column) {
+                if (!in_array($column, $allowedFilters, true)) {
+                    return 'raw';
+                }
+            }
+
+            $base = 'gauges_daily_' . $dimMatch['name'];
+            return $straddlesToday ? 'gauges_hybrid_' . $dimMatch['name'] : $base;
+        }
 
         if (empty($plan['dimensions'])) {
             foreach ($plan['filterColumns'] as $column) {
@@ -2493,8 +2543,8 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Find the per-dim rollup whose dim set matches the request exactly
-     * (order-insensitive). Returns null when no MV covers this shape.
+     * Find the events per-dim rollup whose dim set matches the request
+     * exactly (order-insensitive). Returns null when no MV covers this shape.
      *
      * @param array<int, string> $dimensions
      * @return array{name: string, dims: array<int, string>}|null
@@ -2508,6 +2558,41 @@ class ClickHouse extends SQL
             $candidate = $rollup['dims'];
             sort($candidate);
             if ($candidate === $needle) {
+                return $rollup;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Find the gauge per-dim AMT rollup whose dim set matches the request
+     * exactly (order-insensitive). Returns null when no MV covers this shape.
+     *
+     * @param array<int, string> $dimensions
+     * @return array{name: string, dims: array<int, string>}|null
+     */
+    private function matchGaugeDimRollup(array $dimensions): ?array
+    {
+        $needle = $dimensions;
+        sort($needle);
+
+        foreach (self::GAUGE_DIM_ROLLUPS as $rollup) {
+            $candidate = $rollup['dims'];
+            sort($candidate);
+            if ($candidate === $needle) {
+                return $rollup;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * @return array{name: string, dims: array<int, string>}|null
+     */
+    private function getGaugeRollupByName(string $name): ?array
+    {
+        foreach (self::GAUGE_DIM_ROLLUPS as $rollup) {
+            if ($rollup['name'] === $name) {
                 return $rollup;
             }
         }
@@ -2672,6 +2757,116 @@ class ClickHouse extends SQL
 
         $result = $this->query($sql, $rawWhere['params']);
         return $this->parseAggregatedResults($result, Usage::TYPE_EVENT);
+    }
+
+    /**
+     * Day-grained aggregated read from a per-dim gauge AMT rollup table.
+     * Same return shape as findFromDailyByDim but emits argMaxMerge(value)
+     * instead of sum(value) — gauges store argMaxState partials.
+     *
+     * @param array{name: string, dims: array<int, string>} $rollup
+     * @param array<Query> $queries
+     * @return array<Metric>
+     */
+    private function findFromGaugeDailyByDim(array $rollup, array $queries): array
+    {
+        $tableName = $this->getGaugeDimRollupTableName($rollup['name']);
+        $fromTable = $this->buildTableReference($tableName);
+
+        $parsed = $this->parseQueries($queries, Usage::TYPE_GAUGE);
+        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+
+        $dimSelect = '';
+        $dimGroup = '';
+        if (!empty($rollup['dims'])) {
+            $escapedDims = array_map(fn (string $d): string => $this->escapeIdentifier($d), $rollup['dims']);
+            $dimSelect = ', ' . implode(', ', $escapedDims);
+            $dimGroup = ', ' . implode(', ', $escapedDims);
+        }
+
+        $orderClause = ' ORDER BY value DESC';
+        if (!empty($parsed['orderBy'])) {
+            $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
+        }
+        $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
+        $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
+
+        $sql = "
+            SELECT metric, argMaxMerge(value) AS value{$dimSelect}
+            FROM {$fromTable}{$whereData['clause']}
+            GROUP BY metric{$dimGroup}{$orderClause}{$limitClause}{$offsetClause}
+            FORMAT JSON
+        ";
+
+        $result = $this->query($sql, $whereData['params']);
+        return $this->parseAggregatedResults($result, Usage::TYPE_GAUGE);
+    }
+
+    /**
+     * Hybrid gauge AMT read: closed-day rollup partials (argMaxState) UNION
+     * raw gauges (argMaxState(value, time) over today's partial), with an
+     * outer argMaxMerge that combines both sides. Same return shape as
+     * findHybridFromDailyByDim but argMax-based.
+     *
+     * @param array{name: string, dims: array<int, string>} $rollup
+     * @param array<Query> $queries
+     * @return array<Metric>
+     */
+    private function findHybridFromGaugeDailyByDim(array $rollup, array $queries): array
+    {
+        $startOfToday = (new \DateTime('today', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
+
+        $dailyName = $this->getGaugeDimRollupTableName($rollup['name']);
+        $dailyTable = $this->buildTableReference($dailyName);
+        $gaugesTable = $this->buildTableReference($this->getGaugesTableName());
+
+        $parsed = $this->parseQueries($queries, Usage::TYPE_GAUGE);
+        $rawFilters = $parsed['filters'];
+        $params = $parsed['params'];
+
+        $dailyFilters = $rawFilters;
+
+        $params['hybrid_boundary'] = $startOfToday;
+        $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3)}';
+        $rawFilters[] = '`time` >= {hybrid_boundary:DateTime64(3)}';
+
+        $dailyWhere = $this->buildWhereClause($dailyFilters, $params);
+        $rawWhere = $this->buildWhereClause($rawFilters, $dailyWhere['params']);
+
+        $dimSelect = '';
+        $dimGroup = '';
+        $dimCols = '';
+        if (!empty($rollup['dims'])) {
+            $escapedDims = array_map(fn (string $d): string => $this->escapeIdentifier($d), $rollup['dims']);
+            $dimList = implode(', ', $escapedDims);
+            $dimSelect = ', ' . $dimList;
+            $dimGroup = ', ' . $dimList;
+            $dimCols = ', ' . $dimList;
+        }
+
+        $orderClause = ' ORDER BY value DESC';
+        if (!empty($parsed['orderBy'])) {
+            $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
+        }
+        $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
+        $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
+
+        $sql = "
+            SELECT metric, argMaxMerge(value) AS value{$dimSelect}
+            FROM (
+                SELECT metric{$dimCols}, value
+                FROM {$dailyTable}{$dailyWhere['clause']}
+                UNION ALL
+                SELECT metric{$dimCols}, argMaxState(value, time) AS value
+                FROM {$gaugesTable}{$rawWhere['clause']}
+                GROUP BY metric{$dimGroup}
+            )
+            GROUP BY metric{$dimGroup}{$orderClause}{$limitClause}{$offsetClause}
+            FORMAT JSON
+        ";
+
+        $result = $this->query($sql, $rawWhere['params']);
+        return $this->parseAggregatedResults($result, Usage::TYPE_GAUGE);
     }
 
     /**

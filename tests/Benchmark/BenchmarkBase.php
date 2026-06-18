@@ -130,10 +130,16 @@ abstract class BenchmarkBase extends TestCase
 
         $tableRef = "`{$database}`.`{$gaugesTable}`";
 
-        $sql = "INSERT INTO {$tableRef} (id, metric, value, time, tenant) "
+        $services = ['storage', 'databases', 'functions', 'sites'];
+        $resources = ['file', 'database', 'function', 'site'];
+        $svcExpr = "['" . implode("','", $services) . "'][1 + (number % " . count($services) . ")]";
+        $resExpr = "['" . implode("','", $resources) . "'][1 + (number % " . count($resources) . ")]";
+
+        $sql = "INSERT INTO {$tableRef} (id, metric, value, time, tenant, service, resource) "
             . "SELECT lower(hex(randomString(16))), '" . addslashes($metric) . "', "
             . "number AS value, now() - toIntervalSecond(number % 86400) AS time, "
-            . "'" . addslashes($this->tenant) . "' AS tenant "
+            . "'" . addslashes($this->tenant) . "' AS tenant, "
+            . "{$svcExpr} AS service, {$resExpr} AS resource "
             . "FROM numbers({$rows})";
 
         $this->runRawSql($sql);
