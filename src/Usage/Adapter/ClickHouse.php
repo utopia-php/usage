@@ -2578,6 +2578,198 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Partition a query list into non-time filters and time filters. Used by
+     * the hybrid helpers so the daily branch can substitute a day-floored
+     * lower bound while the raw branch keeps the caller's original literal.
+     *
+     * @param array<Query> $queries
+     * @return array{nonTime: array<Query>, time: array<Query>}
+     */
+    private function splitTimeQueries(array $queries): array
+    {
+        $timeMethods = [
+            Query::TYPE_GREATER,
+            Query::TYPE_GREATER_EQUAL,
+            Query::TYPE_LESSER,
+            Query::TYPE_LESSER_EQUAL,
+            Query::TYPE_BETWEEN,
+            Query::TYPE_NOT_BETWEEN,
+        ];
+
+        $nonTime = [];
+        $time = [];
+        foreach ($queries as $query) {
+            if ($query->getAttribute() === 'time' && in_array($query->getMethod(), $timeMethods, true)) {
+                $time[] = $query;
+            } else {
+                $nonTime[] = $query;
+            }
+        }
+
+        return ['nonTime' => $nonTime, 'time' => $time];
+    }
+
+    /**
+     * Floor a stringified timestamp to its UTC start-of-day. Returns null if
+     * the input can't be parsed.
+     */
+    private function floorToStartOfDay(?string $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        try {
+            $dt = new \DateTime($value, new \DateTimeZone('UTC'));
+        } catch (\Exception $e) {
+            return null;
+        }
+        $dt->setTime(0, 0, 0);
+        return $dt->format('Y-m-d H:i:s.v');
+    }
+
+    /**
+     * Rewrite the time bounds in a query list so a purge against a
+     * day-bucketed rollup matches whole-day windows. Lower bounds are
+     * floored to start-of-day; upper bounds are floored to the start of the
+     * next day so a half-open mid-day end still includes that day's rollup
+     * row. Other queries pass through unchanged.
+     *
+     * @param array<Query> $queries
+     * @return array<Query>
+     */
+    private function translateTimeQueriesToDayBoundaries(array $queries): array
+    {
+        $output = [];
+        foreach ($queries as $query) {
+            if ($query->getAttribute() !== 'time') {
+                $output[] = $query;
+                continue;
+            }
+
+            $method = $query->getMethod();
+            $values = $query->getValues();
+
+            if ($method === Query::TYPE_GREATER_EQUAL || $method === Query::TYPE_GREATER) {
+                $floored = $this->floorToStartOfDay($this->stringifyTime($values[0] ?? null));
+                if ($floored === null) {
+                    $output[] = $query;
+                    continue;
+                }
+                $output[] = Query::greaterThanEqual('time', $floored);
+                continue;
+            }
+
+            if ($method === Query::TYPE_LESSER_EQUAL || $method === Query::TYPE_LESSER) {
+                $ceiled = $this->floorToStartOfNextDay($this->stringifyTime($values[0] ?? null));
+                if ($ceiled === null) {
+                    $output[] = $query;
+                    continue;
+                }
+                $output[] = Query::lessThan('time', $ceiled);
+                continue;
+            }
+
+            if ($method === Query::TYPE_BETWEEN) {
+                $lower = $this->floorToStartOfDay($this->stringifyTime($values[0] ?? null));
+                $upper = $this->floorToStartOfNextDay($this->stringifyTime($values[1] ?? null));
+                if ($lower !== null) {
+                    $output[] = Query::greaterThanEqual('time', $lower);
+                }
+                if ($upper !== null) {
+                    $output[] = Query::lessThan('time', $upper);
+                }
+                continue;
+            }
+
+            $output[] = $query;
+        }
+
+        return $output;
+    }
+
+    /**
+     * Floor a stringified timestamp to the UTC start of the next day. Used to
+     * expand an inclusive upper bound into a half-open `< floor(next_day)`
+     * window for day-bucketed rollups.
+     */
+    private function floorToStartOfNextDay(?string $value): ?string
+    {
+        $floored = $this->floorToStartOfDay($value);
+        if ($floored === null) {
+            return null;
+        }
+        try {
+            $dt = new \DateTime($floored, new \DateTimeZone('UTC'));
+        } catch (\Exception $e) {
+            return null;
+        }
+        $dt->modify('+1 day');
+        return $dt->format('Y-m-d H:i:s.v');
+    }
+
+    /**
+     * Translate the caller's time-bound queries into filter fragments suited
+     * to a day-bucketed rollup. Lower bounds are floored to start-of-day so
+     * a mid-day start still picks up that day's rollup row; upper bounds
+     * pass through unchanged.
+     *
+     * @param array<int, string> $existing Pre-built non-time filter fragments.
+     * @param array<int, Query> $timeQueries
+     * @param array<string, mixed> $params Mutated with the new bind values.
+     * @return array<int, string>
+     */
+    private function buildDailyTimeFilters(array $existing, array $timeQueries, array &$params): array
+    {
+        $filters = $existing;
+        $counter = 0;
+        foreach ($timeQueries as $query) {
+            $method = $query->getMethod();
+            $values = $query->getValues();
+
+            if ($method === Query::TYPE_GREATER_EQUAL || $method === Query::TYPE_GREATER) {
+                $floored = $this->floorToStartOfDay($this->stringifyTime($values[0] ?? null));
+                if ($floored === null) {
+                    continue;
+                }
+                $name = 'daily_time_lower_' . $counter++;
+                $params[$name] = $floored;
+                $filters[] = '`time` >= {' . $name . ':DateTime64(3)}';
+                continue;
+            }
+
+            if ($method === Query::TYPE_LESSER_EQUAL || $method === Query::TYPE_LESSER) {
+                $upper = $this->stringifyTime($values[0] ?? null);
+                if ($upper === null) {
+                    continue;
+                }
+                $name = 'daily_time_upper_' . $counter++;
+                $params[$name] = $upper;
+                $op = $method === Query::TYPE_LESSER ? '<' : '<=';
+                $filters[] = '`time` ' . $op . ' {' . $name . ':DateTime64(3)}';
+                continue;
+            }
+
+            if ($method === Query::TYPE_BETWEEN) {
+                $lower = $this->floorToStartOfDay($this->stringifyTime($values[0] ?? null));
+                $upper = $this->stringifyTime($values[1] ?? null);
+                if ($lower !== null) {
+                    $name = 'daily_time_lower_' . $counter++;
+                    $params[$name] = $lower;
+                    $filters[] = '`time` >= {' . $name . ':DateTime64(3)}';
+                }
+                if ($upper !== null) {
+                    $name = 'daily_time_upper_' . $counter++;
+                    $params[$name] = $upper;
+                    $filters[] = '`time` <= {' . $name . ':DateTime64(3)}';
+                }
+                continue;
+            }
+        }
+
+        return $filters;
+    }
+
+    /**
      * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
      */
     private function recordRoute(string $operation, array $plan, string $route): void
@@ -2679,11 +2871,14 @@ class ClickHouse extends SQL
         $dailyTable = $this->buildTableReference($dailyName);
         $eventsTable = $this->buildTableReference($this->getEventsTableName());
 
+        $split = $this->splitTimeQueries($queries);
         $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
-        $rawFilters = $parsed['filters'];
-        $params = $parsed['params'];
+        $dailyParsed = $this->parseQueries($split['nonTime'], Usage::TYPE_EVENT);
 
-        $dailyFilters = $rawFilters;
+        $params = array_merge($parsed['params'], $dailyParsed['params']);
+
+        $rawFilters = $parsed['filters'];
+        $dailyFilters = $this->buildDailyTimeFilters($dailyParsed['filters'], $split['time'], $params);
 
         $params['hybrid_boundary'] = $startOfToday;
         $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3)}';
@@ -2790,11 +2985,14 @@ class ClickHouse extends SQL
         $dailyTable = $this->buildTableReference($dailyName);
         $gaugesTable = $this->buildTableReference($this->getGaugesTableName());
 
+        $split = $this->splitTimeQueries($queries);
         $parsed = $this->parseQueries($queries, Usage::TYPE_GAUGE);
-        $rawFilters = $parsed['filters'];
-        $params = $parsed['params'];
+        $dailyParsed = $this->parseQueries($split['nonTime'], Usage::TYPE_GAUGE);
 
-        $dailyFilters = $rawFilters;
+        $params = array_merge($parsed['params'], $dailyParsed['params']);
+
+        $rawFilters = $parsed['filters'];
+        $dailyFilters = $this->buildDailyTimeFilters($dailyParsed['filters'], $split['time'], $params);
 
         $params['hybrid_boundary'] = $startOfToday;
         $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3)}';
@@ -2918,11 +3116,14 @@ class ClickHouse extends SQL
         $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());
         $eventsTable = $this->buildTableReference($this->getEventsTableName());
 
+        $split = $this->splitTimeQueries($queries);
         $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
-        $rawFilters = $parsed['filters'];
-        $params = $parsed['params'];
+        $dailyParsed = $this->parseQueries($split['nonTime'], Usage::TYPE_EVENT);
 
-        $dailyFilters = $rawFilters;
+        $params = array_merge($parsed['params'], $dailyParsed['params']);
+
+        $rawFilters = $parsed['filters'];
+        $dailyFilters = $this->buildDailyTimeFilters($dailyParsed['filters'], $split['time'], $params);
 
         $params['hybrid_boundary'] = $startOfToday;
         $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3)}';
@@ -4333,26 +4534,25 @@ class ClickHouse extends SQL
     private function purgeDimRollups(array $queries): void
     {
         foreach (self::DIM_ROLLUPS as $rollup) {
-            $allowed = array_merge(['id', 'metric', 'value', 'time'], $rollup['dims']);
+            $allowed = array_merge(['metric', 'value', 'time'], $rollup['dims']);
             if ($this->sharedTables) {
                 $allowed[] = 'tenant';
             }
 
             $compatible = true;
-            $rollupQueries = [];
             foreach ($queries as $query) {
                 $attr = $query->getAttribute();
                 if (!empty($attr) && !in_array($attr, $allowed, true)) {
                     $compatible = false;
                     break;
                 }
-                $rollupQueries[] = $query;
             }
             if (!$compatible) {
                 continue;
             }
 
             $table = $this->buildTableReference($this->getDimRollupTableName($rollup['name']));
+            $rollupQueries = $this->translateTimeQueriesToDayBoundaries($queries);
             $parsed = $this->parseQueries($rollupQueries, Usage::TYPE_EVENT);
             $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
             $whereClause = $whereData['clause'];
@@ -4376,26 +4576,25 @@ class ClickHouse extends SQL
     private function purgeGaugeDimRollups(array $queries): void
     {
         foreach (self::GAUGE_DIM_ROLLUPS as $rollup) {
-            $allowed = array_merge(['id', 'metric', 'value', 'time'], $rollup['dims']);
+            $allowed = array_merge(['metric', 'time'], $rollup['dims']);
             if ($this->sharedTables) {
                 $allowed[] = 'tenant';
             }
 
             $compatible = true;
-            $rollupQueries = [];
             foreach ($queries as $query) {
                 $attr = $query->getAttribute();
                 if (!empty($attr) && !in_array($attr, $allowed, true)) {
                     $compatible = false;
                     break;
                 }
-                $rollupQueries[] = $query;
             }
             if (!$compatible) {
                 continue;
             }
 
             $table = $this->buildTableReference($this->getGaugeDimRollupTableName($rollup['name']));
+            $rollupQueries = $this->translateTimeQueriesToDayBoundaries($queries);
             $parsed = $this->parseQueries($rollupQueries, Usage::TYPE_GAUGE);
             $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
             $whereClause = $whereData['clause'];

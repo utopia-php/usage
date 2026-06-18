@@ -263,6 +263,47 @@ class ClickHouseDimRoutingTest extends TestCase
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
     }
 
+    public function testHybridFloorsDailyLowerBoundToStartOfDay(): void
+    {
+        $isolatedMetric = 'dim.routing.hybrid_boundary';
+
+        $this->seedHistoricalRow($isolatedMetric, 100, '-2 days 03:00:00', [
+            'path' => '/v1/floor',
+            'method' => 'GET',
+            'status' => '200',
+            'service' => 'storage',
+            'country' => 'us',
+        ]);
+
+        $this->adapter->clearRouteLog();
+
+        $start = (new \DateTime('-2 days 14:00:00', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+        $end = (new \DateTime('+1 hour', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+
+        $rolled = $this->usage->find([
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', [$isolatedMetric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+            Query::limit(50),
+        ], Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('hybrid_by_path', $log[0]['route_decision']);
+
+        $total = 0;
+        foreach ($rolled as $m) {
+            $v = $m->getValue(0);
+            if (is_int($v)) {
+                $total += $v;
+            } elseif (is_float($v)) {
+                $total += (int) $v;
+            }
+        }
+        $this->assertSame(100, $total, 'daily branch must floor start to toStartOfDay so a mid-day start still picks up the day rollup');
+    }
+
     public function testDualReadSamplerActivates(): void
     {
         $this->adapter->setDualReadSampleRate(1.0);

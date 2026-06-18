@@ -172,6 +172,28 @@ class ClickHouseRoutingTest extends TestCase
         $this->assertSame('raw', $log[0]['route_decision']);
     }
 
+    public function testHybridSumFloorsDailyLowerBoundToStartOfDay(): void
+    {
+        $metric = 'routed.metric.hybrid_boundary';
+        $this->seedHistoricalRow($metric, 70, '-2 days 03:00:00', ['path' => '/v1/floor']);
+
+        $this->adapter->clearRouteLog();
+
+        $start = (new \DateTime('-2 days 14:00:00', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+        $end = (new \DateTime('+1 hour', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+
+        $sum = $this->usage->sum([
+            Query::equal('metric', [$metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], 'value', Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('hybrid', $log[0]['route_decision']);
+        $this->assertSame(70, $sum, 'hybrid daily branch must include rollup row on the start day');
+    }
+
     public function testIntervalPresentForcesRaw(): void
     {
         $this->adapter->clearRouteLog();
