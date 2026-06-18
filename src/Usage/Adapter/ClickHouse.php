@@ -277,12 +277,10 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Forward an opt-in `query_id` to ClickHouse on the next `query()` call.
+     * Forward a single-use query_id to ClickHouse on the next query() call.
+     * Cleared after one dispatch.
      *
-     * Single-use: cleared automatically after one query is dispatched. Pass
-     * null to clear without dispatching. Benchmarks use this to look up the
-     * matching row in `system.query_log` (rows_read / read_bytes /
-     * query_duration_ms).
+     * @internal
      */
     public function setNextQueryId(?string $queryId): self
     {
@@ -325,11 +323,6 @@ class ClickHouse extends SQL
         }
         $this->dualReadSampleRate = $rate;
         return $this;
-    }
-
-    public function getDualReadSampleRate(): float
-    {
-        return $this->dualReadSampleRate;
     }
 
     /**
@@ -824,7 +817,7 @@ class ClickHouse extends SQL
                 $startTime = microtime(true);
                 $scheme = $this->secure ? 'https' : 'http';
                 $url = "{$scheme}://{$this->host}:{$this->port}/";
-                if ($queryId !== null && $queryId !== '') {
+                if ($queryId !== null) {
                     $url .= '?' . http_build_query(['query_id' => $queryId]);
                 }
 

@@ -321,17 +321,17 @@ class Usage
     }
 
     /**
-     * Set the dual-read sampling rate for the adapter. Forwarded to the
-     * underlying adapter; only adapters that implement
-     * `setDualReadSampleRate()` honour the value (ClickHouse does today).
+     * Enable parity sampling for routed reads. At rate=0 the sampler is
+     * disabled (default). At rate>0 each routed read is re-executed against
+     * the raw table with the given probability and logs a `dual_read_warning`
+     * entry when totals diverge by more than 1%. Pass 1.0 for every-read
+     * sampling (CI use) or small values (0.01) for production canaries.
      *
      * @param float $rate 0.0 (off) … 1.0 (every read)
      */
     public function setDualReadSampleRate(float $rate): self
     {
-        if (method_exists($this->adapter, 'setDualReadSampleRate')) {
-            $this->adapter->setDualReadSampleRate($rate);
-        }
+        $this->adapter->setDualReadSampleRate($rate);
         return $this;
     }
 
