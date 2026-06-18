@@ -59,3 +59,18 @@ action — projections capture all subsequent inserts.
   (the one source that can drift from raw). Projection-routed reads
   are derived in the same write transaction as the parent insert and
   cannot diverge, so they're not sampled.
+- The `daily` route on the events flat-sum path now requires both
+  `time` bounds to fall on UTC midnight. A caller passing a mid-day
+  bound (e.g. `time >= '2026-06-10 12:00:00'`) falls back to the raw
+  scan; the daily MV stores rows at `toStartOfDay(time)` and a
+  mid-day predicate would otherwise exclude the partial start day
+  and over-include the partial end day.
+- Narrow purges that target a column the events daily MV does not
+  carry (e.g. `Query::equal('path', [...])`) AND carry no `time`
+  bound are now treated as a no-op on the daily side. The raw
+  events table still receives the narrow delete; the daily MV is
+  left to overwrite stale rows on the next ingest cycle rather
+  than issuing an unbounded `DELETE WHERE 1=1` that would wipe
+  unrelated metrics. `value` is also removed from the daily-safe
+  filter set: the daily `value` is a SUMmed aggregate, not a raw
+  event value.

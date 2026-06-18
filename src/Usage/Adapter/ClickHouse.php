@@ -2312,7 +2312,26 @@ class ClickHouse extends SQL
             }
         }
 
-        return $endDt >= $boundaryDt ? 'hybrid' : 'daily';
+        if ($endDt >= $boundaryDt) {
+            return 'hybrid';
+        }
+
+        if (!$this->isDayAligned($startDt) || !$this->isDayAligned($endDt)) {
+            return 'raw';
+        }
+
+        return 'daily';
+    }
+
+    /**
+     * Returns true when the timestamp falls exactly on a UTC midnight.
+     */
+    private function isDayAligned(?DateTime $dt): bool
+    {
+        if ($dt === null) {
+            return true;
+        }
+        return $dt->format('H:i:s.u') === '00:00:00.000000';
     }
 
     private function stringifyTime(mixed $value): ?string
@@ -4018,20 +4037,33 @@ class ClickHouse extends SQL
     /**
      * Purge the events_daily SummingMergeTree.
      *
-     * id and value are dropped from the filter set: id doesn't exist on
-     * the daily table at all, and value is an aggregate column whose
-     * semantics differ from the raw row's value. Time bounds widen to
-     * whole-day boundaries. Filters on event-only attributes (path /
-     * method / status / etc.) trigger a whole-day delete using only the
-     * daily-safe subset, because leaving the rollup with stale rows
-     * over-reports under routed reads.
+     * id and value are dropped from the safe filter set: id doesn't exist
+     * on the daily table at all, and value is an aggregate column whose
+     * semantics differ from the raw row's value (a daily row's value is
+     * the SUM of the raw rows' values for that day, so `value = 10`
+     * means "the day's total was 10", not "a raw row had value 10").
+     * Time bounds widen to whole-day boundaries. Filters on event-only
+     * attributes (path / method / status / etc.) trigger a whole-day
+     * delete using only the daily-safe subset, because leaving the
+     * rollup with stale rows over-reports under routed reads.
+     *
+     * An empty `$queries` argument means "purge everything" and issues
+     * `DELETE WHERE 1=1`. A non-empty argument whose filters cannot be
+     * expressed on the daily schema AND leave no time bound is treated
+     * as a no-op on the daily side: an unbounded delete here would wipe
+     * unrelated metrics. The next ingest cycle will overwrite any rows
+     * the caller's raw-table purge left stale.
      *
      * @param array<Query> $queries
      * @throws Exception
      */
     private function purgeDaily(array $queries): void
     {
-        $safeAttributes = array_merge(['time'], self::DAILY_COLUMNS);
+        $safeAttributes = array_values(array_filter(
+            self::DAILY_COLUMNS,
+            fn (string $col): bool => $col !== 'value'
+        ));
+        $safeAttributes = array_merge(['time'], $safeAttributes);
         if ($this->sharedTables) {
             $safeAttributes[] = 'tenant';
         }
@@ -4051,6 +4083,10 @@ class ClickHouse extends SQL
         $dailyQueries = $compatible
             ? $this->translateTimeQueriesToDayBoundaries($queries)
             : $this->buildStaleRollupPurgeQueries($queries, $safeAttributes);
+
+        if (!empty($queries) && empty($dailyQueries)) {
+            return;
+        }
 
         $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());
 

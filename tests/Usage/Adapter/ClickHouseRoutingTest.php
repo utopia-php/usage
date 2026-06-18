@@ -69,8 +69,8 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
 
         $rawSum = $this->sumRaw('routed.metric', $start, $end);
 
@@ -84,6 +84,28 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $this->assertCount(1, $log);
         $this->assertSame('daily', $log[0]['route']);
         $this->assertSame($rawSum, $sum, 'daily MV must re-aggregate to the same total as raw');
+    }
+
+    public function testMidDayClosedWindowFallsBackToRaw(): void
+    {
+        // Daily rows are stored at midnight; a mid-day caller bound
+        // would exclude the partial first day and over-include the
+        // last day if forwarded to the daily MV. Routing must reject
+        // non-day-aligned bounds and fall through to the raw scan.
+        $this->adapter->clearRouteLog();
+
+        $start = (new DateTime('-7 days 12:30:00', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days 12:30:00', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+
+        $this->usage->sum([
+            Query::equal('metric', ['routed.metric']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], 'value', Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('raw', $log[0]['route']);
     }
 
     public function testWindowStraddlesTodayRoutesHybrid(): void
@@ -190,10 +212,10 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $startTighter = (new DateTime('-3 days'))->format('Y-m-d H:i:s');
-        $endLoose = (new DateTime('+5 days'))->format('Y-m-d H:i:s');
-        $endTighter = (new DateTime('-1 day'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $startTighter = (new DateTime('-3 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $endLoose = (new DateTime('+5 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $endTighter = (new DateTime('-1 day', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
 
         $this->usage->sum([
             Query::equal('metric', ['routed.metric']),
@@ -242,6 +264,80 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
         $this->assertSame('raw', $log[0]['route']);
+    }
+
+    /**
+     * A purge whose filters reference a column the daily MV does not
+     * carry (e.g. `path`) AND has no `time` bound must not issue an
+     * unbounded delete on the daily table: that would wipe rows for
+     * unrelated metrics. The raw events table still gets the narrow
+     * delete; the daily MV is left untouched until the next ingest
+     * cycle overwrites it.
+     */
+    public function testNarrowPurgeWithNoTimeBoundDoesNotWipeDailyMv(): void
+    {
+        $this->usage->purge();
+
+        // Seed two metrics on two different days; let the daily MV
+        // capture both as fully closed-day rows.
+        $this->seedHistoricalRow('purge.keep', 100, '-3 days', ['path' => '/v1/keep']);
+        $this->seedHistoricalRow('purge.remove', 50, '-3 days', ['path' => '/v1/remove']);
+
+        $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $end = (new DateTime('-1 day', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+
+        // Purge by a daily-incompatible column (`path`) with no time
+        // bound. The raw delete narrows on path; the daily side has
+        // no path column so the legacy logic would fall through to
+        // DELETE WHERE 1=1 and wipe both metrics' daily rows.
+        $this->usage->purge([
+            Query::equal('path', ['/v1/remove']),
+        ], Usage::TYPE_EVENT);
+
+        $this->adapter->clearRouteLog();
+        $keepSum = $this->usage->sum([
+            Query::equal('metric', ['purge.keep']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], 'value', Usage::TYPE_EVENT);
+
+        $this->assertSame(100, $keepSum, 'unrelated daily rows must survive a narrow purge');
+    }
+
+    /**
+     * Purging by `value` against the daily MV applies the predicate to
+     * the SUMmed daily value, not the raw per-event value. Allowing
+     * `value` as a daily-safe filter would delete unrelated aggregate
+     * rows whose daily total happens to match the predicate. The
+     * routing layer treats `value` as raw-only.
+     */
+    public function testValueFilterPurgeDoesNotMatchAggregateDailyRows(): void
+    {
+        $this->usage->purge();
+
+        // Seed two raw rows whose values sum to 10 on the same day,
+        // so the daily MV row has value = 10. A naive purge with
+        // `value = 10` would delete the daily row and undercount.
+        $this->seedHistoricalRow('purge.value', 4, '-3 days', ['path' => '/v1/a']);
+        $this->seedHistoricalRow('purge.value', 6, '-3 days', ['path' => '/v1/b']);
+
+        $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $end = (new DateTime('-1 day', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+
+        $this->usage->purge([
+            Query::equal('value', [10]),
+        ], Usage::TYPE_EVENT);
+
+        // value is raw-only, so the routed sum stays on raw — it
+        // sees the still-present rows. The point of this test is the
+        // daily MV; check it directly via sumDaily.
+        $dailySum = $this->usage->sumDaily([
+            Query::equal('metric', ['purge.value']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ]);
+
+        $this->assertSame(10, $dailySum, 'daily MV row must survive a value-only purge');
     }
 
     private function sumRaw(string $metric, string $start, string $end): int
