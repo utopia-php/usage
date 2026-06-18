@@ -1107,11 +1107,32 @@ class ClickHouse extends SQL
             $this->getGaugeIndexes()
         );
 
+        $this->ensureGaugeDimColumns();
+
         // --- Per-dim gauge rollup tables + MVs (AggregatingMergeTree) ---
         foreach (self::GAUGE_DIM_ROLLUPS as $rollup) {
             $this->createGaugeDimRollupTable($rollup['name'], $rollup['dims']);
             $this->createGaugeDimRollupMaterializedView($rollup['name'], $rollup['dims']);
         }
+    }
+
+    /**
+     * Backfill the service / resource columns on an existing gauges table.
+     * setup() uses CREATE TABLE IF NOT EXISTS, so deployments that came up
+     * before these columns were added never receive them — the gauge AMT
+     * MVs would then fail at insert time because their SELECT references
+     * columns the source table lacks.
+     */
+    private function ensureGaugeDimColumns(): void
+    {
+        $gaugesTable = $this->escapeIdentifier($this->database)
+            . '.' . $this->escapeIdentifier($this->getGaugesTableName());
+
+        $sql = "ALTER TABLE {$gaugesTable} "
+            . 'ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String)), '
+            . 'ADD COLUMN IF NOT EXISTS resource LowCardinality(Nullable(String))';
+
+        $this->query($sql);
     }
 
     /**
@@ -1413,12 +1434,12 @@ class ClickHouse extends SQL
         $columns = [
             'metric String',
             'value Int64',
-            'time DateTime64(3) CODEC(Delta(4), LZ4)',
+            'time DateTime64(3)',
             'resource LowCardinality(Nullable(String))',
-            'resourceId Nullable(String) CODEC(ZSTD(3))',
-            'resourceInternalId Nullable(String) CODEC(ZSTD(3))',
-            'teamId Nullable(String) CODEC(ZSTD(3))',
-            'teamInternalId Nullable(String) CODEC(ZSTD(3))',
+            'resourceId Nullable(String)',
+            'resourceInternalId Nullable(String)',
+            'teamId Nullable(String)',
+            'teamInternalId Nullable(String)',
         ];
 
         if ($this->sharedTables) {
