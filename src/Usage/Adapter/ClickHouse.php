@@ -130,16 +130,8 @@ class ClickHouse extends SQL
     private ?string $nextQueryId = null;
 
     /**
-     * Route flat-sum event reads to the daily rollup table(s) when the
-     * caller hasn't asked for any grouping. Default off — opt-in per
-     * consumer via setUseDailyRollups(true).
-     */
-    private bool $useDailyRollups = false;
-
-    /**
-     * Structured log entries recorded for each routing decision when
-     * useDailyRollups is active. Ops dashboards read these to confirm
-     * rollup hit-rate.
+     * Structured log entries recorded for each routing decision. Ops
+     * dashboards read these to confirm rollup hit-rate.
      *
      * @var array<array{operation: string, metric: ?string, route_decision: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string}>
      */
@@ -296,28 +288,6 @@ class ClickHouse extends SQL
     {
         $this->nextQueryId = $queryId;
         return $this;
-    }
-
-    /**
-     * Toggle daily-rollup routing for flat-sum event reads.
-     *
-     * When enabled, sum() against TYPE_EVENT may route to the daily MV (or
-     * a hybrid daily + raw UNION ALL when the window straddles today)
-     * whenever the request shape has no grouping / interval and only
-     * touches columns the daily MV indexes. Everything else falls back to
-     * the raw events table.
-     *
-     * Default off — cloud consumers opt in explicitly.
-     */
-    public function setUseDailyRollups(bool $enabled = true): self
-    {
-        $this->useDailyRollups = $enabled;
-        return $this;
-    }
-
-    public function getUseDailyRollups(): bool
-    {
-        return $this->useDailyRollups;
     }
 
     /**
@@ -1894,7 +1864,7 @@ class ClickHouse extends SQL
         $this->setOperationContext('find()');
 
         if ($type !== null) {
-            if ($this->useDailyRollups && $type === Usage::TYPE_EVENT) {
+            if ($type === Usage::TYPE_EVENT) {
                 $plan = $this->extractRoutingPlan($queries);
                 $route = $this->selectAggregateSource($plan, Usage::TYPE_EVENT);
                 $this->recordRoute('find', $plan, $route);
@@ -1919,7 +1889,7 @@ class ClickHouse extends SQL
                 }
             }
 
-            if ($this->useDailyRollups && $type === Usage::TYPE_GAUGE) {
+            if ($type === Usage::TYPE_GAUGE) {
                 $plan = $this->extractRoutingPlan($queries);
                 $route = $this->selectAggregateSource($plan, Usage::TYPE_GAUGE);
                 $this->recordRoute('find', $plan, $route);
@@ -2368,7 +2338,7 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('sum()');
 
-        if ($this->useDailyRollups && $type === Usage::TYPE_EVENT && $attribute === 'value') {
+        if ($type === Usage::TYPE_EVENT && $attribute === 'value') {
             $plan = $this->extractRoutingPlan($queries);
             $route = $this->selectAggregateSource($plan);
             $this->recordRoute('sum', $plan, $route);

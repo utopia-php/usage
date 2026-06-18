@@ -41,29 +41,6 @@ class EventsBench extends BenchmarkBase
             ], Usage::TYPE_EVENT);
         });
 
-        $this->runBench('bench_events_topN_path_30d', function (string $queryId) use ($start, $end): void {
-            $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
-                UsageQuery::groupBy('path'),
-                Query::equal('metric', [$this->metric]),
-                Query::greaterThanEqual('time', $start),
-                Query::lessThanEqual('time', $end),
-                Query::limit(500),
-            ], Usage::TYPE_EVENT);
-        });
-
-        $this->runBench('bench_events_topN_method_status_30d', function (string $queryId) use ($start, $end): void {
-            $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
-                UsageQuery::groupBy('method'),
-                UsageQuery::groupBy('status'),
-                Query::equal('metric', [$this->metric]),
-                Query::greaterThanEqual('time', $start),
-                Query::lessThanEqual('time', $end),
-                Query::limit(200),
-            ], Usage::TYPE_EVENT);
-        });
-
         $this->runBench('bench_events_count_max_5k', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
             $this->usage->count([
@@ -93,9 +70,17 @@ class EventsBench extends BenchmarkBase
             $this->usage->addBatch($batch, Usage::TYPE_EVENT);
         }, 3);
 
-        // Multi-dim MV target scenarios — until P3.3 routes through the MVs
-        // these still scan raw events, providing the baseline numbers that
-        // commit 5 will compare against.
+        $this->runBench('bench_events_topN_path_30d', function (string $queryId) use ($start, $end): void {
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->find([
+                UsageQuery::groupBy('path'),
+                Query::equal('metric', [$this->metric]),
+                Query::greaterThanEqual('time', $start),
+                Query::lessThanEqual('time', $end),
+                Query::limit(500),
+            ], Usage::TYPE_EVENT);
+        });
+
         $this->runBench('bench_events_topN_country_30d', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
             $this->usage->find([
@@ -118,51 +103,7 @@ class EventsBench extends BenchmarkBase
             ], Usage::TYPE_EVENT);
         });
 
-        // Multi-dim MV scenarios — bench_*_mv variants exercise the same
-        // request shape with setUseDailyRollups on. Commit 5 wires the
-        // routing through; until then both variants scan raw and produce
-        // the same numbers.
-        $this->runBench('bench_events_topN_path_30d_mv', function (string $queryId) use ($start, $end): void {
-            $this->adapter->setUseDailyRollups(true);
-            $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
-                UsageQuery::groupBy('path'),
-                Query::equal('metric', [$this->metric]),
-                Query::greaterThanEqual('time', $start),
-                Query::lessThanEqual('time', $end),
-                Query::limit(500),
-            ], Usage::TYPE_EVENT);
-            $this->adapter->setUseDailyRollups(false);
-        });
-
-        $this->runBench('bench_events_topN_country_30d_mv', function (string $queryId) use ($start, $end): void {
-            $this->adapter->setUseDailyRollups(true);
-            $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
-                UsageQuery::groupBy('country'),
-                Query::equal('metric', [$this->metric]),
-                Query::greaterThanEqual('time', $start),
-                Query::lessThanEqual('time', $end),
-                Query::limit(200),
-            ], Usage::TYPE_EVENT);
-            $this->adapter->setUseDailyRollups(false);
-        });
-
-        $this->runBench('bench_events_topN_service_30d_mv', function (string $queryId) use ($start, $end): void {
-            $this->adapter->setUseDailyRollups(true);
-            $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
-                UsageQuery::groupBy('service'),
-                Query::equal('metric', [$this->metric]),
-                Query::greaterThanEqual('time', $start),
-                Query::lessThanEqual('time', $end),
-                Query::limit(200),
-            ], Usage::TYPE_EVENT);
-            $this->adapter->setUseDailyRollups(false);
-        });
-
-        $this->runBench('bench_events_topN_method_status_30d_mv', function (string $queryId) use ($start, $end): void {
-            $this->adapter->setUseDailyRollups(true);
+        $this->runBench('bench_events_topN_method_status_30d', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
             $this->usage->find([
                 UsageQuery::groupBy('method'),
@@ -172,13 +113,11 @@ class EventsBench extends BenchmarkBase
                 Query::lessThanEqual('time', $end),
                 Query::limit(200),
             ], Usage::TYPE_EVENT);
-            $this->adapter->setUseDailyRollups(false);
         });
 
         $todayStart = (new \DateTime('today', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
         $todayEnd = (new \DateTime('+2 hour'))->format('Y-m-d H:i:s');
         $this->runBench('bench_events_topN_path_today_partial', function (string $queryId) use ($todayStart, $todayEnd): void {
-            $this->adapter->setUseDailyRollups(true);
             $this->adapter->setNextQueryId($queryId);
             $this->usage->find([
                 UsageQuery::groupBy('path'),
@@ -187,12 +126,9 @@ class EventsBench extends BenchmarkBase
                 Query::lessThanEqual('time', $todayEnd),
                 Query::limit(500),
             ], Usage::TYPE_EVENT);
-            $this->adapter->setUseDailyRollups(false);
         });
 
-        // Must route to raw — filter on a column the path MV doesn't index.
         $this->runBench('bench_events_topN_path_30d_filtered_resource', function (string $queryId) use ($start, $end): void {
-            $this->adapter->setUseDailyRollups(true);
             $this->adapter->setNextQueryId($queryId);
             $this->usage->find([
                 UsageQuery::groupBy('path'),
@@ -202,12 +138,9 @@ class EventsBench extends BenchmarkBase
                 Query::lessThanEqual('time', $end),
                 Query::limit(500),
             ], Usage::TYPE_EVENT);
-            $this->adapter->setUseDailyRollups(false);
         });
 
-        // Multi-dim breakdown — no single MV covers both path AND country.
         $this->runBench('bench_events_topN_path_country', function (string $queryId) use ($start, $end): void {
-            $this->adapter->setUseDailyRollups(true);
             $this->adapter->setNextQueryId($queryId);
             $this->usage->find([
                 UsageQuery::groupBy('path'),
@@ -217,7 +150,6 @@ class EventsBench extends BenchmarkBase
                 Query::lessThanEqual('time', $end),
                 Query::limit(500),
             ], Usage::TYPE_EVENT);
-            $this->adapter->setUseDailyRollups(false);
         });
 
         // Write fan-out cost with all MVs attached. Compare against

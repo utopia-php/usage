@@ -103,7 +103,6 @@ class ClickHouseDimRoutingTest extends TestCase
 
     public function testTopNByPathRoutesToPathMv(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -126,7 +125,6 @@ class ClickHouseDimRoutingTest extends TestCase
 
     public function testTopNByCountryRoutesToCountryMv(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -149,7 +147,6 @@ class ClickHouseDimRoutingTest extends TestCase
 
     public function testTopNByServiceRoutesToServiceMv(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -172,7 +169,6 @@ class ClickHouseDimRoutingTest extends TestCase
 
     public function testTopNByMethodStatusRoutesToCombinedMv(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -196,7 +192,6 @@ class ClickHouseDimRoutingTest extends TestCase
 
     public function testMultiDimNotInAnySingleMvFallsBackToRaw(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $this->usage->find([
@@ -214,7 +209,6 @@ class ClickHouseDimRoutingTest extends TestCase
 
     public function testFilterOnNonMvColumnFallsBackToRaw(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $this->usage->find([
@@ -232,7 +226,6 @@ class ClickHouseDimRoutingTest extends TestCase
 
     public function testSubDayIntervalForcesRaw(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $this->usage->find([
@@ -250,7 +243,6 @@ class ClickHouseDimRoutingTest extends TestCase
 
     public function testWindowStraddlesTodayUsesHybridDim(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -273,7 +265,6 @@ class ClickHouseDimRoutingTest extends TestCase
 
     public function testDualReadSamplerActivates(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->setDualReadSampleRate(1.0);
         $this->adapter->clearRouteLog();
 
@@ -299,16 +290,16 @@ class ClickHouseDimRoutingTest extends TestCase
 
     private function rawTotal(string $start, string $end): int
     {
-        $this->adapter->setUseDailyRollups(false);
-        $this->adapter->clearRouteLog();
-        $sum = $this->usage->sum([
+        $reflection = new ReflectionClass($this->adapter);
+        $sumFromTable = $reflection->getMethod('sumFromTable');
+        $sumFromTable->setAccessible(true);
+        $result = $sumFromTable->invoke($this->adapter, [
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
         ], 'value', Usage::TYPE_EVENT);
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
-        return $sum;
+        return is_int($result) ? $result : 0;
     }
 
     /**

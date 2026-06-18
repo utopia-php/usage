@@ -37,8 +37,6 @@ class GaugesBench extends BenchmarkBase
             );
         });
 
-        $this->adapter->setUseDailyRollups(true);
-
         $this->runBench('bench_gauges_topN_service_30d', function (string $queryId) use ($start30d, $endClosed): void {
             $this->adapter->setNextQueryId($queryId);
             $this->usage->find([
@@ -71,8 +69,6 @@ class GaugesBench extends BenchmarkBase
                 Query::limit(10),
             ], Usage::TYPE_GAUGE);
         });
-
-        $this->adapter->setUseDailyRollups(false);
 
         $this->assertNotEmpty($this->results, 'Benchmark scenarios must record results');
     }

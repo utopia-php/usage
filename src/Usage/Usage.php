@@ -321,20 +321,6 @@ class Usage
     }
 
     /**
-     * Opt into adapter-side daily-rollup routing for flat-sum event reads.
-     *
-     * Forwarded to the underlying adapter; only adapters that implement
-     * `setUseDailyRollups()` honour the flag (ClickHouse does today).
-     */
-    public function setUseDailyRollups(bool $enabled = true): self
-    {
-        if (method_exists($this->adapter, 'setUseDailyRollups')) {
-            $this->adapter->setUseDailyRollups($enabled);
-        }
-        return $this;
-    }
-
-    /**
      * Set the dual-read sampling rate for the adapter. Forwarded to the
      * underlying adapter; only adapters that implement
      * `setDualReadSampleRate()` honour the value (ClickHouse does today).

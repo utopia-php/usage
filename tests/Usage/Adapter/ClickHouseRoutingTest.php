@@ -92,26 +92,8 @@ class ClickHouseRoutingTest extends TestCase
         $query->invoke($this->adapter, $rawSql, []);
     }
 
-    public function testFlagOffAlwaysRaw(): void
-    {
-        $this->adapter->setUseDailyRollups(false);
-        $this->adapter->clearRouteLog();
-
-        $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
-
-        $this->usage->sum([
-            Query::equal('metric', ['routed.metric']),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-        ], 'value', Usage::TYPE_EVENT);
-
-        $this->assertEmpty($this->adapter->getRouteLog(), 'No route log when flag is off');
-    }
-
     public function testClosedDayWindowRoutesToDaily(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -133,7 +115,6 @@ class ClickHouseRoutingTest extends TestCase
 
     public function testWindowStraddlesTodayRoutesHybrid(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -155,23 +136,11 @@ class ClickHouseRoutingTest extends TestCase
 
     public function testDimensionPresentForcesRaw(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
         $end = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
 
-        $this->usage->find([
-            UsageQuery::groupBy('path'),
-            Query::equal('metric', ['routed.metric']),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-        ], Usage::TYPE_EVENT);
-
-        // find() doesn't route in P1 (that's commit 5); we route via sum().
-        // Verify sum() with the same shape still picks raw because we add
-        // a dimension via Query::equal on a non-MV column.
-        $this->adapter->clearRouteLog();
         $this->usage->sum([
             Query::equal('metric', ['routed.metric']),
             Query::equal('path', ['/v1/a']),
@@ -186,7 +155,6 @@ class ClickHouseRoutingTest extends TestCase
 
     public function testFilterOnNonDailyColumnForcesRaw(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -206,7 +174,6 @@ class ClickHouseRoutingTest extends TestCase
 
     public function testIntervalPresentForcesRaw(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -226,14 +193,15 @@ class ClickHouseRoutingTest extends TestCase
 
     private function sumRaw(string $metric, string $start, string $end): int
     {
-        $this->adapter->setUseDailyRollups(false);
-        $sum = $this->usage->sum([
+        $reflection = new \ReflectionClass($this->adapter);
+        $sumFromTable = $reflection->getMethod('sumFromTable');
+        $sumFromTable->setAccessible(true);
+        $result = $sumFromTable->invoke($this->adapter, [
             Query::equal('metric', [$metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
         ], 'value', Usage::TYPE_EVENT);
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
-        return $sum;
+        return is_int($result) ? $result : 0;
     }
 }

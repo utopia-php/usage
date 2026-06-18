@@ -104,7 +104,6 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
     public function testTopGaugesByServiceRoutesToServiceMv(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -129,7 +128,6 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
     public function testTopGaugesByResourceRoutesToResourceMv(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -154,7 +152,6 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
     public function testGaugesSubDayIntervalForcesRaw(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $this->usage->find([
@@ -172,7 +169,6 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
     public function testGaugesFilterOnNonMvColumnFallsBackToRaw(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $this->usage->find([
@@ -190,7 +186,6 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
     public function testGaugesUngroupedFallsBackToRaw(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $this->usage->find([
@@ -206,7 +201,6 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
     public function testGaugesWindowStraddlesTodayUsesHybridDim(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
 
         $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -237,7 +231,6 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
     public function testGaugesDualReadSamplerActivates(): void
     {
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->setDualReadSampleRate(1.0);
         $this->adapter->clearRouteLog();
 
@@ -263,17 +256,18 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
      */
     private function rawTopByDim(string $dim, string $start, string $end): array
     {
-        $this->adapter->setUseDailyRollups(false);
-        $this->adapter->clearRouteLog();
-        $rows = $this->usage->find([
+        $reflection = new ReflectionClass($this->adapter);
+        $findFromTable = $reflection->getMethod('findFromTable');
+        $findFromTable->setAccessible(true);
+        $rowsRaw = $findFromTable->invoke($this->adapter, [
             UsageQuery::groupBy($dim),
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
             Query::limit(50),
         ], Usage::TYPE_GAUGE);
-        $this->adapter->setUseDailyRollups(true);
         $this->adapter->clearRouteLog();
+        $rows = is_array($rowsRaw) ? $rowsRaw : [];
         return $this->toMap($rows, $dim);
     }
 
