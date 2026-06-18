@@ -1081,14 +1081,14 @@ class ClickHouse extends SQL
      */
     private function createTable(string $tableName, string $type, array $indexes): void
     {
-        $columns = ['id String'];
+        $columns = ['id String ' . $this->getColumnCodec('id')];
 
         foreach ($this->getAttributes($type) as $attribute) {
             /** @var string $id */
             $id = $attribute['$id'];
 
             if ($id === 'time') {
-                $columns[] = 'time DateTime64(3)';
+                $columns[] = 'time DateTime64(3) ' . $this->getColumnCodec('time');
             } else {
                 $columns[] = $this->getColumnDefinition($id, $type);
             }
@@ -1099,17 +1099,20 @@ class ClickHouse extends SQL
             $columns[] = 'tenant Nullable(String)';
         }
 
-        // Build indexes
+        // Build indexes. `indexType` selects per-column between bloom_filter
+        // (high-cardinality strings) and set(0) (low-cardinality enums that
+        // are too dense for blooms to ever skip — see plausible-research.md).
         $indexDefs = [];
         foreach ($indexes as $index) {
             /** @var string $indexName */
             $indexName = $index['$id'];
             /** @var array<string> $attributes */
             $attributes = $index['attributes'];
+            $indexType = is_string($index['indexType'] ?? null) ? $index['indexType'] : 'bloom_filter';
             $escapedIndexName = $this->escapeIdentifier($indexName);
             $escapedAttributes = array_map(fn ($attr) => $this->escapeIdentifier($attr), $attributes);
             $attributeList = implode(', ', $escapedAttributes);
-            $indexDefs[] = "INDEX {$escapedIndexName} ({$attributeList}) TYPE bloom_filter GRANULARITY 1";
+            $indexDefs[] = "INDEX {$escapedIndexName} ({$attributeList}) TYPE {$indexType} GRANULARITY 1";
         }
 
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
@@ -1153,12 +1156,12 @@ class ClickHouse extends SQL
         $columns = [
             'metric String',
             'value Int64',
-            'time DateTime64(3)',
+            'time DateTime64(3) CODEC(Delta(4), LZ4)',
             'resource LowCardinality(Nullable(String))',
-            'resourceId Nullable(String)',
-            'resourceInternalId Nullable(String)',
-            'teamId Nullable(String)',
-            'teamInternalId Nullable(String)',
+            'resourceId Nullable(String) CODEC(ZSTD(3))',
+            'resourceInternalId Nullable(String) CODEC(ZSTD(3))',
+            'teamId Nullable(String) CODEC(ZSTD(3))',
+            'teamInternalId Nullable(String) CODEC(ZSTD(3))',
         ];
 
         if ($this->sharedTables) {
@@ -1365,8 +1368,11 @@ class ClickHouse extends SQL
 
         $lowCardinality = [
             'country', 'region', 'service', 'resource',
-            'osCode', 'osName', 'clientType', 'clientCode', 'clientName',
-            'clientEngine', 'deviceName', 'deviceBrand',
+            'osCode', 'osName', 'osVersion',
+            'clientType', 'clientCode', 'clientName', 'clientVersion',
+            'clientEngine', 'clientEngineVersion',
+            'deviceName', 'deviceBrand', 'deviceModel',
+            'path', 'hostname',
         ];
 
         if (in_array($id, $lowCardinality, true)) {
@@ -1389,7 +1395,36 @@ class ClickHouse extends SQL
     {
         $chType = $this->getColumnType($id, $type);
         $escapedId = $this->escapeIdentifier($id);
+        $codec = $this->getColumnCodec($id);
+        if ($codec !== '') {
+            return "{$escapedId} {$chType} {$codec}";
+        }
         return "{$escapedId} {$chType}";
+    }
+
+    /**
+     * Return the per-column ClickHouse CODEC clause (Plausible-style
+     * compression hygiene) for the events/gauges tables. Empty string when
+     * no codec is overridden for this column.
+     */
+    private function getColumnCodec(string $id): string
+    {
+        if ($id === 'time') {
+            return 'CODEC(Delta(4), LZ4)';
+        }
+
+        $zstdColumns = [
+            'id', 'path', 'hostname',
+            'resourceId', 'resourceInternalId',
+            'teamId', 'teamInternalId',
+            'osVersion', 'clientVersion', 'clientEngineVersion', 'deviceModel',
+        ];
+
+        if (in_array($id, $zstdColumns, true)) {
+            return 'CODEC(ZSTD(3))';
+        }
+
+        return '';
     }
 
     /**
@@ -2274,20 +2309,28 @@ class ClickHouse extends SQL
         $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
-        $dailyColumns = ['metric', 'value', 'time'];
+        $groupByColumns = ['metric', 'time'];
         if ($this->sharedTables) {
-            $dailyColumns[] = 'tenant';
+            $groupByColumns[] = 'tenant';
         }
-        $selectColumns = implode(', ', array_map(fn ($c) => $this->escapeIdentifier($c), $dailyColumns));
+
+        $selectExpressions = [];
+        foreach ($groupByColumns as $column) {
+            $selectExpressions[] = $this->escapeIdentifier($column);
+        }
+        $selectExpressions[] = 'sum(`value`) AS `value`';
+
+        $selectColumns = implode(', ', $selectExpressions);
+        $groupBySql = implode(', ', array_map(fn ($c) => $this->escapeIdentifier($c), $groupByColumns));
 
         $orderClause = !empty($parsed['orderBy']) ? ' ORDER BY ' . implode(', ', $parsed['orderBy']) : '';
         $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
         $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
 
-        // The daily table is SummingMergeTree. Reading raw rows returns
-        // un-merged duplicates until background merges run. FINAL forces
-        // merge-on-read so callers always see fully-collapsed values.
-        $sql = "SELECT {$selectColumns} FROM {$fromTable} FINAL{$whereData['clause']}{$orderClause}{$limitClause}{$offsetClause} FORMAT JSON";
+        // SummingMergeTree collapses on background merges; reading raw rows
+        // sums them via explicit GROUP BY at query time. Net effect matches
+        // FROM … FINAL but keeps the read parallelisable.
+        $sql = "SELECT {$selectColumns} FROM {$fromTable}{$whereData['clause']} GROUP BY {$groupBySql}{$orderClause}{$limitClause}{$offsetClause} FORMAT JSON";
 
         return $this->parseResults($this->query($sql, $whereData['params']), Usage::TYPE_EVENT);
     }

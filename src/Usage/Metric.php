@@ -709,9 +709,6 @@ class Metric extends ArrayObject
      */
     public static function getEventIndexes(): array
     {
-        // `metric` and `time` are part of the ClickHouse primary key
-        // (ORDER BY (tenant, metric, time, id)), so separate bloom_filter
-        // indexes on them would be redundant.
         $indexed = [
             'path', 'method', 'status',
             'service', 'resource', 'resourceId', 'resourceInternalId',
@@ -720,16 +717,16 @@ class Metric extends ArrayObject
             'osName', 'clientType', 'clientName', 'deviceName',
         ];
 
+        $setIndexed = ['status', 'method', 'country', 'service', 'clientType', 'osName'];
+
         return array_map(
-            static function (string $col): array {
+            static function (string $col) use ($setIndexed): array {
                 $entry = [
                     '$id' => 'index-' . $col,
                     'type' => 'key',
                     'attributes' => [$col],
+                    'indexType' => in_array($col, $setIndexed, true) ? 'set(0)' : 'bloom_filter',
                 ];
-                // path is sized 1024 for data fidelity; cap the index key at
-                // 255 so the MariaDB single-attribute index stays within the
-                // 768-byte InnoDB key prefix limit.
                 if ($col === 'path') {
                     $entry['lengths'] = [255];
                 }
@@ -751,6 +748,7 @@ class Metric extends ArrayObject
                 '$id' => 'index-' . $col,
                 'type' => 'key',
                 'attributes' => [$col],
+                'indexType' => 'bloom_filter',
             ],
             ['resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'],
         );
