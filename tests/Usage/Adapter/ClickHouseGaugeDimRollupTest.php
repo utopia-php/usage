@@ -4,6 +4,7 @@ namespace Utopia\Tests\Adapter;
 
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
+use Utopia\Query\Query;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 use Utopia\Usage\Usage;
 
@@ -106,6 +107,51 @@ class ClickHouseGaugeDimRollupTest extends TestCase
         $resourceValues = $this->argMaxMergeBy('by_resource', 'resource', 'gauge.argmax');
         $this->assertSame(200, $resourceValues['file'] ?? -1);
         $this->assertSame(50, $resourceValues['database'] ?? -1);
+    }
+
+    public function testPurgeByResourceClearsAllGaugeRollupsForThatDay(): void
+    {
+        $metric = 'gauge.purge-cross-dim';
+
+        $this->seedGaugeRow($metric, 77, '-1 hour', ['service' => 'storage', 'resource' => 'file']);
+
+        // Purging by resource — only by_resource stores it. by_service must
+        // still drop its stale day rows or argMaxMerge will continue to
+        // return the deleted snapshot.
+        $this->usage->purge([
+            Query::equal('metric', [$metric]),
+            Query::equal('resource', ['file']),
+        ], Usage::TYPE_GAUGE);
+
+        foreach ($this->rollups as $rollup) {
+            $table = $this->getGaugeDimRollupTable($rollup['name']);
+            $count = $this->countRows($table);
+            $this->assertSame(
+                0,
+                $count,
+                "Gauge rollup {$table} must drop the stale day rows when purging across dims (Greptile finding for line 4516)"
+            );
+        }
+    }
+
+    public function testPurgeByIdFiltersDropAllGaugeRollupRowsForThatDay(): void
+    {
+        $metric = 'gauge.purge-by-id';
+
+        $this->seedGaugeRow($metric, 88, '-1 hour', ['service' => 'storage', 'resource' => 'file']);
+
+        // id is raw-only on gauges. The rollups can't narrow by it; they
+        // must whole-day delete instead of attempting `WHERE id = ...`.
+        $this->usage->purge([
+            Query::equal('metric', [$metric]),
+            Query::equal('id', ['nonexistent']),
+        ], Usage::TYPE_GAUGE);
+
+        foreach ($this->rollups as $rollup) {
+            $table = $this->getGaugeDimRollupTable($rollup['name']);
+            $count = $this->countRows($table);
+            $this->assertSame(0, $count, "Gauge rollup {$table} must whole-day delete when purge filter (id) isn't expressible");
+        }
     }
 
     public function testArgMaxMergeReturnsLatestWhenSameDay(): void

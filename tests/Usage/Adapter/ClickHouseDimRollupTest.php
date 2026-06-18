@@ -4,6 +4,7 @@ namespace Utopia\Tests\Adapter;
 
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
+use Utopia\Query\Query;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 use Utopia\Usage\Usage;
 
@@ -112,6 +113,61 @@ class ClickHouseDimRollupTest extends TestCase
             $table = $this->getDimRollupTable($rollup['name']);
             $total = $this->sumValue($table, 'dim.rollup.totals');
             $this->assertSame(60, $total, "Sum of MV {$table} must equal 10+20+30=60");
+        }
+    }
+
+    public function testPurgeByIdFiltersDropAllRollupRowsForThatDay(): void
+    {
+        $metric = 'dim.rollup.purge-by-id';
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => $metric, 'value' => 11, 'tags' => ['path' => '/v1/x', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']],
+        ], Usage::TYPE_EVENT));
+
+        // id only exists on raw events — rollups don't store it. The purge
+        // helper must NOT attempt `WHERE id = ...` against the rollups; it
+        // should fall through to whole-day deletion.
+        $this->usage->purge([
+            Query::equal('metric', [$metric]),
+            Query::equal('id', ['nonexistent-id']),
+        ], Usage::TYPE_EVENT);
+
+        foreach ($this->rollups as $rollup) {
+            $table = $this->getDimRollupTable($rollup['name']);
+            $total = $this->sumValue($table, $metric);
+            $this->assertSame(
+                0,
+                $total,
+                "Rollup {$table} must drop the stale day rows when the purge filter (id) isn't expressible on the rollup"
+            );
+        }
+    }
+
+    public function testPurgeByPathClearsAllRollupsForThatDay(): void
+    {
+        $metric = 'dim.rollup.purge-cross-dim';
+
+        $this->assertTrue($this->usage->addBatch([
+            ['metric' => $metric, 'value' => 7, 'tags' => ['path' => '/v1/x', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']],
+        ], Usage::TYPE_EVENT));
+
+        // Purge by a column (path) that only the by_path rollup stores.
+        // Cross-dim rollups (by_country, by_service, by_method_status) cannot
+        // narrow by path, but they must still drop their stale row for the
+        // affected day or routed reads will over-report.
+        $this->usage->purge([
+            Query::equal('metric', [$metric]),
+            Query::equal('path', ['/v1/x']),
+        ], Usage::TYPE_EVENT);
+
+        foreach ($this->rollups as $rollup) {
+            $table = $this->getDimRollupTable($rollup['name']);
+            $total = $this->sumValue($table, $metric);
+            $this->assertSame(
+                0,
+                $total,
+                "Rollup {$table} must contain no rows for {$metric} after purge — staleness across dims is the fix Greptile flagged"
+            );
         }
     }
 

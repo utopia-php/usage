@@ -4525,9 +4525,22 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Forward the purge to each per-dim rollup table when every filter
-     * attribute fits the rollup's columns. Branches on $type to pick the
-     * event vs gauge rollup slate and the type-specific allow-list.
+     * Forward the purge to each per-dim rollup table.
+     *
+     * When every filter attribute fits the rollup's columns the filter is
+     * applied verbatim (after time bounds get widened to whole-day
+     * boundaries). When the purge filter references a column the rollup
+     * does NOT store, the rollup row count for that day is already stale
+     * relative to the raw delete — leaving it in place causes routed reads
+     * to over-report. We delete the affected whole-day rows from the
+     * rollup anyway, scoped to the rollup-safe subset of filters
+     * (metric, time, tenant). The next ingest cycle re-populates that
+     * day's rollup row from the remaining raw rows.
+     *
+     * The events allow-list intentionally omits both `id` (no column on
+     * the rollup) and `value` (the rollup column is an aggregate, not the
+     * raw row's value). The gauges allow-list omits both for the same
+     * reasons; gauges store argMaxState(value) rather than the raw value.
      *
      * @param array<Query> $queries
      * @throws Exception
@@ -4540,8 +4553,13 @@ class ClickHouse extends SQL
             $nameResolver = fn (string $name): string => $this->getGaugeDimRollupTableName($name);
         } else {
             $rollups = self::DIM_ROLLUPS;
-            $baseAllowed = ['metric', 'value', 'time'];
+            $baseAllowed = ['metric', 'time'];
             $nameResolver = fn (string $name): string => $this->getDimRollupTableName($name);
+        }
+
+        $safeFallbackKeys = $baseAllowed;
+        if ($this->sharedTables) {
+            $safeFallbackKeys[] = 'tenant';
         }
 
         foreach ($rollups as $rollup) {
@@ -4558,12 +4576,12 @@ class ClickHouse extends SQL
                     break;
                 }
             }
-            if (!$compatible) {
-                continue;
-            }
+
+            $rollupQueries = $compatible
+                ? $this->translateTimeQueriesToDayBoundaries($queries)
+                : $this->buildStaleRollupPurgeQueries($queries, $safeFallbackKeys);
 
             $table = $this->buildTableReference($nameResolver($rollup['name']));
-            $rollupQueries = $this->translateTimeQueriesToDayBoundaries($queries);
             $parsed = $this->parseQueries($rollupQueries, $type);
             $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
             $whereClause = $whereData['clause'];
@@ -4578,23 +4596,66 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Build a query list for the "filter not expressible on rollup" branch:
+     * keep only filters on rollup-safe columns (metric, time, tenant), drop
+     * any narrowing filter the rollup can't apply, then widen time to whole
+     * days. The result deletes a superset of the affected raw rows —
+     * accuracy on the rest of that day's rollup row degrades, but
+     * staleness is worse than degradation, and the next ingest cycle adds
+     * data back.
+     *
+     * @param array<Query> $queries
+     * @param array<int, string> $safeAttributes
+     * @return array<Query>
+     */
+    private function buildStaleRollupPurgeQueries(array $queries, array $safeAttributes): array
+    {
+        $filtered = [];
+        foreach ($queries as $query) {
+            $attr = $query->getAttribute();
+            if ($attr === '' || in_array($attr, $safeAttributes, true)) {
+                $filtered[] = $query;
+            }
+        }
+        return $this->translateTimeQueriesToDayBoundaries($filtered);
+    }
+
+    /**
+     * Purge the events_daily SummingMergeTree.
+     *
+     * id and value are dropped from the filter set: id doesn't exist on
+     * the daily table at all, and value is an aggregate column whose
+     * semantics differ from the raw row's value. Time bounds widen to
+     * whole-day boundaries. Filters on event-only attributes (path /
+     * method / status / etc.) trigger a whole-day delete using only the
+     * daily-safe subset, because leaving the rollup with stale rows
+     * over-reports under routed reads.
+     *
      * @param array<Query> $queries
      * @throws Exception
      */
     private function purgeDaily(array $queries): void
     {
-        $dailyQueries = [];
+        $safeAttributes = array_merge(['time'], self::DAILY_COLUMNS);
+        if ($this->sharedTables) {
+            $safeAttributes[] = 'tenant';
+        }
+
+        $compatible = true;
         foreach ($queries as $query) {
             $attr = $query->getAttribute();
-            if (!empty($attr)) {
-                if ($attr !== 'id'
-                    && !in_array($attr, self::DAILY_COLUMNS, true)
-                    && !($attr === 'tenant' && $this->sharedTables)) {
-                    return;
-                }
+            if ($attr === '') {
+                continue;
             }
-            $dailyQueries[] = $query;
+            if (!in_array($attr, $safeAttributes, true)) {
+                $compatible = false;
+                break;
+            }
         }
+
+        $dailyQueries = $compatible
+            ? $this->translateTimeQueriesToDayBoundaries($queries)
+            : $this->buildStaleRollupPurgeQueries($queries, $safeAttributes);
 
         $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());
 
