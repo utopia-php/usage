@@ -231,12 +231,11 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $this->adapter->clearRouteLog();
 
         try {
-            $this->usage->find([
-                UsageQuery::groupBy('path'),
+            $this->usage->sum([
                 Query::equal('metric', ['routed.metric']),
                 Query::greaterThanEqual('time', 'not-a-date'),
                 Query::lessThanEqual('time', 'not-a-date-either'),
-            ], Usage::TYPE_EVENT);
+            ], 'value', Usage::TYPE_EVENT);
         } catch (Exception $e) {
         }
 

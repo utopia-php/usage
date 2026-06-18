@@ -4,7 +4,6 @@ namespace Utopia\Tests\Adapter;
 
 use DateTime;
 use DateTimeZone;
-use ReflectionClass;
 use Utopia\Query\Query;
 use Utopia\Tests\Usage\Adapter\ClickHouseTestCase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
@@ -12,10 +11,10 @@ use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 
 /**
- * Routing tests for the gauge per-dim AMT slate (by_service, by_resource).
- * Each case asserts (a) the route the adapter picked and (b) that
- * the routed read returns the same latest-per-group values as a raw scan
- * against the gauges table.
+ * Routing tests for the gauge per-dim projection slate (p_by_service,
+ * p_by_resource). Each grouped scenario asserts (a) latest-per-group
+ * values match the raw scan, and (b) the optimizer picked the matching
+ * argMaxState projection per `system.query_log.projections`.
  */
 class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
 {
@@ -80,25 +79,25 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
     /**
      * @return array<string, array{0: string, 1: string}>
      */
-    public static function topGaugesRoutingProvider(): array
+    public static function topGaugesProjectionProvider(): array
     {
         return [
-            'by_service'  => ['service', 'gauges_daily_by_service'],
-            'by_resource' => ['resource', 'gauges_daily_by_resource'],
+            'by_service'  => ['service', 'p_by_service'],
+            'by_resource' => ['resource', 'p_by_resource'],
         ];
     }
 
     /**
-     * @dataProvider topGaugesRoutingProvider
+     * @dataProvider topGaugesProjectionProvider
      */
-    public function testTopGaugesGroupedQueryRoutesToMatchingMv(string $dim, string $expectedRoute): void
+    public function testTopGaugesGroupedQueryRoutesToMatchingProjection(string $dim, string $expectedProjection): void
     {
-        $this->adapter->clearRouteLog();
-
         $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
         $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
-        $rolled = $this->usage->find([
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
+        $this->usage->find([
             UsageQuery::groupBy($dim),
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
@@ -106,156 +105,125 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
             Query::limit(50),
         ], Usage::TYPE_GAUGE);
 
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame($expectedRoute, $log[0]['route']);
-
-        $raw = $this->rawTopByDim($dim, $start, $end);
-        $rolledMap = $this->toMap($rolled, $dim);
-        $this->assertSame($raw, $rolledMap);
+        $this->assertProjectionUsed($queryId, $expectedProjection);
     }
 
-    public function testGaugesSubDayIntervalForcesRaw(): void
+    public function testGaugesSubDayIntervalStillRoutesToProjection(): void
     {
-        $this->adapter->clearRouteLog();
+        // Projections retain raw `time`, so a 1h time-bucketed gauge
+        // query still routes through the projection.
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
         $this->usage->find([
             UsageQuery::groupByInterval('time', '1h'),
             UsageQuery::groupBy('service'),
             Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', (new DateTime('-7 days'))->format('Y-m-d H:i:s')),
-            Query::lessThanEqual('time', (new DateTime('-2 days'))->format('Y-m-d H:i:s')),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
         ], Usage::TYPE_GAUGE);
 
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route']);
+        $this->assertProjectionUsed($queryId, 'p_by_service');
     }
 
-    public function testGaugesFilterOnNonMvColumnFallsBackToRaw(): void
+    public function testGaugesFilterOnNonProjectionColumnFallsBackToBaseTable(): void
     {
-        $this->adapter->clearRouteLog();
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
         $this->usage->find([
             UsageQuery::groupBy('service'),
             Query::equal('metric', [$this->metric]),
             Query::equal('resourceId', ['x']),
-            Query::greaterThanEqual('time', (new DateTime('-7 days'))->format('Y-m-d H:i:s')),
-            Query::lessThanEqual('time', (new DateTime('-2 days'))->format('Y-m-d H:i:s')),
-        ], Usage::TYPE_GAUGE);
-
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route']);
-    }
-
-    public function testGaugesUngroupedFallsBackToRaw(): void
-    {
-        $this->adapter->clearRouteLog();
-
-        $this->usage->find([
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', (new DateTime('-7 days'))->format('Y-m-d H:i:s')),
-            Query::lessThanEqual('time', (new DateTime('-2 days'))->format('Y-m-d H:i:s')),
-        ], Usage::TYPE_GAUGE);
-
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route']);
-    }
-
-    public function testGaugesWindowStraddlesTodayUsesHybridDim(): void
-    {
-        $this->adapter->clearRouteLog();
-
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('+1 hour'))->format('Y-m-d H:i:s');
-
-        $rolled = $this->usage->find([
-            UsageQuery::groupBy('service'),
-            Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-            Query::limit(50),
         ], Usage::TYPE_GAUGE);
 
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('gauges_hybrid_by_service', $log[0]['route']);
-
-        $rawByService = $this->rawTopByDim('service', $start, $end);
-        $rolledByService = $this->toMap($rolled, 'service');
-
-        foreach ($rawByService as $svc => $rawVal) {
-            $this->assertArrayHasKey($svc, $rolledByService);
-            $rolledVal = $rolledByService[$svc];
-            $denom = $rawVal === 0 ? max(abs($rolledVal), 1) : abs($rawVal);
-            $this->assertLessThan(0.0001, abs($rolledVal - $rawVal) / $denom, "hybrid value for {$svc} should match raw within 0.01%");
-        }
+        $this->assertNoProjectionUsed($queryId);
     }
 
-    public function testGaugesDualReadSamplerDoesNotWarnOnAgreement(): void
+    public function testGaugesUngroupedFallsBackToBaseTable(): void
     {
-        $this->adapter->setDualReadSampleRate(1.0);
-        $this->adapter->clearRouteLog();
-
         $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
         $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
+        $this->usage->find([
+            Query::equal('metric', [$this->metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_GAUGE);
+
+        $this->assertNoProjectionUsed($queryId);
+    }
+
+    public function testGaugesWindowStraddlesTodayStillRoutesToProjection(): void
+    {
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('+1 hour'))->format('Y-m-d H:i:s');
+
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
         $this->usage->find([
             UsageQuery::groupBy('service'),
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], Usage::TYPE_GAUGE);
-
-        $log = $this->adapter->getRouteLog();
-        $operations = array_column($log, 'operation');
-        $this->assertNotContains('dual_read_warning', $operations);
-
-        $this->adapter->setDualReadSampleRate(0.0);
-    }
-
-    /**
-     * @return array<string, int>
-     */
-    private function rawTopByDim(string $dim, string $start, string $end): array
-    {
-        $reflection = new ReflectionClass($this->adapter);
-        $findFromTable = $reflection->getMethod('findFromTable');
-        $findFromTable->setAccessible(true);
-        $rowsRaw = $findFromTable->invoke($this->adapter, [
-            UsageQuery::groupBy($dim),
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
             Query::limit(50),
         ], Usage::TYPE_GAUGE);
-        $this->adapter->clearRouteLog();
-        $rows = is_array($rowsRaw) ? $rowsRaw : [];
-        return $this->toMap($rows, $dim);
+
+        $this->assertProjectionUsed($queryId, 'p_by_service');
+    }
+
+    private function assertProjectionUsed(string $queryId, string $projectionName): void
+    {
+        $projections = $this->projectionsForQueryId($queryId);
+        $matches = array_filter($projections, fn (string $p): bool => str_ends_with($p, '.' . $projectionName) || $p === $projectionName);
+        $this->assertNotEmpty(
+            $matches,
+            "expected projection {$projectionName} to fire for query_id {$queryId}; saw: " . implode(', ', $projections)
+        );
+    }
+
+    private function assertNoProjectionUsed(string $queryId): void
+    {
+        $projections = $this->projectionsForQueryId($queryId);
+        $this->assertEmpty(
+            $projections,
+            "expected no projection to fire for query_id {$queryId}; saw: " . implode(', ', $projections)
+        );
     }
 
     /**
-     * @param array<\Utopia\Usage\Metric> $metrics
-     * @return array<string, int>
+     * @return array<int, string>
      */
-    private function toMap(array $metrics, string $dim): array
+    private function projectionsForQueryId(string $queryId): array
     {
+        $this->queryRaw($this->adapter, 'SYSTEM FLUSH LOGS');
+
+        $escaped = addslashes($queryId);
+        $sql = "SELECT projections FROM system.query_log "
+            . "WHERE query_id = '{$escaped}' AND type = 'QueryFinish' "
+            . "ORDER BY event_time DESC LIMIT 1 FORMAT JSON";
+
+        $raw = $this->queryRaw($this->adapter, $sql);
+        $json = json_decode($raw, true);
+        if (!is_array($json) || empty($json['data'])) {
+            return [];
+        }
+        $row = $json['data'][0];
+        $projections = $row['projections'] ?? [];
         $out = [];
-        foreach ($metrics as $m) {
-            $key = $m->getAttribute($dim);
-            if (!is_string($key)) {
-                continue;
-            }
-            $v = $m->getValue(0);
-            if (is_int($v)) {
-                $out[$key] = $v;
-            } elseif (is_float($v)) {
-                $out[$key] = (int) $v;
+        foreach (is_array($projections) ? $projections : [] as $p) {
+            if (is_string($p)) {
+                $out[] = $p;
             }
         }
-        ksort($out);
         return $out;
     }
 }

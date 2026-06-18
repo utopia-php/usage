@@ -12,10 +12,11 @@ use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 
 /**
- * Routing tests for the per-dim MV slate: by_path, by_country, by_service,
- * by_method_status. Each case asserts (a) the route the adapter
- * picked and (b) that the routed read returns the same totals as a raw
- * scan.
+ * Routing tests for the per-dim projection slate: p_by_path, p_by_country,
+ * p_by_service, p_by_method_status. Each grouped scenario asserts:
+ *   (a) the totals match the raw scan, and
+ *   (b) the ClickHouse optimizer picked the matching projection per
+ *       `system.query_log.projections`.
  */
 class ClickHouseDimRoutingTest extends ClickHouseTestCase
 {
@@ -79,24 +80,22 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
     /**
      * @return array<string, array{0: array<int, string>, 1: string}>
      */
-    public static function topNRoutingProvider(): array
+    public static function topNProjectionProvider(): array
     {
         return [
-            'by_path'           => [['path'], 'daily_by_path'],
-            'by_country'        => [['country'], 'daily_by_country'],
-            'by_service'        => [['service'], 'daily_by_service'],
-            'by_method_status'  => [['method', 'status'], 'daily_by_method_status'],
+            'by_path'           => [['path'], 'p_by_path'],
+            'by_country'        => [['country'], 'p_by_country'],
+            'by_service'        => [['service'], 'p_by_service'],
+            'by_method_status'  => [['method', 'status'], 'p_by_method_status'],
         ];
     }
 
     /**
-     * @dataProvider topNRoutingProvider
+     * @dataProvider topNProjectionProvider
      * @param array<int, string> $dims
      */
-    public function testTopNGroupedQueryRoutesToMatchingMv(array $dims, string $expectedRoute): void
+    public function testTopNGroupedQueryRoutesToMatchingProjection(array $dims, string $expectedProjection): void
     {
-        $this->adapter->clearRouteLog();
-
         $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
         $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
@@ -109,73 +108,82 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         $queries[] = Query::lessThanEqual('time', $end);
         $queries[] = Query::limit(50);
 
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
         $rolled = $this->usage->find($queries, Usage::TYPE_EVENT);
 
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame($expectedRoute, $log[0]['route']);
-
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
+        $this->assertProjectionUsed($queryId, $expectedProjection);
     }
 
-    public function testMultiDimNotInAnySingleMvFallsBackToRaw(): void
+    public function testMultiDimNotInAnyProjectionFallsBackToTable(): void
     {
-        $this->adapter->clearRouteLog();
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
         $this->usage->find([
             UsageQuery::groupBy('path'),
             UsageQuery::groupBy('country'),
             Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', (new DateTime('-7 days'))->format('Y-m-d H:i:s')),
-            Query::lessThanEqual('time', (new DateTime('-2 days'))->format('Y-m-d H:i:s')),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
         ], Usage::TYPE_EVENT);
 
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route']);
+        $this->assertNoProjectionUsed($queryId);
     }
 
-    public function testFilterOnNonMvColumnFallsBackToRaw(): void
+    public function testFilterOnExtraColumnStillRoutesToProjectionWhenColumnPresent(): void
     {
-        $this->adapter->clearRouteLog();
+        // resource is a column on the events table but not in p_by_path's
+        // projection; the optimizer cannot satisfy this query from the
+        // projection and must scan the base table.
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
         $this->usage->find([
             UsageQuery::groupBy('path'),
             Query::equal('metric', [$this->metric]),
             Query::equal('resource', ['function']),
-            Query::greaterThanEqual('time', (new DateTime('-7 days'))->format('Y-m-d H:i:s')),
-            Query::lessThanEqual('time', (new DateTime('-2 days'))->format('Y-m-d H:i:s')),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
         ], Usage::TYPE_EVENT);
 
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route']);
+        $this->assertNoProjectionUsed($queryId);
     }
 
-    public function testSubDayIntervalForcesRaw(): void
+    public function testSubDayIntervalStillRoutesToProjection(): void
     {
-        $this->adapter->clearRouteLog();
+        // Projections retain raw `time`, so the 1h bucket query
+        // toStartOfInterval(time, 1 HOUR) can still be satisfied from
+        // the projection — and that's a net win over scanning the base
+        // table.
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
         $this->usage->find([
             UsageQuery::groupByInterval('time', '1h'),
             UsageQuery::groupBy('path'),
             Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', (new DateTime('-7 days'))->format('Y-m-d H:i:s')),
-            Query::lessThanEqual('time', (new DateTime('-2 days'))->format('Y-m-d H:i:s')),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
         ], Usage::TYPE_EVENT);
 
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route']);
+        $this->assertProjectionUsed($queryId, 'p_by_path');
     }
 
-    public function testWindowStraddlesTodayUsesHybridDim(): void
+    public function testWindowStraddlesTodayStillRoutesToProjection(): void
     {
-        $this->adapter->clearRouteLog();
-
         $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
         $end = (new DateTime('+1 hour'))->format('Y-m-d H:i:s');
 
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
         $rolled = $this->usage->find([
             UsageQuery::groupBy('path'),
             Query::equal('metric', [$this->metric]),
@@ -183,168 +191,27 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             Query::lessThanEqual('time', $end),
             Query::limit(50),
         ], Usage::TYPE_EVENT);
-
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('hybrid_by_path', $log[0]['route']);
 
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
-    }
-
-    public function testHybridFloorsDailyLowerBoundToStartOfDay(): void
-    {
-        $isolatedMetric = 'dim.routing.hybrid_boundary';
-
-        $this->seedHistoricalRow($isolatedMetric, 100, '-2 days 03:00:00', [
-            'path' => '/v1/floor',
-            'method' => 'GET',
-            'status' => '200',
-            'service' => 'storage',
-            'country' => 'us',
-        ]);
-
-        $this->adapter->clearRouteLog();
-
-        $start = (new DateTime('-2 days 14:00:00', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
-        $end = (new DateTime('+1 hour', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
-
-        $rolled = $this->usage->find([
-            UsageQuery::groupBy('path'),
-            Query::equal('metric', [$isolatedMetric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-            Query::limit(50),
-        ], Usage::TYPE_EVENT);
-
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('hybrid_by_path', $log[0]['route']);
-
-        $total = 0;
-        foreach ($rolled as $m) {
-            $v = $m->getValue(0);
-            if (is_int($v)) {
-                $total += $v;
-            } elseif (is_float($v)) {
-                $total += (int) $v;
-            }
-        }
-        $this->assertSame(100, $total, 'daily branch must floor start to toStartOfDay so a mid-day start still picks up the day rollup');
-    }
-
-    public function testDualReadSamplerLogsWarningOnDivergence(): void
-    {
-        $divergentMetric = 'dim.routing.divergent';
-        $this->seedHistoricalRow($divergentMetric, 10, '-5 days', [
-            'path' => '/v1/divergent',
-            'method' => 'GET',
-            'status' => '200',
-            'service' => 'storage',
-            'country' => 'us',
-        ]);
-
-        $this->insertRollupRow('by_path', $divergentMetric, 9999, '-5 days', ['path' => '/v1/divergent']);
-
-        $this->adapter->setDualReadSampleRate(1.0);
-        $this->adapter->clearRouteLog();
-
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
-
-        $this->usage->find([
-            UsageQuery::groupBy('path'),
-            Query::equal('metric', [$divergentMetric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-        ], Usage::TYPE_EVENT);
-
-        $log = $this->adapter->getRouteLog();
-        $operations = array_column($log, 'operation');
-        $this->assertContains('dual_read_warning', $operations, 'sampler should log a dual_read_warning when totals diverge');
-
-        $this->adapter->setDualReadSampleRate(0.0);
-    }
-
-    public function testDualReadSamplerLogsWarningOnPerGroupDivergenceWithSameTotal(): void
-    {
-        $metric = 'dim.routing.per-group-divergent';
-
-        $this->seedHistoricalRow($metric, 50, '-5 days', ['path' => '/v1/group-a', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']);
-        $this->seedHistoricalRow($metric, 50, '-5 days', ['path' => '/v1/group-b', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']);
-
-        $this->insertRollupRow('by_path', $metric, 80, '-5 days', ['path' => '/v1/group-a']);
-        $this->insertRollupRow('by_path', $metric, 20, '-5 days', ['path' => '/v1/group-b']);
-
-        $this->adapter->setDualReadSampleRate(1.0);
-        $this->adapter->clearRouteLog();
-
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
-
-        $this->usage->find([
-            UsageQuery::groupBy('path'),
-            Query::equal('metric', [$metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-        ], Usage::TYPE_EVENT);
-
-        $log = $this->adapter->getRouteLog();
-        $operations = array_column($log, 'operation');
-        $this->assertContains(
-            'dual_read_warning',
-            $operations,
-            'sampler must compare per-group, not just totals — the divergence here cancels out across groups'
-        );
-
-        $this->adapter->setDualReadSampleRate(0.0);
-    }
-
-    public function testDualReadSamplerDoesNotWarnOnAgreement(): void
-    {
-        $this->adapter->setDualReadSampleRate(1.0);
-        $this->adapter->clearRouteLog();
-
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
-
-        $this->usage->find([
-            UsageQuery::groupBy('path'),
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-        ], Usage::TYPE_EVENT);
-
-        $log = $this->adapter->getRouteLog();
-        $operations = array_column($log, 'operation');
-        $this->assertNotContains('dual_read_warning', $operations, 'sampler must not log when rollup and raw agree');
-
-        $this->adapter->setDualReadSampleRate(0.0);
+        // Projections are derived in the same write transaction as the
+        // parent insert, so straddle-today windows still route through
+        // them — no hybrid plumbing needed.
+        $this->assertProjectionUsed($queryId, 'p_by_path');
     }
 
     /**
-     * @param array<string, string> $tags
+     * @param array<Query|UsageQuery> $queries
      */
-    private function insertRollupRow(string $rollupName, string $metric, int $value, string $modifier, array $tags): void
+    private function routeFor(array $queries, string $type = Usage::TYPE_EVENT): string
     {
-        $table = $this->resolveTableName($this->adapter, 'getDimRollupTableName', [$rollupName]);
-        $database = $this->databaseName($this->adapter);
-
-        $time = (new DateTime($modifier, new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s.v');
-
-        $cols = ['metric', 'value', 'time', 'tenant'];
-        $vals = [
-            "'" . addslashes($metric) . "'",
-            (string) $value,
-            "'{$time}'",
-            "'1'",
-        ];
-        foreach ($tags as $tag => $tagVal) {
-            $cols[] = $tag;
-            $vals[] = "'" . addslashes($tagVal) . "'";
-        }
-
-        $sql = "INSERT INTO `{$database}`.`{$table}` (" . implode(', ', $cols) . ") VALUES (" . implode(', ', $vals) . ")";
-        $this->queryRaw($this->adapter, $sql);
+        $reflection = new ReflectionClass($this->adapter);
+        $extract = $reflection->getMethod('extractRoutingPlan');
+        $extract->setAccessible(true);
+        $select = $reflection->getMethod('selectAggregateSource');
+        $select->setAccessible(true);
+        $plan = $extract->invoke($this->adapter, $queries);
+        $route = $select->invoke($this->adapter, $plan);
+        return is_string($route) ? $route : '';
     }
 
     private function rawTotal(string $start, string $end): int
@@ -357,7 +224,6 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
         ], 'value', Usage::TYPE_EVENT);
-        $this->adapter->clearRouteLog();
         return is_int($result) ? $result : 0;
     }
 
@@ -378,19 +244,51 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         return $sum;
     }
 
-    /**
-     * @param array<Query|UsageQuery> $queries
-     */
-    private function routeFor(array $queries, string $type = Usage::TYPE_EVENT): string
+    private function assertProjectionUsed(string $queryId, string $projectionName): void
     {
-        $reflection = new ReflectionClass($this->adapter);
-        $extract = $reflection->getMethod('extractRoutingPlan');
-        $extract->setAccessible(true);
-        $select = $reflection->getMethod('selectAggregateSource');
-        $select->setAccessible(true);
-        $plan = $extract->invoke($this->adapter, $queries);
-        $route = $select->invoke($this->adapter, $plan, $type);
-        return is_string($route) ? $route : '';
+        $projections = $this->projectionsForQueryId($queryId);
+        $matches = array_filter($projections, fn (string $p): bool => str_ends_with($p, '.' . $projectionName) || $p === $projectionName);
+        $this->assertNotEmpty(
+            $matches,
+            "expected projection {$projectionName} to fire for query_id {$queryId}; saw: " . implode(', ', $projections)
+        );
+    }
+
+    private function assertNoProjectionUsed(string $queryId): void
+    {
+        $projections = $this->projectionsForQueryId($queryId);
+        $this->assertEmpty(
+            $projections,
+            "expected no projection to fire for query_id {$queryId}; saw: " . implode(', ', $projections)
+        );
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function projectionsForQueryId(string $queryId): array
+    {
+        $this->queryRaw($this->adapter, 'SYSTEM FLUSH LOGS');
+
+        $escaped = addslashes($queryId);
+        $sql = "SELECT projections FROM system.query_log "
+            . "WHERE query_id = '{$escaped}' AND type = 'QueryFinish' "
+            . "ORDER BY event_time DESC LIMIT 1 FORMAT JSON";
+
+        $raw = $this->queryRaw($this->adapter, $sql);
+        $json = json_decode($raw, true);
+        if (!is_array($json) || empty($json['data'])) {
+            return [];
+        }
+        $row = $json['data'][0];
+        $projections = $row['projections'] ?? [];
+        $out = [];
+        foreach (is_array($projections) ? $projections : [] as $p) {
+            if (is_string($p)) {
+                $out[] = $p;
+            }
+        }
+        return $out;
     }
 
     public function testIdFilterForcesRaw(): void
@@ -399,7 +297,6 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
         $route = $this->routeFor([
-            UsageQuery::groupBy('path'),
             Query::equal('metric', [$this->metric]),
             Query::equal('id', ['fixed-id']),
             Query::greaterThanEqual('time', $start),
@@ -415,43 +312,10 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
         $route = $this->routeFor([
-            UsageQuery::groupBy('path'),
             Query::equal('metric', [$this->metric]),
             Query::greaterThan('value', 10),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ]);
-
-        $this->assertSame('raw', $route);
-    }
-
-    public function testOrderByTimeOnGroupedQueryForcesRaw(): void
-    {
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
-
-        $route = $this->routeFor([
-            UsageQuery::groupBy('path'),
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-            Query::orderDesc('time'),
-        ]);
-
-        $this->assertSame('raw', $route);
-    }
-
-    public function testCursorAfterForcesRaw(): void
-    {
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
-
-        $route = $this->routeFor([
-            UsageQuery::groupBy('path'),
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-            Query::cursorAfter(['$id' => 'cursor-token']),
         ]);
 
         $this->assertSame('raw', $route);
