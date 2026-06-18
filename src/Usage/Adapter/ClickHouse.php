@@ -1078,6 +1078,19 @@ class ClickHouse extends SQL
     ];
 
     /**
+     * Per-dim rollup MV slate for gauges. argMax(value, time) is non-additive,
+     * so each entry creates an AggregatingMergeTree table + materialized view
+     * that emits argMaxState on write and the read path collapses with
+     * argMaxMerge.
+     *
+     * @var array<array{name: string, dims: array<int, string>}>
+     */
+    private const GAUGE_DIM_ROLLUPS = [
+        ['name' => 'by_service', 'dims' => ['service']],
+        ['name' => 'by_resource', 'dims' => ['resource']],
+    ];
+
+    /**
      * Setup ClickHouse table structure.
      *
      * Creates:
@@ -1123,6 +1136,12 @@ class ClickHouse extends SQL
             'gauge',
             $this->getGaugeIndexes()
         );
+
+        // --- Per-dim gauge rollup tables + MVs (AggregatingMergeTree) ---
+        foreach (self::GAUGE_DIM_ROLLUPS as $rollup) {
+            $this->createGaugeDimRollupTable($rollup['name'], $rollup['dims']);
+            $this->createGaugeDimRollupMaterializedView($rollup['name'], $rollup['dims']);
+        }
     }
 
     /**
@@ -1221,6 +1240,119 @@ class ClickHouse extends SQL
             AS SELECT {$selectSql}
             FROM {$escapedEvents}
             GROUP BY {$groupSql}
+        ";
+
+        $this->query($sql);
+    }
+
+    /**
+     * @return string e.g. utopia_usage_gauges_daily_by_service
+     */
+    private function getGaugeDimRollupTableName(string $name): string
+    {
+        return $this->getTableName() . '_gauges_daily_' . $name;
+    }
+
+    private function getGaugeDimRollupMvName(string $name): string
+    {
+        return $this->getGaugeDimRollupTableName($name) . '_mv';
+    }
+
+    /**
+     * @param array<int, string> $dims
+     */
+    private function createGaugeDimRollupTable(string $name, array $dims): void
+    {
+        $tableName = $this->getGaugeDimRollupTableName($name);
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+
+        $columns = [
+            'metric String',
+            'time DateTime64(3) CODEC(Delta(4), LZ4)',
+        ];
+
+        foreach ($dims as $dim) {
+            $columns[] = $this->escapeIdentifier($dim) . ' LowCardinality(Nullable(String))';
+        }
+
+        $columns[] = 'value AggregateFunction(argMax, Int64, DateTime64(3))';
+
+        if ($this->sharedTables) {
+            $columns[] = 'tenant Nullable(String)';
+        }
+
+        $orderByParts = $this->sharedTables ? ['tenant', 'metric', 'time'] : ['metric', 'time'];
+        foreach ($dims as $dim) {
+            $orderByParts[] = $dim;
+        }
+        $orderBy = '(' . implode(', ', array_map(fn ($c) => $this->escapeIdentifier($c), $orderByParts)) . ')';
+
+        $columnDefs = implode(",\n                ", $columns);
+
+        $sql = "
+            CREATE TABLE IF NOT EXISTS {$escapedTable} (
+                {$columnDefs}
+            )
+            ENGINE = AggregatingMergeTree()
+            ORDER BY {$orderBy}
+            PARTITION BY toYYYYMM(time)
+            SETTINGS index_granularity = 8192, allow_nullable_key = 1
+        ";
+
+        $this->query($sql);
+    }
+
+    /**
+     * @param array<int, string> $dims
+     */
+    private function createGaugeDimRollupMaterializedView(string $name, array $dims): void
+    {
+        $tableName = $this->getGaugeDimRollupTableName($name);
+        $mvName = $this->getGaugeDimRollupMvName($name);
+
+        $escapedGauges = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->getGaugesTableName());
+        $escapedTarget = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $escapedMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($mvName);
+
+        $innerSelect = ['metric', 'toStartOfDay(time) AS d', 'time AS t'];
+        foreach ($dims as $dim) {
+            $innerSelect[] = $this->escapeIdentifier($dim);
+        }
+        if ($this->sharedTables) {
+            $innerSelect[] = 'tenant';
+        }
+        $innerSelect[] = 'value';
+
+        $outerSelect = ['metric', 'd AS time'];
+        foreach ($dims as $dim) {
+            $outerSelect[] = $this->escapeIdentifier($dim);
+        }
+        if ($this->sharedTables) {
+            $outerSelect[] = 'tenant';
+        }
+        $outerSelect[] = 'argMaxState(value, t) AS value';
+
+        $groupBy = ['metric', 'd'];
+        foreach ($dims as $dim) {
+            $groupBy[] = $this->escapeIdentifier($dim);
+        }
+        if ($this->sharedTables) {
+            $groupBy[] = 'tenant';
+        }
+
+        $innerSelectSql = implode(', ', $innerSelect);
+        $outerSelectSql = implode(', ', $outerSelect);
+        $groupBySql = implode(', ', $groupBy);
+
+        $sql = "
+            CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedMv}
+            TO {$escapedTarget}
+            AS SELECT {$outerSelectSql}
+            FROM (
+                SELECT {$innerSelectSql}
+                FROM {$escapedGauges}
+            )
+            GROUP BY {$groupBySql}
         ";
 
         $this->query($sql);
@@ -4005,6 +4137,10 @@ class ClickHouse extends SQL
                 $this->purgeDaily($queries);
                 $this->purgeDimRollups($queries);
             }
+
+            if ($purgeType === Usage::TYPE_GAUGE) {
+                $this->purgeGaugeDimRollups($queries);
+            }
         }
 
         return true;
@@ -4053,6 +4189,49 @@ class ClickHouse extends SQL
 
             $table = $this->buildTableReference($this->getDimRollupTableName($rollup['name']));
             $parsed = $this->parseQueries($rollupQueries, Usage::TYPE_EVENT);
+            $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+            $whereClause = $whereData['clause'];
+
+            if (empty($whereClause)) {
+                $whereClause = ' WHERE 1=1';
+            }
+
+            $sql = "DELETE FROM {$table}{$whereClause}";
+            $this->query($sql, $whereData['params']);
+        }
+    }
+
+    /**
+     * Forward the purge to each gauge per-dim rollup table when every filter
+     * attribute fits the rollup's columns.
+     *
+     * @param array<Query> $queries
+     * @throws Exception
+     */
+    private function purgeGaugeDimRollups(array $queries): void
+    {
+        foreach (self::GAUGE_DIM_ROLLUPS as $rollup) {
+            $allowed = array_merge(['id', 'metric', 'value', 'time'], $rollup['dims']);
+            if ($this->sharedTables) {
+                $allowed[] = 'tenant';
+            }
+
+            $compatible = true;
+            $rollupQueries = [];
+            foreach ($queries as $query) {
+                $attr = $query->getAttribute();
+                if (!empty($attr) && !in_array($attr, $allowed, true)) {
+                    $compatible = false;
+                    break;
+                }
+                $rollupQueries[] = $query;
+            }
+            if (!$compatible) {
+                continue;
+            }
+
+            $table = $this->buildTableReference($this->getGaugeDimRollupTableName($rollup['name']));
+            $parsed = $this->parseQueries($rollupQueries, Usage::TYPE_GAUGE);
             $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
             $whereClause = $whereData['clause'];
 
