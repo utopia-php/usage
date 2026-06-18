@@ -3807,20 +3807,14 @@ class ClickHouse extends SQL
             $whereClause = $whereData['clause'];
             $params = $whereData['params'];
 
-            $escapedMetric = $this->escapeIdentifier('metric');
-            $metricFilter = "{$escapedMetric} IN ({$metricInClause})";
-            if (!empty($whereClause)) {
-                $whereClause .= ' AND ' . $metricFilter;
-            } else {
-                $whereClause = ' WHERE ' . $metricFilter;
-            }
+            $metricFilter = $this->escapeIdentifier('metric') . " IN ({$metricInClause})";
+            $whereClause = !empty($whereClause)
+                ? $whereClause . ' AND ' . $metricFilter
+                : ' WHERE ' . $metricFilter;
 
-            // Use appropriate aggregation
-            if ($queryType === Usage::TYPE_EVENT) {
-                $valueExpr = 'SUM(value) as agg_val';
-            } else {
-                $valueExpr = 'argMax(value, time) as agg_val';
-            }
+            $valueExpr = $queryType === Usage::TYPE_EVENT
+                ? 'SUM(value) as agg_val'
+                : 'argMax(value, time) as agg_val';
 
             $sql = "
                 SELECT
