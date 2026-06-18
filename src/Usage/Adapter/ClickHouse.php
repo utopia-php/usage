@@ -1163,7 +1163,7 @@ class ClickHouse extends SQL
         ];
 
         foreach ($dims as $dim) {
-            $columns[] = $this->escapeIdentifier($dim) . ' LowCardinality(Nullable(String))';
+            $columns[] = $this->escapeIdentifier($dim) . ' ' . $this->getDimRollupColumnType($dim);
         }
 
         if ($this->sharedTables) {
@@ -1189,6 +1189,20 @@ class ClickHouse extends SQL
         ";
 
         $this->query($sql);
+    }
+
+    /**
+     * Pick the storage layout for a dim rollup column. Bounded-cardinality
+     * dimensions stay LowCardinality; unbounded ones (paths interpolate IDs,
+     * so cardinality scales with row count) get plain Nullable(String) with
+     * ZSTD to avoid LowCardinality overhead past its useful range.
+     */
+    private function getDimRollupColumnType(string $dim): string
+    {
+        if ($dim === 'path') {
+            return 'Nullable(String) CODEC(ZSTD(3))';
+        }
+        return 'LowCardinality(Nullable(String))';
     }
 
     /**
@@ -1650,7 +1664,7 @@ class ClickHouse extends SQL
             'clientType', 'clientCode', 'clientName', 'clientVersion',
             'clientEngine', 'clientEngineVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
-            'path', 'hostname',
+            'hostname',
         ];
 
         if (in_array($id, $lowCardinality, true)) {
@@ -2360,19 +2374,33 @@ class ClickHouse extends SQL
         $this->setOperationContext('sum()');
 
         if ($type === Usage::TYPE_EVENT && $attribute === 'value') {
-            $plan = $this->extractRoutingPlan($queries);
-            $route = $this->selectAggregateSource($plan);
-            $this->recordRoute('sum', $plan, $route);
-
-            if ($route === 'daily') {
-                return $this->sumFromDaily($queries);
-            }
-            if ($route === 'hybrid') {
-                return $this->sumHybridDailyAndRaw($queries, $plan);
-            }
+            return $this->routedSum($queries, 'sum');
         }
 
         return $this->sumFromTable($queries, $attribute, $type);
+    }
+
+    /**
+     * Routed event flat-sum: pick the cheapest source (closed-day MV, hybrid
+     * MV+raw, or raw) for a `SELECT sum(value)` over the events table and
+     * record the decision in the route log under `$operation`.
+     *
+     * @param array<Query> $queries
+     */
+    private function routedSum(array $queries, string $operation): int
+    {
+        $plan = $this->extractRoutingPlan($queries);
+        $route = $this->selectAggregateSource($plan);
+        $this->recordRoute($operation, $plan, $route);
+
+        if ($route === 'daily') {
+            return $this->sumFromDaily($queries);
+        }
+        if ($route === 'hybrid') {
+            return $this->sumHybridDailyAndRaw($queries, $plan);
+        }
+
+        return $this->sumFromTable($queries, 'value', Usage::TYPE_EVENT);
     }
 
     /**
@@ -2482,10 +2510,15 @@ class ClickHouse extends SQL
         try {
             $endDt = new \DateTime($plan['end']);
             $boundaryDt = new \DateTime('today', new \DateTimeZone('UTC'));
+            $startDt = $plan['start'] !== null ? new \DateTime($plan['start']) : null;
         } catch (\Exception $e) {
             return 'raw';
         }
         $straddlesToday = $endDt >= $boundaryDt;
+
+        if ($startDt !== null && $startDt >= $boundaryDt) {
+            return 'raw';
+        }
 
         if ($type === Usage::TYPE_GAUGE) {
             if (empty($plan['dimensions'])) {
@@ -3224,7 +3257,6 @@ class ClickHouse extends SQL
 
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
 
-        // Validate query attributes against daily table schema (metric, value, time, tenant only)
         foreach ($queries as $query) {
             $attr = $query->getAttribute();
             if (!empty($attr)) {
@@ -3234,9 +3266,11 @@ class ClickHouse extends SQL
         $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
-        $groupByColumns = ['metric', 'time'];
-        if ($this->sharedTables) {
-            $groupByColumns[] = 'tenant';
+        $groupByColumns = $this->sharedTables ? ['tenant'] : [];
+        $groupByColumns[] = 'metric';
+        $groupByColumns[] = 'time';
+        foreach (['resource', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'] as $dim) {
+            $groupByColumns[] = $dim;
         }
 
         $selectExpressions = [];
@@ -3252,9 +3286,6 @@ class ClickHouse extends SQL
         $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
         $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
 
-        // SummingMergeTree collapses on background merges; reading raw rows
-        // sums them via explicit GROUP BY at query time. Net effect matches
-        // FROM … FINAL but keeps the read parallelisable.
         $sql = "SELECT {$selectColumns} FROM {$fromTable}{$whereData['clause']} GROUP BY {$groupBySql}{$orderClause}{$limitClause}{$offsetClause} FORMAT JSON";
 
         return $this->parseResults($this->query($sql, $whereData['params']), Usage::TYPE_EVENT);
@@ -3633,7 +3664,8 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Get total from events table (SUM).
+     * Get total from events table (SUM). Routes through routedSum() so
+     * closed-day windows hit the daily MV.
      *
      * @param string $metric
      * @param array<Query> $queries
@@ -3642,43 +3674,13 @@ class ClickHouse extends SQL
      */
     private function getTotalFromEvents(string $metric, array $queries): int
     {
-        $tableName = $this->getEventsTableName();
-        $fromTable = $this->buildTableReference($tableName);
-
-        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
-        $params = $parsed['params'];
-        $params['metric_name'] = $metric;
-
-        $whereData = $this->buildWhereClause($parsed['filters'], $params);
-        $whereClause = $whereData['clause'];
-        $params = $whereData['params'];
-
-        // Add metric filter
-        $metricFilter = $this->escapeIdentifier('metric') . ' = {metric_name:String}';
-        if (!empty($whereClause)) {
-            $whereClause .= ' AND ' . $metricFilter;
-        } else {
-            $whereClause = ' WHERE ' . $metricFilter;
-        }
-
-        $sql = "
-            SELECT SUM(value) as total
-            FROM {$fromTable}{$whereClause}
-            FORMAT JSON
-        ";
-
-        $result = $this->query($sql, $params);
-        $json = json_decode($result, true);
-
-        if (!is_array($json) || !isset($json['data'][0]['total'])) {
-            return 0;
-        }
-
-        return (int) $json['data'][0]['total'];
+        $queries[] = Query::equal('metric', [$metric]);
+        return $this->routedSum($queries, 'getTotal');
     }
 
     /**
-     * Get total from gauges table (argMax).
+     * Get total from gauges table (argMax). Records a route decision so
+     * ops dashboards see gauge getTotal calls alongside the rest.
      *
      * @param string $metric
      * @param array<Query> $queries
@@ -3687,32 +3689,24 @@ class ClickHouse extends SQL
      */
     private function getTotalFromGauges(string $metric, array $queries): int
     {
+        $queries[] = Query::equal('metric', [$metric]);
+
+        $plan = $this->extractRoutingPlan($queries);
+        $this->recordRoute('getTotal', $plan, 'raw');
+
         $tableName = $this->getGaugesTableName();
         $fromTable = $this->buildTableReference($tableName);
 
         $parsed = $this->parseQueries($queries, Usage::TYPE_GAUGE);
-        $params = $parsed['params'];
-        $params['metric_name'] = $metric;
-
-        $whereData = $this->buildWhereClause($parsed['filters'], $params);
-        $whereClause = $whereData['clause'];
-        $params = $whereData['params'];
-
-        // Add metric filter
-        $metricFilter = $this->escapeIdentifier('metric') . ' = {metric_name:String}';
-        if (!empty($whereClause)) {
-            $whereClause .= ' AND ' . $metricFilter;
-        } else {
-            $whereClause = ' WHERE ' . $metricFilter;
-        }
+        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
         $sql = "
             SELECT argMax(value, time) as total
-            FROM {$fromTable}{$whereClause}
+            FROM {$fromTable}{$whereData['clause']}
             FORMAT JSON
         ";
 
-        $result = $this->query($sql, $params);
+        $result = $this->query($sql, $whereData['params']);
         $json = json_decode($result, true);
 
         if (!is_array($json) || !isset($json['data'][0]['total'])) {

@@ -45,7 +45,7 @@ class ClickHouseSchemaTest extends TestCase
 
         $this->assertStringContainsString("`time` DateTime64(3, 'UTC') CODEC(Delta(4), LZ4)", $ddl);
         $this->assertStringContainsString('`id` String CODEC(ZSTD(3))', $ddl);
-        $this->assertStringContainsString('`path` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
+        $this->assertStringContainsString('`path` Nullable(String) CODEC(ZSTD(3))', $ddl);
         $this->assertStringContainsString('`hostname` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
         $this->assertStringContainsString('`resourceId` Nullable(String) CODEC(ZSTD(3))', $ddl);
         $this->assertStringContainsString('`teamId` Nullable(String) CODEC(ZSTD(3))', $ddl);
