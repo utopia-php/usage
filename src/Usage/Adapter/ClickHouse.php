@@ -1868,53 +1868,29 @@ class ClickHouse extends SQL
         $this->setOperationContext('find()');
 
         if ($type !== null) {
-            if ($type === Usage::TYPE_EVENT) {
-                $plan = $this->extractRoutingPlan($queries);
-                $route = $this->selectAggregateSource($plan, Usage::TYPE_EVENT);
-                $this->recordRoute('find', $plan, $route);
+            $isGauge = $type === Usage::TYPE_GAUGE;
+            $rollups = $isGauge ? self::GAUGE_DIM_ROLLUPS : self::DIM_ROLLUPS;
+            $dailyPrefix = $isGauge ? 'gauges_daily_' : 'daily_';
+            $hybridPrefix = $isGauge ? 'gauges_hybrid_' : 'hybrid_';
 
-                if (str_starts_with($route, 'daily_by_')) {
-                    $name = substr($route, strlen('daily_'));
-                    $rollup = $this->findRollupByName(self::DIM_ROLLUPS, $name);
-                    if ($rollup !== null) {
-                        $result = $this->findFromDailyByDim($rollup, $queries, Usage::TYPE_EVENT);
-                        $this->maybeDualRead($queries, $type, $route, $plan, $result);
-                        return $result;
-                    }
-                }
-                if (str_starts_with($route, 'hybrid_by_')) {
-                    $name = substr($route, strlen('hybrid_'));
-                    $rollup = $this->findRollupByName(self::DIM_ROLLUPS, $name);
-                    if ($rollup !== null) {
-                        $result = $this->findHybridFromDailyByDim($rollup, $queries, Usage::TYPE_EVENT);
-                        $this->maybeDualRead($queries, $type, $route, $plan, $result);
-                        return $result;
-                    }
+            $plan = $this->extractRoutingPlan($queries);
+            $route = $this->selectAggregateSource($plan, $type);
+            $this->recordRoute('find', $plan, $route);
+
+            if (str_starts_with($route, $dailyPrefix . 'by_')) {
+                $rollup = $this->findRollupByName($rollups, substr($route, strlen($dailyPrefix)));
+                if ($rollup !== null) {
+                    $result = $this->findFromDailyByDim($rollup, $queries, $type);
+                    $this->maybeDualRead($queries, $type, $route, $plan, $result);
+                    return $result;
                 }
             }
-
-            if ($type === Usage::TYPE_GAUGE) {
-                $plan = $this->extractRoutingPlan($queries);
-                $route = $this->selectAggregateSource($plan, Usage::TYPE_GAUGE);
-                $this->recordRoute('find', $plan, $route);
-
-                if (str_starts_with($route, 'gauges_daily_by_')) {
-                    $name = substr($route, strlen('gauges_daily_'));
-                    $rollup = $this->findRollupByName(self::GAUGE_DIM_ROLLUPS, $name);
-                    if ($rollup !== null) {
-                        $result = $this->findFromDailyByDim($rollup, $queries, Usage::TYPE_GAUGE);
-                        $this->maybeDualRead($queries, $type, $route, $plan, $result);
-                        return $result;
-                    }
-                }
-                if (str_starts_with($route, 'gauges_hybrid_by_')) {
-                    $name = substr($route, strlen('gauges_hybrid_'));
-                    $rollup = $this->findRollupByName(self::GAUGE_DIM_ROLLUPS, $name);
-                    if ($rollup !== null) {
-                        $result = $this->findHybridFromDailyByDim($rollup, $queries, Usage::TYPE_GAUGE);
-                        $this->maybeDualRead($queries, $type, $route, $plan, $result);
-                        return $result;
-                    }
+            if (str_starts_with($route, $hybridPrefix . 'by_')) {
+                $rollup = $this->findRollupByName($rollups, substr($route, strlen($hybridPrefix)));
+                if ($rollup !== null) {
+                    $result = $this->findHybridFromDailyByDim($rollup, $queries, $type);
+                    $this->maybeDualRead($queries, $type, $route, $plan, $result);
+                    return $result;
                 }
             }
 
