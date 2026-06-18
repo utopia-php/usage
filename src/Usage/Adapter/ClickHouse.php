@@ -1031,6 +1031,22 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Per-dim rollup MV slate. Each entry creates a SummingMergeTree table
+     * + materialized view that fans out off the raw events INSERT.
+     *
+     * The (method, status) cross-product is bounded (~180 keys) so the two
+     * dims share a single MV; everything else is single-dim.
+     *
+     * @var array<array{name: string, dims: array<int, string>}>
+     */
+    private const DIM_ROLLUPS = [
+        ['name' => 'by_path', 'dims' => ['path']],
+        ['name' => 'by_country', 'dims' => ['country']],
+        ['name' => 'by_service', 'dims' => ['service']],
+        ['name' => 'by_method_status', 'dims' => ['method', 'status']],
+    ];
+
+    /**
      * Setup ClickHouse table structure.
      *
      * Creates:
@@ -1038,6 +1054,7 @@ class ClickHouse extends SQL
      * 2. Events daily table (SummingMergeTree) for pre-aggregation
      * 3. Events daily materialized view
      * 4. Gauges table (MergeTree) with simple schema
+     * 5. Per-dim rollup tables + MVs (by_path, by_country, by_service, by_method_status)
      *
      * @throws Exception
      */
@@ -1063,12 +1080,119 @@ class ClickHouse extends SQL
         // --- Events daily materialized view ---
         $this->createDailyMaterializedView();
 
+        // --- Per-dim rollup tables + MVs ---
+        foreach (self::DIM_ROLLUPS as $rollup) {
+            $this->createDimRollupTable($rollup['name'], $rollup['dims']);
+            $this->createDimRollupMaterializedView($rollup['name'], $rollup['dims']);
+        }
+
         // --- Gauges table ---
         $this->createTable(
             $this->getGaugesTableName(),
             'gauge',
             $this->getGaugeIndexes()
         );
+    }
+
+    /**
+     * @return string e.g. utopia_usage_events_daily_by_path
+     */
+    private function getDimRollupTableName(string $name): string
+    {
+        return $this->getTableName() . '_events_daily_' . $name;
+    }
+
+    private function getDimRollupMvName(string $name): string
+    {
+        return $this->getDimRollupTableName($name) . '_mv';
+    }
+
+    /**
+     * @param array<int, string> $dims
+     */
+    private function createDimRollupTable(string $name, array $dims): void
+    {
+        $tableName = $this->getDimRollupTableName($name);
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+
+        $columns = [
+            'metric String',
+            'value Int64',
+            'time DateTime64(3) CODEC(Delta(4), LZ4)',
+        ];
+
+        foreach ($dims as $dim) {
+            $columns[] = $this->escapeIdentifier($dim) . ' LowCardinality(Nullable(String))';
+        }
+
+        if ($this->sharedTables) {
+            $columns[] = 'tenant Nullable(String)';
+        }
+
+        $orderByParts = $this->sharedTables ? ['tenant', 'metric', 'time'] : ['metric', 'time'];
+        foreach ($dims as $dim) {
+            $orderByParts[] = $dim;
+        }
+        $orderBy = '(' . implode(', ', array_map(fn ($c) => $this->escapeIdentifier($c), $orderByParts)) . ')';
+
+        $columnDefs = implode(",\n                ", $columns);
+
+        $sql = "
+            CREATE TABLE IF NOT EXISTS {$escapedTable} (
+                {$columnDefs}
+            )
+            ENGINE = SummingMergeTree(value)
+            ORDER BY {$orderBy}
+            PARTITION BY toYYYYMM(time)
+            SETTINGS index_granularity = 8192, allow_nullable_key = 1
+        ";
+
+        $this->query($sql);
+    }
+
+    /**
+     * @param array<int, string> $dims
+     */
+    private function createDimRollupMaterializedView(string $name, array $dims): void
+    {
+        $tableName = $this->getDimRollupTableName($name);
+        $mvName = $this->getDimRollupMvName($name);
+
+        $escapedEvents = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->getEventsTableName());
+        $escapedTarget = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $escapedMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($mvName);
+
+        $dimList = implode(', ', array_map(fn ($d) => $this->escapeIdentifier($d), $dims));
+
+        $selectColumns = ['metric', 'toStartOfDay(time) AS time'];
+        foreach ($dims as $dim) {
+            $selectColumns[] = $this->escapeIdentifier($dim);
+        }
+        if ($this->sharedTables) {
+            $selectColumns[] = 'tenant';
+        }
+        $selectColumns[] = 'sum(value) AS value';
+
+        $groupByColumns = ['metric', 'time'];
+        foreach ($dims as $dim) {
+            $groupByColumns[] = $this->escapeIdentifier($dim);
+        }
+        if ($this->sharedTables) {
+            $groupByColumns[] = 'tenant';
+        }
+
+        $selectSql = implode(', ', $selectColumns);
+        $groupSql = implode(', ', $groupByColumns);
+
+        $sql = "
+            CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedMv}
+            TO {$escapedTarget}
+            AS SELECT {$selectSql}
+            FROM {$escapedEvents}
+            GROUP BY {$groupSql}
+        ";
+
+        $this->query($sql);
     }
 
     /**

@@ -118,6 +118,160 @@ class EventsBench extends BenchmarkBase
             ], Usage::TYPE_EVENT);
         });
 
+        // Multi-dim MV scenarios — bench_*_mv variants exercise the same
+        // request shape with setUseDailyRollups on. Commit 5 wires the
+        // routing through; until then both variants scan raw and produce
+        // the same numbers.
+        $this->runBench('bench_events_topN_path_30d_mv', function (string $queryId) use ($start, $end): void {
+            $this->adapter->setUseDailyRollups(true);
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->find([
+                UsageQuery::groupBy('path'),
+                Query::equal('metric', [$this->metric]),
+                Query::greaterThanEqual('time', $start),
+                Query::lessThanEqual('time', $end),
+                Query::limit(500),
+            ], Usage::TYPE_EVENT);
+            $this->adapter->setUseDailyRollups(false);
+        });
+
+        $this->runBench('bench_events_topN_country_30d_mv', function (string $queryId) use ($start, $end): void {
+            $this->adapter->setUseDailyRollups(true);
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->find([
+                UsageQuery::groupBy('country'),
+                Query::equal('metric', [$this->metric]),
+                Query::greaterThanEqual('time', $start),
+                Query::lessThanEqual('time', $end),
+                Query::limit(200),
+            ], Usage::TYPE_EVENT);
+            $this->adapter->setUseDailyRollups(false);
+        });
+
+        $this->runBench('bench_events_topN_service_30d_mv', function (string $queryId) use ($start, $end): void {
+            $this->adapter->setUseDailyRollups(true);
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->find([
+                UsageQuery::groupBy('service'),
+                Query::equal('metric', [$this->metric]),
+                Query::greaterThanEqual('time', $start),
+                Query::lessThanEqual('time', $end),
+                Query::limit(200),
+            ], Usage::TYPE_EVENT);
+            $this->adapter->setUseDailyRollups(false);
+        });
+
+        $this->runBench('bench_events_topN_method_status_30d_mv', function (string $queryId) use ($start, $end): void {
+            $this->adapter->setUseDailyRollups(true);
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->find([
+                UsageQuery::groupBy('method'),
+                UsageQuery::groupBy('status'),
+                Query::equal('metric', [$this->metric]),
+                Query::greaterThanEqual('time', $start),
+                Query::lessThanEqual('time', $end),
+                Query::limit(200),
+            ], Usage::TYPE_EVENT);
+            $this->adapter->setUseDailyRollups(false);
+        });
+
+        $todayStart = (new \DateTime('today', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+        $todayEnd = (new \DateTime('+2 hour'))->format('Y-m-d H:i:s');
+        $this->runBench('bench_events_topN_path_today_partial', function (string $queryId) use ($todayStart, $todayEnd): void {
+            $this->adapter->setUseDailyRollups(true);
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->find([
+                UsageQuery::groupBy('path'),
+                Query::equal('metric', [$this->metric]),
+                Query::greaterThanEqual('time', $todayStart),
+                Query::lessThanEqual('time', $todayEnd),
+                Query::limit(500),
+            ], Usage::TYPE_EVENT);
+            $this->adapter->setUseDailyRollups(false);
+        });
+
+        // Must route to raw — filter on a column the path MV doesn't index.
+        $this->runBench('bench_events_topN_path_30d_filtered_resource', function (string $queryId) use ($start, $end): void {
+            $this->adapter->setUseDailyRollups(true);
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->find([
+                UsageQuery::groupBy('path'),
+                Query::equal('metric', [$this->metric]),
+                Query::equal('resource', ['function']),
+                Query::greaterThanEqual('time', $start),
+                Query::lessThanEqual('time', $end),
+                Query::limit(500),
+            ], Usage::TYPE_EVENT);
+            $this->adapter->setUseDailyRollups(false);
+        });
+
+        // Multi-dim breakdown — no single MV covers both path AND country.
+        $this->runBench('bench_events_topN_path_country', function (string $queryId) use ($start, $end): void {
+            $this->adapter->setUseDailyRollups(true);
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->find([
+                UsageQuery::groupBy('path'),
+                UsageQuery::groupBy('country'),
+                Query::equal('metric', [$this->metric]),
+                Query::greaterThanEqual('time', $start),
+                Query::lessThanEqual('time', $end),
+                Query::limit(500),
+            ], Usage::TYPE_EVENT);
+            $this->adapter->setUseDailyRollups(false);
+        });
+
+        // Write fan-out cost with all MVs attached. Compare against
+        // bench_insert_10k for the multiplier (must stay ≤ 1.3×).
+        $this->runBench('bench_insert_with_mvs', function (string $queryId): void {
+            $batch = [];
+            for ($i = 0; $i < 10000; $i++) {
+                $batch[] = [
+                    'metric' => 'bench.insert.with_mvs',
+                    'value' => $i,
+                    'tags' => [
+                        'path' => '/v1/mv/' . ($i % 100),
+                        'method' => 'POST',
+                        'status' => '201',
+                        'service' => 'storage',
+                        'country' => 'us',
+                    ],
+                ];
+            }
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->addBatch($batch, Usage::TYPE_EVENT);
+        }, 3);
+
+        // Catches buffered/async insert lag: write then read the same key.
+        $this->runBench('bench_mv_lag', function (string $queryId): void {
+            $this->usage->addBatch([
+                ['metric' => 'bench.mv.lag', 'value' => 1, 'tags' => ['path' => '/v1/mv-lag']],
+            ], Usage::TYPE_EVENT);
+            $this->adapter->setNextQueryId($queryId);
+            $this->usage->find([
+                UsageQuery::groupBy('path'),
+                Query::equal('metric', ['bench.mv.lag']),
+                Query::limit(10),
+            ], Usage::TYPE_EVENT);
+        }, 3);
+
+        // Storage footprint per busy project — reads system.parts.
+        $this->runBench('bench_mv_storage_per_busy_project', function (string $queryId): void {
+            $reflection = new \ReflectionClass($this->adapter);
+            $getDatabase = $reflection->getProperty('database');
+            $getDatabase->setAccessible(true);
+            $databaseValue = $getDatabase->getValue($this->adapter);
+            $database = is_string($databaseValue) ? $databaseValue : '';
+            $namespace = $this->namespace;
+            $this->adapter->setNextQueryId($queryId);
+            $this->runRawSql(
+                "SELECT sum(bytes_on_disk) AS total_bytes "
+                . "FROM system.parts "
+                . "WHERE database = '" . addslashes($database) . "' "
+                . "AND table LIKE '" . addslashes($namespace) . "_usage_events_daily_by_%' "
+                . "AND active = 1 FORMAT JSON"
+            );
+        }, 3);
+
         $this->assertNotEmpty($this->results, 'Benchmark scenarios must record results');
     }
 }
