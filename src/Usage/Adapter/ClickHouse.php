@@ -1141,11 +1141,6 @@ class ClickHouse extends SQL
         return $this->getTableName() . '_events_daily_' . $name;
     }
 
-    private function getDimRollupMvName(string $name): string
-    {
-        return $this->getDimRollupTableName($name) . '_mv';
-    }
-
     /**
      * @param array<int, string> $dims
      */
@@ -1209,7 +1204,7 @@ class ClickHouse extends SQL
     private function createDimRollupMaterializedView(string $name, array $dims): void
     {
         $tableName = $this->getDimRollupTableName($name);
-        $mvName = $this->getDimRollupMvName($name);
+        $mvName = $tableName . '_mv';
 
         $escapedEvents = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->getEventsTableName());
         $escapedTarget = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
@@ -1254,11 +1249,6 @@ class ClickHouse extends SQL
     private function getGaugeDimRollupTableName(string $name): string
     {
         return $this->getTableName() . '_gauges_daily_' . $name;
-    }
-
-    private function getGaugeDimRollupMvName(string $name): string
-    {
-        return $this->getGaugeDimRollupTableName($name) . '_mv';
     }
 
     /**
@@ -1311,7 +1301,7 @@ class ClickHouse extends SQL
     private function createGaugeDimRollupMaterializedView(string $name, array $dims): void
     {
         $tableName = $this->getGaugeDimRollupTableName($name);
-        $mvName = $this->getGaugeDimRollupMvName($name);
+        $mvName = $tableName . '_mv';
 
         $escapedGauges = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->getGaugesTableName());
         $escapedTarget = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
@@ -4612,15 +4602,8 @@ class ClickHouse extends SQL
      */
     private function purgeDimRollups(array $queries, string $type): void
     {
-        if ($type === Usage::TYPE_GAUGE) {
-            $rollups = self::GAUGE_DIM_ROLLUPS;
-            $baseAllowed = ['metric', 'time'];
-            $nameResolver = fn (string $name): string => $this->getGaugeDimRollupTableName($name);
-        } else {
-            $rollups = self::DIM_ROLLUPS;
-            $baseAllowed = ['metric', 'time'];
-            $nameResolver = fn (string $name): string => $this->getDimRollupTableName($name);
-        }
+        $rollups = $type === Usage::TYPE_GAUGE ? self::GAUGE_DIM_ROLLUPS : self::DIM_ROLLUPS;
+        $baseAllowed = ['metric', 'time'];
 
         $safeFallbackKeys = $baseAllowed;
         if ($this->sharedTables) {
@@ -4646,7 +4629,10 @@ class ClickHouse extends SQL
                 ? $this->translateTimeQueriesToDayBoundaries($queries)
                 : $this->buildStaleRollupPurgeQueries($queries, $safeFallbackKeys);
 
-            $table = $this->buildTableReference($nameResolver($rollup['name']));
+            $tableName = $type === Usage::TYPE_GAUGE
+                ? $this->getGaugeDimRollupTableName($rollup['name'])
+                : $this->getDimRollupTableName($rollup['name']);
+            $table = $this->buildTableReference($tableName);
             $parsed = $this->parseQueries($rollupQueries, $type);
             $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
             $whereClause = $whereData['clause'];
