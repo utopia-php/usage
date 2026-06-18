@@ -1896,7 +1896,7 @@ class ClickHouse extends SQL
 
                 if (str_starts_with($route, 'daily_by_')) {
                     $name = substr($route, strlen('daily_'));
-                    $rollup = $this->getRollupByName($name);
+                    $rollup = $this->findRollupByName(self::DIM_ROLLUPS, $name);
                     if ($rollup !== null) {
                         $result = $this->findFromDailyByDim($rollup, $queries, Usage::TYPE_EVENT);
                         $this->maybeDualRead($queries, $type, $route, $plan, $result);
@@ -1905,7 +1905,7 @@ class ClickHouse extends SQL
                 }
                 if (str_starts_with($route, 'hybrid_by_')) {
                     $name = substr($route, strlen('hybrid_'));
-                    $rollup = $this->getRollupByName($name);
+                    $rollup = $this->findRollupByName(self::DIM_ROLLUPS, $name);
                     if ($rollup !== null) {
                         $result = $this->findHybridFromDailyByDim($rollup, $queries, Usage::TYPE_EVENT);
                         $this->maybeDualRead($queries, $type, $route, $plan, $result);
@@ -1921,7 +1921,7 @@ class ClickHouse extends SQL
 
                 if (str_starts_with($route, 'gauges_daily_by_')) {
                     $name = substr($route, strlen('gauges_daily_'));
-                    $rollup = $this->getGaugeRollupByName($name);
+                    $rollup = $this->findRollupByName(self::GAUGE_DIM_ROLLUPS, $name);
                     if ($rollup !== null) {
                         $result = $this->findFromDailyByDim($rollup, $queries, Usage::TYPE_GAUGE);
                         $this->maybeDualRead($queries, $type, $route, $plan, $result);
@@ -1930,7 +1930,7 @@ class ClickHouse extends SQL
                 }
                 if (str_starts_with($route, 'gauges_hybrid_by_')) {
                     $name = substr($route, strlen('gauges_hybrid_'));
-                    $rollup = $this->getGaugeRollupByName($name);
+                    $rollup = $this->findRollupByName(self::GAUGE_DIM_ROLLUPS, $name);
                     if ($rollup !== null) {
                         $result = $this->findHybridFromDailyByDim($rollup, $queries, Usage::TYPE_GAUGE);
                         $this->maybeDualRead($queries, $type, $route, $plan, $result);
@@ -2543,7 +2543,7 @@ class ClickHouse extends SQL
                 return 'raw';
             }
 
-            $dimMatch = $this->matchGaugeDimRollup($plan['dimensions']);
+            $dimMatch = $this->matchRollupByDims(self::GAUGE_DIM_ROLLUPS, $plan['dimensions']);
             if ($dimMatch === null) {
                 return 'raw';
             }
@@ -2581,7 +2581,7 @@ class ClickHouse extends SQL
             return 'raw';
         }
 
-        $dimMatch = $this->matchDimRollup($plan['dimensions']);
+        $dimMatch = $this->matchRollupByDims(self::DIM_ROLLUPS, $plan['dimensions']);
         if ($dimMatch === null) {
             return 'raw';
         }
@@ -2604,18 +2604,19 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Find the events per-dim rollup whose dim set matches the request
-     * exactly (order-insensitive). Returns null when no MV covers this shape.
+     * Find the per-dim rollup whose dim set matches the request exactly
+     * (order-insensitive). Returns null when no MV covers this shape.
      *
+     * @param array<array{name: string, dims: array<int, string>}> $rollups
      * @param array<int, string> $dimensions
      * @return array{name: string, dims: array<int, string>}|null
      */
-    private function matchDimRollup(array $dimensions): ?array
+    private function matchRollupByDims(array $rollups, array $dimensions): ?array
     {
         $needle = $dimensions;
         sort($needle);
 
-        foreach (self::DIM_ROLLUPS as $rollup) {
+        foreach ($rollups as $rollup) {
             $candidate = $rollup['dims'];
             sort($candidate);
             if ($candidate === $needle) {
@@ -2626,33 +2627,12 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Find the gauge per-dim AMT rollup whose dim set matches the request
-     * exactly (order-insensitive). Returns null when no MV covers this shape.
-     *
-     * @param array<int, string> $dimensions
+     * @param array<array{name: string, dims: array<int, string>}> $rollups
      * @return array{name: string, dims: array<int, string>}|null
      */
-    private function matchGaugeDimRollup(array $dimensions): ?array
+    private function findRollupByName(array $rollups, string $name): ?array
     {
-        $needle = $dimensions;
-        sort($needle);
-
-        foreach (self::GAUGE_DIM_ROLLUPS as $rollup) {
-            $candidate = $rollup['dims'];
-            sort($candidate);
-            if ($candidate === $needle) {
-                return $rollup;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * @return array{name: string, dims: array<int, string>}|null
-     */
-    private function getGaugeRollupByName(string $name): ?array
-    {
-        foreach (self::GAUGE_DIM_ROLLUPS as $rollup) {
+        foreach ($rollups as $rollup) {
             if ($rollup['name'] === $name) {
                 return $rollup;
             }
@@ -2935,19 +2915,6 @@ class ClickHouse extends SQL
     private function sumFromDaily(array $queries): int
     {
         return $this->sumDaily($queries, 'value');
-    }
-
-    /**
-     * @return array{name: string, dims: array<int, string>}|null
-     */
-    private function getRollupByName(string $name): ?array
-    {
-        foreach (self::DIM_ROLLUPS as $rollup) {
-            if ($rollup['name'] === $name) {
-                return $rollup;
-            }
-        }
-        return null;
     }
 
     /**
