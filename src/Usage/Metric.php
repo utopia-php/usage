@@ -63,7 +63,7 @@ class Metric extends ArrayObject
     /**
      * Gauge-specific column names that are extracted from tags into dedicated columns.
      */
-    public const GAUGE_COLUMNS = ['teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
+    public const GAUGE_COLUMNS = ['service', 'resource', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
 
     /**
      * Construct a new metric object.
@@ -682,6 +682,8 @@ class Metric extends ArrayObject
                 'array' => false,
                 'filters' => ['datetime'],
             ],
+            $stringColumn('service', 256),
+            $stringColumn('resource', 256),
             $stringColumn('teamId', 255),
             $stringColumn('teamInternalId', 255),
             $stringColumn('resourceId', 255),
@@ -743,14 +745,18 @@ class Metric extends ArrayObject
      */
     public static function getGaugeIndexes(): array
     {
+        $indexed = ['service', 'resource', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'];
+
+        $setIndexed = ['service', 'resource'];
+
         return array_map(
             static fn (string $col): array => [
                 '$id' => 'index-' . $col,
                 'type' => 'key',
                 'attributes' => [$col],
-                'indexType' => 'bloom_filter',
+                'indexType' => in_array($col, $setIndexed, true) ? 'set(0)' : 'bloom_filter',
             ],
-            ['resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'],
+            $indexed,
         );
     }
 

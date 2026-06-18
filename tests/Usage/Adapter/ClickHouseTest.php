@@ -288,7 +288,7 @@ class ClickHouseTest extends TestCase
     }
 
     /**
-     * Gauge rows round-trip the four gauge dimension columns.
+     * Gauge rows round-trip all gauge dimension columns.
      */
     public function testGaugeColumnsRoundTrip(): void
     {
@@ -299,6 +299,8 @@ class ClickHouseTest extends TestCase
                 'metric' => 'gauge-cols-test',
                 'value' => 500,
                 'tags' => [
+                    'service' => 'storage',
+                    'resource' => 'file',
                     'teamId' => 'team_x',
                     'teamInternalId' => '7',
                     'resourceId' => 'r1',
@@ -313,6 +315,8 @@ class ClickHouseTest extends TestCase
 
         $this->assertCount(1, $results);
         $metric = $results[0];
+        $this->assertEquals('storage', $metric->getService());
+        $this->assertEquals('file', $metric->getResource());
         $this->assertEquals('team_x', $metric->getTeamId());
         $this->assertEquals('7', $metric->getTeamInternalId());
         $this->assertEquals('r1', $metric->getResourceId());

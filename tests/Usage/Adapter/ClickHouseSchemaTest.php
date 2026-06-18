@@ -81,6 +81,27 @@ class ClickHouseSchemaTest extends TestCase
         $this->assertStringContainsString('`teamInternalId` Nullable(String) CODEC(ZSTD(3))', $ddl);
     }
 
+    public function testGaugesTableCarriesServiceAndResource(): void
+    {
+        $ddl = $this->showCreate($this->resolveTableName('getGaugesTableName'));
+
+        $this->assertStringContainsString('`service` LowCardinality(Nullable(String))', $ddl);
+        $this->assertStringContainsString('`resource` LowCardinality(Nullable(String))', $ddl);
+        $this->assertStringContainsString('`time` DateTime64(3) CODEC(Delta(4), LZ4)', $ddl);
+        $this->assertStringContainsString('`resourceId` Nullable(String) CODEC(ZSTD(3))', $ddl);
+        $this->assertStringContainsString('`teamId` Nullable(String) CODEC(ZSTD(3))', $ddl);
+    }
+
+    public function testGaugesTableSwapsBloomForSetOnLowCardinality(): void
+    {
+        $ddl = $this->showCreate($this->resolveTableName('getGaugesTableName'));
+
+        $this->assertStringContainsString('`index-service` service TYPE set(0)', $ddl);
+        $this->assertStringContainsString('`index-resource` resource TYPE set(0)', $ddl);
+        $this->assertStringContainsString('`index-resourceId` resourceId TYPE bloom_filter', $ddl);
+        $this->assertStringContainsString('`index-teamId` teamId TYPE bloom_filter', $ddl);
+    }
+
     private function resolveTableName(string $accessor): string
     {
         $reflection = new ReflectionClass($this->adapter);
