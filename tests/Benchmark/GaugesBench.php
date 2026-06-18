@@ -71,5 +71,16 @@ class GaugesBench extends BenchmarkBase
         });
 
         $this->assertNotEmpty($this->results, 'Benchmark scenarios must record results');
+
+        $expected = [
+            'bench_gauges_latest_in_window' => 'raw',
+            'bench_gauges_topN_service_30d' => 'gauges_daily_by_service',
+            'bench_gauges_topN_resource_30d' => 'gauges_daily_by_resource',
+            'bench_gauges_topN_service_today_partial' => 'gauges_hybrid_by_service',
+        ];
+        foreach ($expected as $scenario => $route) {
+            $this->assertArrayHasKey($scenario, $this->routes, "missing routing log for {$scenario}");
+            $this->assertContains($route, $this->routes[$scenario], "{$scenario} expected to route to {$route}, got " . implode(',', $this->routes[$scenario]));
+        }
     }
 }

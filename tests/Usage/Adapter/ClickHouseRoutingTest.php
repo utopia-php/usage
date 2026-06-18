@@ -4,6 +4,7 @@ namespace Utopia\Tests\Adapter;
 
 use DateTime;
 use DateTimeZone;
+use Exception;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use Utopia\Query\Query;
@@ -202,6 +203,41 @@ class ClickHouseRoutingTest extends TestCase
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
         ], 'value', Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('raw', $log[0]['route_decision']);
+    }
+
+    public function testOpenEndedWindowForcesRaw(): void
+    {
+        $this->adapter->clearRouteLog();
+
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+
+        $this->usage->sum([
+            Query::equal('metric', ['routed.metric']),
+            Query::greaterThanEqual('time', $start),
+        ], 'value', Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('raw', $log[0]['route_decision']);
+    }
+
+    public function testMalformedTimeStringForcesRaw(): void
+    {
+        $this->adapter->clearRouteLog();
+
+        try {
+            $this->usage->find([
+                UsageQuery::groupBy('path'),
+                Query::equal('metric', ['routed.metric']),
+                Query::greaterThanEqual('time', 'not-a-date'),
+                Query::lessThanEqual('time', 'not-a-date-either'),
+            ], Usage::TYPE_EVENT);
+        } catch (Exception $e) {
+        }
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);

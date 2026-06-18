@@ -22,7 +22,7 @@ class EventsBench extends BenchmarkBase
     public function testBenchmarks(): void
     {
         $start = (new DateTime('-30 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('+1 day'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-1 day'))->format('Y-m-d H:i:s');
 
         $this->runBench('bench_events_sum_30d', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
@@ -202,5 +202,20 @@ class EventsBench extends BenchmarkBase
         }, 3);
 
         $this->assertNotEmpty($this->results, 'Benchmark scenarios must record results');
+
+        $expected = [
+            'bench_events_sum_30d' => 'daily',
+            'bench_events_topN_path_30d' => 'daily_by_path',
+            'bench_events_topN_country_30d' => 'daily_by_country',
+            'bench_events_topN_service_30d' => 'daily_by_service',
+            'bench_events_topN_method_status_30d' => 'daily_by_method_status',
+            'bench_events_topN_path_today_partial' => 'hybrid_by_path',
+            'bench_events_topN_path_30d_filtered_resource' => 'raw',
+            'bench_events_topN_path_country' => 'raw',
+        ];
+        foreach ($expected as $scenario => $route) {
+            $this->assertArrayHasKey($scenario, $this->routes, "missing routing log for {$scenario}");
+            $this->assertContains($route, $this->routes[$scenario], "{$scenario} expected to route to {$route}, got " . implode(',', $this->routes[$scenario]));
+        }
     }
 }

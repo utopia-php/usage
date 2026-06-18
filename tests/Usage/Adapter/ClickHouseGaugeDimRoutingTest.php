@@ -249,6 +249,28 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
         $this->adapter->setDualReadSampleRate(0.0);
     }
 
+    public function testGaugesDualReadSamplerDoesNotWarnOnAgreement(): void
+    {
+        $this->adapter->setDualReadSampleRate(1.0);
+        $this->adapter->clearRouteLog();
+
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+
+        $this->usage->find([
+            UsageQuery::groupBy('service'),
+            Query::equal('metric', [$this->metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_GAUGE);
+
+        $log = $this->adapter->getRouteLog();
+        $operations = array_column($log, 'operation');
+        $this->assertNotContains('dual_read_warning', $operations);
+
+        $this->adapter->setDualReadSampleRate(0.0);
+    }
+
     /**
      * @return array<string, int>
      */

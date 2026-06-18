@@ -324,6 +324,97 @@ class ClickHouseDimRoutingTest extends TestCase
         $this->adapter->setDualReadSampleRate(0.0);
     }
 
+    public function testDualReadSamplerLogsWarningOnDivergence(): void
+    {
+        $divergentMetric = 'dim.routing.divergent';
+        $this->seedHistoricalRow($divergentMetric, 10, '-5 days', [
+            'path' => '/v1/divergent',
+            'method' => 'GET',
+            'status' => '200',
+            'service' => 'storage',
+            'country' => 'us',
+        ]);
+
+        $this->insertRollupRow('by_path', $divergentMetric, 9999, '-5 days', ['path' => '/v1/divergent']);
+
+        $this->adapter->setDualReadSampleRate(1.0);
+        $this->adapter->clearRouteLog();
+
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+
+        $this->usage->find([
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', [$divergentMetric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $operations = array_column($log, 'operation');
+        $this->assertContains('dual_read_warning', $operations, 'sampler should log a dual_read_warning when totals diverge');
+
+        $this->adapter->setDualReadSampleRate(0.0);
+    }
+
+    public function testDualReadSamplerDoesNotWarnOnAgreement(): void
+    {
+        $this->adapter->setDualReadSampleRate(1.0);
+        $this->adapter->clearRouteLog();
+
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+
+        $this->usage->find([
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', [$this->metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $operations = array_column($log, 'operation');
+        $this->assertNotContains('dual_read_warning', $operations, 'sampler must not log when rollup and raw agree');
+
+        $this->adapter->setDualReadSampleRate(0.0);
+    }
+
+    /**
+     * @param array<string, string> $tags
+     */
+    private function insertRollupRow(string $rollupName, string $metric, int $value, string $modifier, array $tags): void
+    {
+        $reflection = new ReflectionClass($this->adapter);
+        $getTable = $reflection->getMethod('getDimRollupTableName');
+        $getTable->setAccessible(true);
+        $tableRaw = $getTable->invoke($this->adapter, $rollupName);
+        $table = is_string($tableRaw) ? $tableRaw : '';
+
+        $dbProp = $reflection->getProperty('database');
+        $dbProp->setAccessible(true);
+        $dbRaw = $dbProp->getValue($this->adapter);
+        $database = is_string($dbRaw) ? $dbRaw : '';
+
+        $time = (new DateTime($modifier, new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s.v');
+
+        $cols = ['metric', 'value', 'time', 'tenant'];
+        $vals = [
+            "'" . addslashes($metric) . "'",
+            (string) $value,
+            "'{$time}'",
+            "'1'",
+        ];
+        foreach ($tags as $tag => $tagVal) {
+            $cols[] = $tag;
+            $vals[] = "'" . addslashes($tagVal) . "'";
+        }
+
+        $sql = "INSERT INTO `{$database}`.`{$table}` (" . implode(', ', $cols) . ") VALUES (" . implode(', ', $vals) . ")";
+        $query = $reflection->getMethod('query');
+        $query->setAccessible(true);
+        $query->invoke($this->adapter, $sql, []);
+    }
+
     private function rawTotal(string $start, string $end): int
     {
         $reflection = new ReflectionClass($this->adapter);

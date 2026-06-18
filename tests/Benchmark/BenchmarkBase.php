@@ -29,6 +29,9 @@ abstract class BenchmarkBase extends TestCase
     /** @var array<string, array<int, array{wall_ms: float, rows_read: int, read_bytes: int, query_duration_ms: float}>> */
     protected array $results = [];
 
+    /** @var array<string, array<int, string>> Per-scenario routing decisions captured for assertion. */
+    protected array $routes = [];
+
     /** @var int Default number of synthetic rows; override via BENCH_ROWS env */
     protected int $defaultRows = 1_000_000;
 
@@ -179,6 +182,8 @@ abstract class BenchmarkBase extends TestCase
     {
         $iterations ??= $this->iterations;
 
+        $this->adapter->clearRouteLog();
+
         $warmupId = $this->generateQueryId($name, -1);
         $callable($warmupId);
 
@@ -195,6 +200,13 @@ abstract class BenchmarkBase extends TestCase
 
             $records[] = $chStats;
         }
+
+        $routes = [];
+        foreach ($this->adapter->getRouteLog() as $entry) {
+            $routes[] = $entry['route_decision'];
+        }
+        $this->routes[$name] = $routes;
+        $this->adapter->clearRouteLog();
 
         $this->results[$name] = $records;
     }
