@@ -2,9 +2,12 @@
 
 namespace Utopia\Usage\Adapter;
 
+use DateTime;
+use DateTimeZone;
 use Exception;
-use Utopia\Query\Query;
+use Throwable;
 use Utopia\Fetch\Client;
+use Utopia\Query\Query;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
@@ -1384,9 +1387,6 @@ class ClickHouse extends SQL
             $columns[] = 'tenant Nullable(String)';
         }
 
-        // Build indexes. `indexType` selects per-column between bloom_filter
-        // (high-cardinality strings) and set(0) (low-cardinality enums that
-        // are too dense for blooms to ever skip — see plausible-research.md).
         $indexDefs = [];
         foreach ($indexes as $index) {
             /** @var string $indexName */
@@ -1477,10 +1477,6 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    // NOTE: setup() uses CREATE IF NOT EXISTS for idempotency. If sharedTables
-    // is toggled between calls, the original MV definition is kept (DROP+CREATE
-    // would lose buffered data). This is acceptable for v1 since setup() is
-    // expected to run once per environment lifecycle.
     private function createDailyMaterializedView(): void
     {
         $eventsTable = $this->getEventsTableName();
@@ -1609,25 +1605,25 @@ class ClickHouse extends SQL
     /**
      * Format datetime for ClickHouse compatibility.
      *
-     * @param \DateTime|string|null $dateTime
+     * @param DateTime|string|null $dateTime
      * @return string
      * @throws Exception
      */
     private function formatDateTime($dateTime): string
     {
         if ($dateTime === null) {
-            return (new \DateTime())->format('Y-m-d H:i:s.v');
+            return (new DateTime())->format('Y-m-d H:i:s.v');
         }
 
-        if ($dateTime instanceof \DateTime) {
+        if ($dateTime instanceof DateTime) {
             return $dateTime->format('Y-m-d H:i:s.v');
         }
 
         if (is_string($dateTime)) {
             try {
-                $dt = new \DateTime($dateTime);
+                $dt = new DateTime($dateTime);
                 return $dt->format('Y-m-d H:i:s.v');
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 throw new Exception("Invalid datetime string: {$dateTime}");
             }
         }
@@ -1688,9 +1684,8 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Return the per-column ClickHouse CODEC clause (Plausible-style
-     * compression hygiene) for the events/gauges tables. Empty string when
-     * no codec is overridden for this column.
+     * Return the per-column ClickHouse CODEC clause for the events / gauges
+     * tables. Empty string when no codec is overridden for this column.
      */
     private function getColumnCodec(string $id): string
     {
@@ -2501,10 +2496,10 @@ class ClickHouse extends SQL
         }
 
         try {
-            $endDt = new \DateTime($plan['end']);
-            $boundaryDt = new \DateTime('today', new \DateTimeZone('UTC'));
-            $startDt = $plan['start'] !== null ? new \DateTime($plan['start']) : null;
-        } catch (\Exception $e) {
+            $endDt = new DateTime($plan['end']);
+            $boundaryDt = new DateTime('today', new DateTimeZone('UTC'));
+            $startDt = $plan['start'] !== null ? new DateTime($plan['start']) : null;
+        } catch (Exception $e) {
             return 'raw';
         }
         $straddlesToday = $endDt >= $boundaryDt;
@@ -2618,7 +2613,7 @@ class ClickHouse extends SQL
 
     private function stringifyTime(mixed $value): ?string
     {
-        if ($value instanceof \DateTime) {
+        if ($value instanceof DateTime) {
             return $value->format('Y-m-d H:i:s');
         }
         return is_string($value) ? $value : null;
@@ -2666,8 +2661,8 @@ class ClickHouse extends SQL
             return null;
         }
         try {
-            $dt = new \DateTime($value, new \DateTimeZone('UTC'));
-        } catch (\Exception $e) {
+            $dt = new DateTime($value, new DateTimeZone('UTC'));
+        } catch (Exception $e) {
             return null;
         }
         $dt->setTime(0, 0, 0);
@@ -2746,8 +2741,8 @@ class ClickHouse extends SQL
             return null;
         }
         try {
-            $dt = new \DateTime($floored, new \DateTimeZone('UTC'));
-        } catch (\Exception $e) {
+            $dt = new DateTime($floored, new DateTimeZone('UTC'));
+        } catch (Exception $e) {
             return null;
         }
         $dt->modify('+1 day');
@@ -2920,7 +2915,7 @@ class ClickHouse extends SQL
      */
     private function findHybridFromDailyByDim(array $rollup, array $queries, string $type): array
     {
-        $startOfToday = (new \DateTime('today', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
+        $startOfToday = (new DateTime('today', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
 
         if ($type === Usage::TYPE_GAUGE) {
             $dailyTable = $this->buildTableReference($this->getGaugeDimRollupTableName($rollup['name']));
@@ -3019,7 +3014,7 @@ class ClickHouse extends SQL
 
         try {
             $rawResult = $this->findFromTable($queries, $type);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             return;
         }
 
@@ -3071,7 +3066,7 @@ class ClickHouse extends SQL
      */
     private function sumHybridDailyAndRaw(array $queries, array $plan): int
     {
-        $startOfToday = (new \DateTime('today', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
+        $startOfToday = (new DateTime('today', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
 
         $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());
         $eventsTable = $this->buildTableReference($this->getEventsTableName());
@@ -3506,15 +3501,15 @@ class ClickHouse extends SQL
         // Build lookup of existing data points by formatted date
         $existing = [];
         foreach ($data as $point) {
-            $dt = new \DateTime($point['date']);
+            $dt = new DateTime($point['date']);
             $key = $dt->format($format);
             // If multiple points in the same bucket, sum them
             $existing[$key] = ($existing[$key] ?? 0) + $point['value'];
         }
 
         // Generate all time buckets in range
-        $start = new \DateTime($startDate);
-        $end = new \DateTime($endDate);
+        $start = new DateTime($startDate);
+        $end = new DateTime($endDate);
 
         $result = [];
         $current = clone $start;
@@ -3806,7 +3801,7 @@ class ClickHouse extends SQL
             if ($value === null) {
                 throw new Exception('DateTime parameter value cannot be null');
             }
-            /** @var \DateTime|string $value */
+            /** @var DateTime|string $value */
             return $this->formatDateTime($value);
         }
 
@@ -3904,7 +3899,7 @@ class ClickHouse extends SQL
             $direction = $entry['direction'];
 
             if (!array_key_exists($attr, $cursor)) {
-                throw new \Exception("Cursor is missing required attribute '{$attr}'");
+                throw new Exception("Cursor is missing required attribute '{$attr}'");
             }
 
             // Flip comparison direction for `before` so we paginate to the previous page.
@@ -4009,7 +4004,7 @@ class ClickHouse extends SQL
             // otherwise turn `Query::contains('attr', [])` into a full-table
             // match instead of an empty result.
             if (\in_array($method, self::VALUE_REQUIRED_METHODS, true) && empty($values)) {
-                throw new \Exception(\ucfirst($method) . ' queries require at least one value.');
+                throw new Exception(\ucfirst($method) . ' queries require at least one value.');
             }
 
             switch ($method) {
@@ -4197,7 +4192,7 @@ class ClickHouse extends SQL
                 case Query::TYPE_LIMIT:
                     $limitVal = is_array($values) && !empty($values) ? $values[0] : $values;
                     if (!\is_int($limitVal)) {
-                        throw new \Exception('Invalid limit value. Expected int');
+                        throw new Exception('Invalid limit value. Expected int');
                     }
                     $limit = $limitVal;
                     $params['limit'] = $limit;
@@ -4206,7 +4201,7 @@ class ClickHouse extends SQL
                 case Query::TYPE_OFFSET:
                     $offsetVal = is_array($values) && !empty($values) ? $values[0] : $values;
                     if (!\is_int($offsetVal)) {
-                        throw new \Exception('Invalid offset value. Expected int');
+                        throw new Exception('Invalid offset value. Expected int');
                     }
                     $offset = $offsetVal;
                     $params['offset'] = $offset;
@@ -4216,13 +4211,13 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute, $type);
                     $interval = $values[0] ?? '1h';
                     if (!is_string($interval)) {
-                        throw new \Exception(
+                        throw new Exception(
                             'Invalid groupByInterval interval: expected string, got ' . get_debug_type($interval) . '. Allowed: '
                             . implode(', ', array_keys(UsageQuery::VALID_INTERVALS))
                         );
                     }
                     if (!isset(UsageQuery::VALID_INTERVALS[$interval])) {
-                        throw new \Exception(
+                        throw new Exception(
                             "Invalid groupByInterval interval '{$interval}'. Allowed: "
                             . implode(', ', array_keys(UsageQuery::VALID_INTERVALS))
                         );

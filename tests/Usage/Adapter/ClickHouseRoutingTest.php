@@ -2,7 +2,10 @@
 
 namespace Utopia\Tests\Adapter;
 
+use DateTime;
+use DateTimeZone;
 use PHPUnit\Framework\TestCase;
+use ReflectionClass;
 use Utopia\Query\Query;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 use Utopia\Usage\Usage;
@@ -35,14 +38,8 @@ class ClickHouseRoutingTest extends TestCase
         $this->usage->setup();
         $this->usage->purge();
 
-        // Two raw rows landed today; the daily MV picks them up after the
-        // next-day flush, so the closed-day routing tests insert rows
-        // dated 5 days ago directly into both raw + daily to mimic that
-        // post-flush state.
         $this->seedHistoricalRow('routed.metric', 100, '-5 days', ['path' => '/v1/a']);
         $this->seedHistoricalRow('routed.metric', 200, '-3 days', ['path' => '/v1/b']);
-        // One row landing in today's partial window so hybrid tests have
-        // something to sum on the raw side.
         $this->assertTrue($this->usage->addBatch([
             ['metric' => 'routed.metric', 'value' => 50, 'tags' => ['path' => '/v1/c']],
         ], Usage::TYPE_EVENT));
@@ -58,7 +55,7 @@ class ClickHouseRoutingTest extends TestCase
      */
     private function seedHistoricalRow(string $metric, int $value, string $modifier, array $tags = []): void
     {
-        $reflection = new \ReflectionClass($this->adapter);
+        $reflection = new ReflectionClass($this->adapter);
         $getEvents = $reflection->getMethod('getEventsTableName');
         $getEvents->setAccessible(true);
         $events = $getEvents->invoke($this->adapter);
@@ -68,14 +65,12 @@ class ClickHouseRoutingTest extends TestCase
         $databaseValue = $getDb->getValue($this->adapter);
         $database = is_string($databaseValue) ? $databaseValue : '';
 
-        $time = (new \DateTime($modifier, new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
+        $time = (new DateTime($modifier, new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
 
         $id = bin2hex(random_bytes(16));
         $rawPath = $tags['path'] ?? null;
         $path = is_string($rawPath) ? $rawPath : null;
 
-        // Insert into the raw events table; the daily MV trigger fans the
-        // write into the daily SummingMergeTree automatically.
         $rawSql = sprintf(
             "INSERT INTO `%s`.`%s` (id, metric, value, time, path, tenant) VALUES ('%s', '%s', %d, '%s', %s, '1')",
             $database,
@@ -96,8 +91,8 @@ class ClickHouseRoutingTest extends TestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
         $rawSum = $this->sumRaw('routed.metric', $start, $end);
 
@@ -117,8 +112,8 @@ class ClickHouseRoutingTest extends TestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('+1 hour'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('+1 hour'))->format('Y-m-d H:i:s');
 
         $rawSum = $this->sumRaw('routed.metric', $start, $end);
 
@@ -138,8 +133,8 @@ class ClickHouseRoutingTest extends TestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
         $this->usage->sum([
             Query::equal('metric', ['routed.metric']),
@@ -157,8 +152,8 @@ class ClickHouseRoutingTest extends TestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
         $this->usage->sum([
             Query::equal('metric', ['routed.metric']),
@@ -179,8 +174,8 @@ class ClickHouseRoutingTest extends TestCase
 
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-2 days 14:00:00', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('+1 hour', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-2 days 14:00:00', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+        $end = (new DateTime('+1 hour', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
 
         $sum = $this->usage->sum([
             Query::equal('metric', [$metric]),
@@ -198,8 +193,8 @@ class ClickHouseRoutingTest extends TestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
         $this->usage->sum([
             UsageQuery::groupByInterval('time', '1h'),
@@ -215,7 +210,7 @@ class ClickHouseRoutingTest extends TestCase
 
     private function sumRaw(string $metric, string $start, string $end): int
     {
-        $reflection = new \ReflectionClass($this->adapter);
+        $reflection = new ReflectionClass($this->adapter);
         $sumFromTable = $reflection->getMethod('sumFromTable');
         $sumFromTable->setAccessible(true);
         $result = $sumFromTable->invoke($this->adapter, [

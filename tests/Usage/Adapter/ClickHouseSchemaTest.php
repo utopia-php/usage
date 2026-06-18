@@ -8,11 +8,9 @@ use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 use Utopia\Usage\Usage;
 
 /**
- * Verifies the Plausible-style schema hygiene applied in P2:
- *  - explicit CODEC(Delta(4), LZ4) on time
- *  - CODEC(ZSTD(3)) on high-cardinality string columns
- *  - LowCardinality on path / hostname / version+model columns
- *  - set(0) skipping index on low-cardinality enums
+ * Asserts the events / gauges / daily / dim-rollup tables emerge from
+ * setup() with the expected codecs, LowCardinality assignments, indexes
+ * and UTC pinning.
  */
 class ClickHouseSchemaTest extends TestCase
 {
@@ -57,7 +55,6 @@ class ClickHouseSchemaTest extends TestCase
     {
         $ddl = $this->showCreate($this->resolveTableName('getEventsTableName'));
 
-        // status / method / country / service / clientType / osName must be set(0)
         $this->assertStringContainsString('`index-status` status TYPE set(0)', $ddl);
         $this->assertStringContainsString('`index-method` method TYPE set(0)', $ddl);
         $this->assertStringContainsString('`index-country` country TYPE set(0)', $ddl);
@@ -65,7 +62,6 @@ class ClickHouseSchemaTest extends TestCase
         $this->assertStringContainsString('`index-clientType` clientType TYPE set(0)', $ddl);
         $this->assertStringContainsString('`index-osName` osName TYPE set(0)', $ddl);
 
-        // path / hostname / resourceId / teamId stay bloom_filter
         $this->assertStringContainsString('`index-path` path TYPE bloom_filter', $ddl);
         $this->assertStringContainsString('`index-hostname` hostname TYPE bloom_filter', $ddl);
         $this->assertStringContainsString('`index-resourceId` resourceId TYPE bloom_filter', $ddl);

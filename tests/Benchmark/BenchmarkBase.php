@@ -3,6 +3,9 @@
 namespace Utopia\Tests\Benchmark;
 
 use PHPUnit\Framework\TestCase;
+use ReflectionClass;
+use RuntimeException;
+use Throwable;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 use Utopia\Usage\Usage;
 
@@ -48,8 +51,6 @@ abstract class BenchmarkBase extends TestCase
 
         $this->adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
         $this->adapter->setNamespace($this->namespace);
-        // Benchmarks mirror the cloud workload (sharedTables=true) so the
-        // synthetic seed and the routing paths exercise the same schema.
         $this->adapter->setSharedTables(true);
         $this->adapter->setTenant($this->tenant);
 
@@ -82,7 +83,7 @@ abstract class BenchmarkBase extends TestCase
     {
         $metric ??= $this->metric;
 
-        $reflection = new \ReflectionClass($this->adapter);
+        $reflection = new ReflectionClass($this->adapter);
 
         $getEvents = $reflection->getMethod('getEventsTableName');
         $getEvents->setAccessible(true);
@@ -98,7 +99,7 @@ abstract class BenchmarkBase extends TestCase
 
         $template = file_get_contents(__DIR__ . '/fixtures/seed.sql');
         if (!is_string($template)) {
-            throw new \RuntimeException('Unable to read seed.sql fixture');
+            throw new RuntimeException('Unable to read seed.sql fixture');
         }
 
         $sql = strtr($template, [
@@ -116,7 +117,7 @@ abstract class BenchmarkBase extends TestCase
      */
     protected function seedGaugeRows(int $rows, string $metric = 'storage'): void
     {
-        $reflection = new \ReflectionClass($this->adapter);
+        $reflection = new ReflectionClass($this->adapter);
 
         $getGauges = $reflection->getMethod('getGaugesTableName');
         $getGauges->setAccessible(true);
@@ -150,7 +151,7 @@ abstract class BenchmarkBase extends TestCase
      */
     protected function runRawSql(string $sql): void
     {
-        $reflection = new \ReflectionClass($this->adapter);
+        $reflection = new ReflectionClass($this->adapter);
         $query = $reflection->getMethod('query');
         $query->setAccessible(true);
         $query->invoke($this->adapter, $sql, []);
@@ -178,7 +179,6 @@ abstract class BenchmarkBase extends TestCase
     {
         $iterations ??= $this->iterations;
 
-        // Warmup pass — discarded to dodge cold-start variance.
         $warmupId = $this->generateQueryId($name, -1);
         $callable($warmupId);
 
@@ -215,11 +215,9 @@ abstract class BenchmarkBase extends TestCase
             'query_duration_ms' => 0.0,
         ];
 
-        // system.query_log is buffered — flush before we read it.
         try {
             $this->runRawSql('SYSTEM FLUSH LOGS');
-        } catch (\Throwable $e) {
-            // Some environments deny SYSTEM access; fall through with zeros.
+        } catch (Throwable $e) {
             return $stats;
         }
 
@@ -231,7 +229,7 @@ abstract class BenchmarkBase extends TestCase
             . "FORMAT JSON";
 
         try {
-            $reflection = new \ReflectionClass($this->adapter);
+            $reflection = new ReflectionClass($this->adapter);
             $query = $reflection->getMethod('query');
             $query->setAccessible(true);
             $raw = $query->invoke($this->adapter, $sql, []);
@@ -243,8 +241,7 @@ abstract class BenchmarkBase extends TestCase
                 $stats['read_bytes'] = (int) ($row['read_bytes'] ?? 0);
                 $stats['query_duration_ms'] = (float) ($row['query_duration_ms'] ?? 0);
             }
-        } catch (\Throwable $e) {
-            // Best-effort.
+        } catch (Throwable $e) {
         }
 
         return $stats;
@@ -301,7 +298,7 @@ abstract class BenchmarkBase extends TestCase
             @mkdir($outDir, 0775, true);
         }
 
-        $short = (new \ReflectionClass($this))->getShortName();
+        $short = (new ReflectionClass($this))->getShortName();
         $file = $outDir . '/' . $short . '.json';
         file_put_contents($file, (string) json_encode([
             'class' => static::class,

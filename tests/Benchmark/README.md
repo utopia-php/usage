@@ -53,24 +53,35 @@ each call via `ClickHouse::setNextQueryId()`.
 
 ## Scenarios
 
+Events (`EventsBench`):
+
 | Name | Shape | Expected budget @ 1M |
 |---|---|---|
 | `bench_events_sum_30d` | flat sum, no interval, no dims | p50 < 50ms |
 | `bench_events_timeseries_30d_1h` | `interval=1h`, no dims | p50 < 200ms |
-| `bench_events_topN_path_30d` | `groupBy('path')`, no interval | p50 < 300ms |
-| `bench_events_topN_method_status_30d` | `groupBy(method, status)` | p50 < 250ms |
-| `bench_events_topN_country_30d` | `groupBy('country')` | p50 < 250ms |
-| `bench_events_topN_service_30d` | `groupBy('service')` | p50 < 250ms |
 | `bench_events_count_max_5k` | capped count | p50 < 10ms |
 | `bench_insert_10k` | 10k-row batch insert | p50 < 2000ms |
-| `bench_gauges_latest_in_window` | gauge latest | p50 < 50ms |
+| `bench_events_topN_path_30d` | closed-day `groupBy('path')` MV | p50 < 100ms |
+| `bench_events_topN_country_30d` | closed-day `groupBy('country')` MV | p50 < 100ms |
+| `bench_events_topN_service_30d` | closed-day `groupBy('service')` MV | p50 < 100ms |
+| `bench_events_topN_method_status_30d` | closed-day `groupBy(method, status)` MV | p50 < 100ms |
+| `bench_events_topN_path_today_partial` | today-only path hybrid | p50 < 80ms |
+| `bench_events_topN_path_30d_filtered_resource` | dim+non-MV filter → raw | p50 < 400ms |
+| `bench_events_topN_path_country` | multi-dim not in any single MV → raw | p50 < 500ms |
+| `bench_insert_with_mvs` | 10k-row insert with MV fan-out | ≤ 1.3x `bench_insert_10k` |
+| `bench_mv_lag` | write-then-read same key | p50 < 200ms |
+| `bench_mv_storage_per_busy_project` | system.parts footprint | p50 < 50ms |
 
-Multi-dim MV scenarios (`*_mv`, `*_today_partial`, `*_filtered_resource`,
-etc.) ship with commit 4 once the MVs land; their targets are documented in
-`/tmp/multi-dim-mv-strategy.md` §7.
+Gauges (`GaugesBench`):
 
-Budgets are guidance, not gates — CI promotion to fail-on-regression happens
-after one stable release cycle (per `usage-final-plan.md` §P0).
+| Name | Shape | Expected budget @ 10k |
+|---|---|---|
+| `bench_gauges_latest_in_window` | gauge `getTotal` argMax | p50 < 50ms |
+| `bench_gauges_topN_service_30d` | closed-day gauge by_service AMT | p50 < 100ms |
+| `bench_gauges_topN_resource_30d` | closed-day gauge by_resource AMT | p50 < 100ms |
+| `bench_gauges_topN_service_today_partial` | gauge by_service hybrid | p50 < 80ms |
+
+Budgets are guidance, not gates.
 
 ## Notes
 

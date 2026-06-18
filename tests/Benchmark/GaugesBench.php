@@ -2,6 +2,7 @@
 
 namespace Utopia\Tests\Benchmark;
 
+use DateTime;
 use Utopia\Query\Query;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
@@ -15,15 +16,14 @@ class GaugesBench extends BenchmarkBase
         parent::setUp();
 
         $this->purgeAll();
-        // Gauges are sparser than events — scale by 1/100 vs the default rows.
         $this->seedGaugeRows((int) max(1000, $this->defaultRows / 100), $this->metric);
     }
 
     public function testBenchmarks(): void
     {
-        $start30d = (new \DateTime('-30 days'))->format('Y-m-d H:i:s');
-        $endClosed = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
-        $endPartial = (new \DateTime('+1 day'))->format('Y-m-d H:i:s');
+        $start30d = (new DateTime('-30 days'))->format('Y-m-d H:i:s');
+        $endClosed = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $endPartial = (new DateTime('+1 day'))->format('Y-m-d H:i:s');
 
         $this->runBench('bench_gauges_latest_in_window', function (string $queryId) use ($start30d, $endPartial): void {
             $this->adapter->setNextQueryId($queryId);

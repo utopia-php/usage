@@ -2,6 +2,9 @@
 
 namespace Utopia\Tests\Benchmark;
 
+use DateTime;
+use DateTimeZone;
+use ReflectionClass;
 use Utopia\Query\Query;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
@@ -18,8 +21,8 @@ class EventsBench extends BenchmarkBase
 
     public function testBenchmarks(): void
     {
-        $start = (new \DateTime('-30 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('+1 day'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-30 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('+1 day'))->format('Y-m-d H:i:s');
 
         $this->runBench('bench_events_sum_30d', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
@@ -64,8 +67,6 @@ class EventsBench extends BenchmarkBase
                     ],
                 ];
             }
-            // No query_id propagation for INSERT — kept for parity with other
-            // scenarios; ClickHouse ignores the param on INSERT regardless.
             $this->adapter->setNextQueryId($queryId);
             $this->usage->addBatch($batch, Usage::TYPE_EVENT);
         }, 3);
@@ -115,8 +116,8 @@ class EventsBench extends BenchmarkBase
             ], Usage::TYPE_EVENT);
         });
 
-        $todayStart = (new \DateTime('today', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
-        $todayEnd = (new \DateTime('+2 hour'))->format('Y-m-d H:i:s');
+        $todayStart = (new DateTime('today', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+        $todayEnd = (new DateTime('+2 hour'))->format('Y-m-d H:i:s');
         $this->runBench('bench_events_topN_path_today_partial', function (string $queryId) use ($todayStart, $todayEnd): void {
             $this->adapter->setNextQueryId($queryId);
             $this->usage->find([
@@ -152,8 +153,6 @@ class EventsBench extends BenchmarkBase
             ], Usage::TYPE_EVENT);
         });
 
-        // Write fan-out cost with all MVs attached. Compare against
-        // bench_insert_10k for the multiplier (must stay ≤ 1.3×).
         $this->runBench('bench_insert_with_mvs', function (string $queryId): void {
             $batch = [];
             for ($i = 0; $i < 10000; $i++) {
@@ -173,7 +172,6 @@ class EventsBench extends BenchmarkBase
             $this->usage->addBatch($batch, Usage::TYPE_EVENT);
         }, 3);
 
-        // Catches buffered/async insert lag: write then read the same key.
         $this->runBench('bench_mv_lag', function (string $queryId): void {
             $this->usage->addBatch([
                 ['metric' => 'bench.mv.lag', 'value' => 1, 'tags' => ['path' => '/v1/mv-lag']],
@@ -186,9 +184,8 @@ class EventsBench extends BenchmarkBase
             ], Usage::TYPE_EVENT);
         }, 3);
 
-        // Storage footprint per busy project — reads system.parts.
         $this->runBench('bench_mv_storage_per_busy_project', function (string $queryId): void {
-            $reflection = new \ReflectionClass($this->adapter);
+            $reflection = new ReflectionClass($this->adapter);
             $getDatabase = $reflection->getProperty('database');
             $getDatabase->setAccessible(true);
             $databaseValue = $getDatabase->getValue($this->adapter);

@@ -2,6 +2,8 @@
 
 namespace Utopia\Tests\Adapter;
 
+use DateTime;
+use DateTimeZone;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use Utopia\Query\Query;
@@ -44,14 +46,10 @@ class ClickHouseDimRoutingTest extends TestCase
         $this->usage->setup();
         $this->usage->purge();
 
-        // Historical rows: the MVs only catch new INSERTs after they're
-        // created, so the seed below INSERTs after setup() so each row
-        // fans out to all rollups.
         $this->seedHistoricalRow($this->metric, 10, '-5 days', ['path' => '/v1/a', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']);
         $this->seedHistoricalRow($this->metric, 20, '-4 days', ['path' => '/v1/a', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']);
         $this->seedHistoricalRow($this->metric, 30, '-3 days', ['path' => '/v1/b', 'method' => 'POST', 'status' => '201', 'service' => 'databases', 'country' => 'de']);
         $this->seedHistoricalRow($this->metric, 40, '-3 days', ['path' => '/v1/c', 'method' => 'POST', 'status' => '500', 'service' => 'functions', 'country' => 'fr']);
-        // One row in today's partial for hybrid tests
         $this->usage->addBatch([
             ['metric' => $this->metric, 'value' => 5, 'tags' => ['path' => '/v1/a', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']],
         ], Usage::TYPE_EVENT);
@@ -77,7 +75,7 @@ class ClickHouseDimRoutingTest extends TestCase
         $dbRaw = $dbProp->getValue($this->adapter);
         $database = is_string($dbRaw) ? $dbRaw : '';
 
-        $time = (new \DateTime($modifier, new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
+        $time = (new DateTime($modifier, new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
         $id = bin2hex(random_bytes(16));
 
         $cols = ['id', 'metric', 'value', 'time', 'tenant'];
@@ -105,8 +103,8 @@ class ClickHouseDimRoutingTest extends TestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
         $rolled = $this->usage->find([
             UsageQuery::groupBy('path'),
@@ -127,8 +125,8 @@ class ClickHouseDimRoutingTest extends TestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
         $rolled = $this->usage->find([
             UsageQuery::groupBy('country'),
@@ -149,8 +147,8 @@ class ClickHouseDimRoutingTest extends TestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
         $rolled = $this->usage->find([
             UsageQuery::groupBy('service'),
@@ -171,8 +169,8 @@ class ClickHouseDimRoutingTest extends TestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
         $rolled = $this->usage->find([
             UsageQuery::groupBy('method'),
@@ -198,8 +196,8 @@ class ClickHouseDimRoutingTest extends TestCase
             UsageQuery::groupBy('path'),
             UsageQuery::groupBy('country'),
             Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', (new \DateTime('-7 days'))->format('Y-m-d H:i:s')),
-            Query::lessThanEqual('time', (new \DateTime('-2 days'))->format('Y-m-d H:i:s')),
+            Query::greaterThanEqual('time', (new DateTime('-7 days'))->format('Y-m-d H:i:s')),
+            Query::lessThanEqual('time', (new DateTime('-2 days'))->format('Y-m-d H:i:s')),
         ], Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
@@ -215,8 +213,8 @@ class ClickHouseDimRoutingTest extends TestCase
             UsageQuery::groupBy('path'),
             Query::equal('metric', [$this->metric]),
             Query::equal('resource', ['function']),
-            Query::greaterThanEqual('time', (new \DateTime('-7 days'))->format('Y-m-d H:i:s')),
-            Query::lessThanEqual('time', (new \DateTime('-2 days'))->format('Y-m-d H:i:s')),
+            Query::greaterThanEqual('time', (new DateTime('-7 days'))->format('Y-m-d H:i:s')),
+            Query::lessThanEqual('time', (new DateTime('-2 days'))->format('Y-m-d H:i:s')),
         ], Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
@@ -232,8 +230,8 @@ class ClickHouseDimRoutingTest extends TestCase
             UsageQuery::groupByInterval('time', '1h'),
             UsageQuery::groupBy('path'),
             Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', (new \DateTime('-7 days'))->format('Y-m-d H:i:s')),
-            Query::lessThanEqual('time', (new \DateTime('-2 days'))->format('Y-m-d H:i:s')),
+            Query::greaterThanEqual('time', (new DateTime('-7 days'))->format('Y-m-d H:i:s')),
+            Query::lessThanEqual('time', (new DateTime('-2 days'))->format('Y-m-d H:i:s')),
         ], Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
@@ -245,8 +243,8 @@ class ClickHouseDimRoutingTest extends TestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('+1 hour'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('+1 hour'))->format('Y-m-d H:i:s');
 
         $rolled = $this->usage->find([
             UsageQuery::groupBy('path'),
@@ -277,8 +275,8 @@ class ClickHouseDimRoutingTest extends TestCase
 
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-2 days 14:00:00', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('+1 hour', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-2 days 14:00:00', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+        $end = (new DateTime('+1 hour', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
 
         $rolled = $this->usage->find([
             UsageQuery::groupBy('path'),
@@ -309,8 +307,8 @@ class ClickHouseDimRoutingTest extends TestCase
         $this->adapter->setDualReadSampleRate(1.0);
         $this->adapter->clearRouteLog();
 
-        $start = (new \DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new \DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
         $this->usage->find([
             UsageQuery::groupBy('path'),
@@ -319,9 +317,6 @@ class ClickHouseDimRoutingTest extends TestCase
             Query::lessThanEqual('time', $end),
         ], Usage::TYPE_EVENT);
 
-        // At rate=1.0 the sampler always runs but only logs on >1% delta.
-        // The MV is correct, so we shouldn't expect a warning — but we do
-        // expect at least the routing entry.
         $log = $this->adapter->getRouteLog();
         $this->assertNotEmpty($log);
         $this->assertSame('daily_by_path', $log[0]['route_decision']);
