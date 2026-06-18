@@ -105,7 +105,7 @@ class ClickHouseRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('daily', $log[0]['route_decision']);
+        $this->assertSame('daily', $log[0]['route']);
         $this->assertSame($rawSum, $sum, 'daily MV must re-aggregate to the same total as raw');
     }
 
@@ -126,7 +126,7 @@ class ClickHouseRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('hybrid', $log[0]['route_decision']);
+        $this->assertSame('hybrid', $log[0]['route']);
         $this->assertSame($rawSum, $sum, 'hybrid must equal full raw scan');
     }
 
@@ -146,7 +146,7 @@ class ClickHouseRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route_decision']);
+        $this->assertSame('raw', $log[0]['route']);
     }
 
     public function testFilterOnNonDailyColumnForcesRaw(): void
@@ -165,7 +165,7 @@ class ClickHouseRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route_decision']);
+        $this->assertSame('raw', $log[0]['route']);
     }
 
     public function testHybridSumFloorsDailyLowerBoundToStartOfDay(): void
@@ -186,7 +186,7 @@ class ClickHouseRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('hybrid', $log[0]['route_decision']);
+        $this->assertSame('hybrid', $log[0]['route']);
         $this->assertSame(70, $sum, 'hybrid daily branch must include rollup row on the start day');
     }
 
@@ -206,7 +206,31 @@ class ClickHouseRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route_decision']);
+        $this->assertSame('raw', $log[0]['route']);
+    }
+
+    public function testDuplicateTimeFiltersTakeTightestBound(): void
+    {
+        $this->adapter->clearRouteLog();
+
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $startTighter = (new DateTime('-3 days'))->format('Y-m-d H:i:s');
+        $endLoose = (new DateTime('+5 days'))->format('Y-m-d H:i:s');
+        $endTighter = (new DateTime('-1 day'))->format('Y-m-d H:i:s');
+
+        $this->usage->sum([
+            Query::equal('metric', ['routed.metric']),
+            Query::greaterThanEqual('time', $start),
+            Query::greaterThanEqual('time', $startTighter),
+            Query::lessThanEqual('time', $endLoose),
+            Query::lessThanEqual('time', $endTighter),
+        ], 'value', Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('daily', $log[0]['route']);
+        $this->assertSame($startTighter, $log[0]['start']);
+        $this->assertSame($endTighter, $log[0]['end']);
     }
 
     public function testOpenEndedWindowForcesRaw(): void
@@ -222,7 +246,7 @@ class ClickHouseRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route_decision']);
+        $this->assertSame('raw', $log[0]['route']);
     }
 
     public function testMalformedTimeStringForcesRaw(): void
@@ -241,7 +265,7 @@ class ClickHouseRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route_decision']);
+        $this->assertSame('raw', $log[0]['route']);
     }
 
     private function sumRaw(string $metric, string $start, string $end): int

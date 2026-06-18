@@ -45,6 +45,8 @@ class ClickHouse extends SQL
 
     private const INSERT_BATCH_SIZE = 1_000;
 
+    private const ROUTE_LOG_MAX = 1_000;
+
     /** @var array<string, string> Maps interval strings to ClickHouse time functions */
     private const INTERVAL_FUNCTIONS = [
         '1h' => 'toStartOfHour',
@@ -136,7 +138,7 @@ class ClickHouse extends SQL
      * Structured log entries recorded for each routing decision. Ops
      * dashboards read these to confirm rollup hit-rate.
      *
-     * @var array<array{operation: string, metric: ?string, route_decision: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string}>
+     * @var array<array{operation: string, metric: ?string, route: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string}>
      */
     private array $routeLog = [];
 
@@ -293,10 +295,10 @@ class ClickHouse extends SQL
 
     /**
      * Return the in-memory route-decision log (operation, metric,
-     * route_decision, window, dimensions, interval). Cleared by
+     * route, window, dimensions, interval). Cleared by
      * clearRouteLog().
      *
-     * @return array<array{operation: string, metric: ?string, route_decision: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string}>
+     * @return array<array{operation: string, metric: ?string, route: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string}>
      */
     public function getRouteLog(): array
     {
@@ -312,7 +314,7 @@ class ClickHouse extends SQL
     /**
      * Sample rate for dual-read parity checks. When > 0, eligible
      * routed reads also execute against the raw events table and log a
-     * `warning` route_decision entry if the totals diverge by >1%.
+     * `warning` route entry if the totals diverge by >1%.
      *
      * @param float $rate 0.0 (off) … 1.0 (every read)
      */
@@ -2443,12 +2445,12 @@ class ClickHouse extends SQL
 
             if ($attribute === 'time') {
                 if ($method === Query::TYPE_GREATER_EQUAL || $method === Query::TYPE_GREATER) {
-                    $start = $this->stringifyTime($values[0] ?? null);
+                    $start = $this->tightenLowerBound($start, $this->stringifyTime($values[0] ?? null));
                 } elseif ($method === Query::TYPE_LESSER_EQUAL || $method === Query::TYPE_LESSER) {
-                    $end = $this->stringifyTime($values[0] ?? null);
+                    $end = $this->tightenUpperBound($end, $this->stringifyTime($values[0] ?? null));
                 } elseif ($method === Query::TYPE_BETWEEN) {
-                    $start = $this->stringifyTime($values[0] ?? null);
-                    $end = $this->stringifyTime($values[1] ?? null);
+                    $start = $this->tightenLowerBound($start, $this->stringifyTime($values[0] ?? null));
+                    $end = $this->tightenUpperBound($end, $this->stringifyTime($values[1] ?? null));
                 }
             }
         }
@@ -2617,6 +2619,47 @@ class ClickHouse extends SQL
             return $value->format('Y-m-d H:i:s');
         }
         return is_string($value) ? $value : null;
+    }
+
+    /**
+     * Combine two candidate lower bounds into the tighter (later) one.
+     * Returns whichever input is non-null when only one is present.
+     */
+    private function tightenLowerBound(?string $current, ?string $candidate): ?string
+    {
+        if ($current === null) {
+            return $candidate;
+        }
+        if ($candidate === null) {
+            return $current;
+        }
+        try {
+            $cur = new DateTime($current);
+            $cand = new DateTime($candidate);
+        } catch (Exception $e) {
+            return $current;
+        }
+        return $cand > $cur ? $candidate : $current;
+    }
+
+    /**
+     * Combine two candidate upper bounds into the tighter (earlier) one.
+     */
+    private function tightenUpperBound(?string $current, ?string $candidate): ?string
+    {
+        if ($current === null) {
+            return $candidate;
+        }
+        if ($candidate === null) {
+            return $current;
+        }
+        try {
+            $cur = new DateTime($current);
+            $cand = new DateTime($candidate);
+        } catch (Exception $e) {
+            return $current;
+        }
+        return $cand < $cur ? $candidate : $current;
     }
 
     /**
@@ -2816,24 +2859,30 @@ class ClickHouse extends SQL
      */
     private function recordRoute(string $operation, array $plan, string $route): void
     {
-        $this->routeLog[] = [
+        $this->appendRouteLogEntry([
             'operation' => $operation,
             'metric' => $plan['metric'],
-            'route_decision' => $route,
+            'route' => $route,
             'start' => $plan['start'],
             'end' => $plan['end'],
             'dimensions' => $plan['dimensions'],
             'interval' => $plan['interval'],
-        ];
+        ]);
     }
 
     /**
-     * sumDaily() with the caller's queries forwarded as-is. Used by the
-     * 'daily' branch of selectAggregateSource(); the daily MV's
-     * SummingMergeTree engine re-aggregates over the dim columns so a flat
-     * `sum(value) WHERE metric=… AND time BETWEEN …` returns the same total
-     * as scanning raw events.
-     *
+     * @param array{operation: string, metric: ?string, route: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string} $entry
+     */
+    private function appendRouteLogEntry(array $entry): void
+    {
+        $this->routeLog[] = $entry;
+        if (count($this->routeLog) > self::ROUTE_LOG_MAX) {
+            $overflow = count($this->routeLog) - self::ROUTE_LOG_MAX;
+            $this->routeLog = array_slice($this->routeLog, $overflow);
+        }
+    }
+
+    /**
      * @param array<Query> $queries
      */
     private function sumFromDaily(array $queries): int
@@ -3027,15 +3076,15 @@ class ClickHouse extends SQL
         $denominator = $rawTotal === 0 ? max(abs($rolledTotal), 1) : abs($rawTotal);
         $delta = abs($rolledTotal - $rawTotal) / $denominator;
         if ($delta > 0.01) {
-            $this->routeLog[] = [
+            $this->appendRouteLogEntry([
                 'operation' => 'dual_read_warning',
                 'metric' => $plan['metric'],
-                'route_decision' => $route . ':delta=' . round($delta, 4),
+                'route' => $route . ':delta=' . round($delta, 4),
                 'start' => $plan['start'],
                 'end' => $plan['end'],
                 'dimensions' => $plan['dimensions'],
                 'interval' => $plan['interval'],
-            ];
+            ]);
         }
     }
 

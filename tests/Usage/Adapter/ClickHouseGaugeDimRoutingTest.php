@@ -13,7 +13,7 @@ use Utopia\Usage\UsageQuery;
 
 /**
  * Routing tests for the gauge per-dim AMT slate (by_service, by_resource).
- * Each case asserts (a) the route_decision the adapter picked and (b) that
+ * Each case asserts (a) the route the adapter picked and (b) that
  * the routed read returns the same latest-per-group values as a raw scan
  * against the gauges table.
  */
@@ -117,7 +117,7 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('gauges_daily_by_service', $log[0]['route_decision']);
+        $this->assertSame('gauges_daily_by_service', $log[0]['route']);
 
         $rawByService = $this->rawTopByDim('service', $start, $end);
         $rolledByService = $this->toMap($rolled, 'service');
@@ -141,7 +141,7 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('gauges_daily_by_resource', $log[0]['route_decision']);
+        $this->assertSame('gauges_daily_by_resource', $log[0]['route']);
 
         $rawByResource = $this->rawTopByDim('resource', $start, $end);
         $rolledByResource = $this->toMap($rolled, 'resource');
@@ -162,7 +162,7 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route_decision']);
+        $this->assertSame('raw', $log[0]['route']);
     }
 
     public function testGaugesFilterOnNonMvColumnFallsBackToRaw(): void
@@ -179,7 +179,7 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route_decision']);
+        $this->assertSame('raw', $log[0]['route']);
     }
 
     public function testGaugesUngroupedFallsBackToRaw(): void
@@ -194,7 +194,7 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route_decision']);
+        $this->assertSame('raw', $log[0]['route']);
     }
 
     public function testGaugesWindowStraddlesTodayUsesHybridDim(): void
@@ -214,7 +214,7 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('gauges_hybrid_by_service', $log[0]['route_decision']);
+        $this->assertSame('gauges_hybrid_by_service', $log[0]['route']);
 
         $rawByService = $this->rawTopByDim('service', $start, $end);
         $rolledByService = $this->toMap($rolled, 'service');
@@ -244,7 +244,7 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertNotEmpty($log);
-        $this->assertSame('gauges_daily_by_service', $log[0]['route_decision']);
+        $this->assertSame('gauges_daily_by_service', $log[0]['route']);
 
         $this->adapter->setDualReadSampleRate(0.0);
     }

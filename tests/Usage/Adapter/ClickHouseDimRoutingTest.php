@@ -13,7 +13,7 @@ use Utopia\Usage\UsageQuery;
 
 /**
  * Routing tests for the per-dim MV slate: by_path, by_country, by_service,
- * by_method_status. Each case asserts (a) the route_decision the adapter
+ * by_method_status. Each case asserts (a) the route the adapter
  * picked and (b) that the routed read returns the same totals as a raw
  * scan.
  */
@@ -116,7 +116,7 @@ class ClickHouseDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('daily_by_path', $log[0]['route_decision']);
+        $this->assertSame('daily_by_path', $log[0]['route']);
 
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
     }
@@ -138,7 +138,7 @@ class ClickHouseDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('daily_by_country', $log[0]['route_decision']);
+        $this->assertSame('daily_by_country', $log[0]['route']);
 
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
     }
@@ -160,7 +160,7 @@ class ClickHouseDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('daily_by_service', $log[0]['route_decision']);
+        $this->assertSame('daily_by_service', $log[0]['route']);
 
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
     }
@@ -183,7 +183,7 @@ class ClickHouseDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('daily_by_method_status', $log[0]['route_decision']);
+        $this->assertSame('daily_by_method_status', $log[0]['route']);
 
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
     }
@@ -202,7 +202,7 @@ class ClickHouseDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route_decision']);
+        $this->assertSame('raw', $log[0]['route']);
     }
 
     public function testFilterOnNonMvColumnFallsBackToRaw(): void
@@ -219,7 +219,7 @@ class ClickHouseDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route_decision']);
+        $this->assertSame('raw', $log[0]['route']);
     }
 
     public function testSubDayIntervalForcesRaw(): void
@@ -236,7 +236,7 @@ class ClickHouseDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route_decision']);
+        $this->assertSame('raw', $log[0]['route']);
     }
 
     public function testWindowStraddlesTodayUsesHybridDim(): void
@@ -256,7 +256,7 @@ class ClickHouseDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('hybrid_by_path', $log[0]['route_decision']);
+        $this->assertSame('hybrid_by_path', $log[0]['route']);
 
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
     }
@@ -288,7 +288,7 @@ class ClickHouseDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('hybrid_by_path', $log[0]['route_decision']);
+        $this->assertSame('hybrid_by_path', $log[0]['route']);
 
         $total = 0;
         foreach ($rolled as $m) {
@@ -319,7 +319,7 @@ class ClickHouseDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertNotEmpty($log);
-        $this->assertSame('daily_by_path', $log[0]['route_decision']);
+        $this->assertSame('daily_by_path', $log[0]['route']);
 
         $this->adapter->setDualReadSampleRate(0.0);
     }

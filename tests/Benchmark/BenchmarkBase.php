@@ -203,7 +203,7 @@ abstract class BenchmarkBase extends TestCase
 
         $routes = [];
         foreach ($this->adapter->getRouteLog() as $entry) {
-            $routes[] = $entry['route_decision'];
+            $routes[] = $entry['route'];
         }
         $this->routes[$name] = $routes;
         $this->adapter->clearRouteLog();
