@@ -321,6 +321,20 @@ class Usage
     }
 
     /**
+     * Opt into adapter-side daily-rollup routing for flat-sum event reads.
+     *
+     * Forwarded to the underlying adapter; only adapters that implement
+     * `setUseDailyRollups()` honour the flag (ClickHouse does today).
+     */
+    public function setUseDailyRollups(bool $enabled = true): self
+    {
+        if (method_exists($this->adapter, 'setUseDailyRollups')) {
+            $this->adapter->setUseDailyRollups($enabled);
+        }
+        return $this;
+    }
+
+    /**
      * Collect a metric into the in-memory buffer for deferred flushing.
      *
      * For event type: multiple collect() calls for the same metric are summed.

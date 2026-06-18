@@ -130,6 +130,22 @@ class ClickHouse extends SQL
     private ?string $nextQueryId = null;
 
     /**
+     * Route flat-sum event reads to the daily rollup table(s) when the
+     * caller hasn't asked for any grouping. Default off — opt-in per
+     * consumer via setUseDailyRollups(true).
+     */
+    private bool $useDailyRollups = false;
+
+    /**
+     * Structured log entries recorded for each routing decision when
+     * useDailyRollups is active. Ops dashboards read these to confirm
+     * rollup hit-rate.
+     *
+     * @var array<array{operation: string, metric: ?string, route_decision: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string}>
+     */
+    private array $routeLog = [];
+
+    /**
      * @param  string  $host  ClickHouse host
      * @param  string  $username  ClickHouse username (default: 'default')
      * @param  string  $password  ClickHouse password (default: '')
@@ -272,6 +288,46 @@ class ClickHouse extends SQL
     public function setNextQueryId(?string $queryId): self
     {
         $this->nextQueryId = $queryId;
+        return $this;
+    }
+
+    /**
+     * Toggle daily-rollup routing for flat-sum event reads.
+     *
+     * When enabled, sum() against TYPE_EVENT may route to the daily MV (or
+     * a hybrid daily + raw UNION ALL when the window straddles today)
+     * whenever the request shape has no grouping / interval and only
+     * touches columns the daily MV indexes. Everything else falls back to
+     * the raw events table.
+     *
+     * Default off — cloud consumers opt in explicitly.
+     */
+    public function setUseDailyRollups(bool $enabled = true): self
+    {
+        $this->useDailyRollups = $enabled;
+        return $this;
+    }
+
+    public function getUseDailyRollups(): bool
+    {
+        return $this->useDailyRollups;
+    }
+
+    /**
+     * Return the in-memory route-decision log (operation, metric,
+     * route_decision, window, dimensions, interval). Cleared by
+     * clearRouteLog().
+     *
+     * @return array<array{operation: string, metric: ?string, route_decision: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string}>
+     */
+    public function getRouteLog(): array
+    {
+        return $this->routeLog;
+    }
+
+    public function clearRouteLog(): self
+    {
+        $this->routeLog = [];
         return $this;
     }
 
@@ -1940,7 +1996,220 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('sum()');
 
+        if ($this->useDailyRollups && $type === Usage::TYPE_EVENT && $attribute === 'value') {
+            $plan = $this->extractRoutingPlan($queries);
+            $route = $this->selectAggregateSource($plan);
+            $this->recordRoute('sum', $plan, $route);
+
+            if ($route === 'daily') {
+                return $this->sumFromDaily($queries);
+            }
+            if ($route === 'hybrid') {
+                return $this->sumHybridDailyAndRaw($queries, $plan);
+            }
+        }
+
         return $this->sumFromTable($queries, $attribute, $type);
+    }
+
+    /**
+     * Snapshot of the parsed query shape relevant for routing.
+     *
+     * @param array<Query> $queries
+     * @return array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string}
+     */
+    private function extractRoutingPlan(array $queries): array
+    {
+        $metric = null;
+        $start = null;
+        $end = null;
+        $filterColumns = [];
+        $dimensions = [];
+        $interval = null;
+
+        foreach ($queries as $query) {
+            $method = $query->getMethod();
+            $attribute = $query->getAttribute();
+            $values = $query->getValues();
+
+            if ($method === UsageQuery::TYPE_GROUP_BY) {
+                if (!in_array($attribute, $dimensions, true)) {
+                    $dimensions[] = $attribute;
+                }
+                continue;
+            }
+            if ($method === UsageQuery::TYPE_GROUP_BY_INTERVAL) {
+                $intervalValue = $values[0] ?? null;
+                $interval = is_string($intervalValue) ? $intervalValue : null;
+                continue;
+            }
+            if (in_array($method, [Query::TYPE_LIMIT, Query::TYPE_OFFSET, Query::TYPE_ORDER_ASC, Query::TYPE_ORDER_DESC, Query::TYPE_CURSOR_AFTER, Query::TYPE_CURSOR_BEFORE], true)) {
+                continue;
+            }
+
+            if ($attribute === '' || $attribute === 'id') {
+                continue;
+            }
+
+            if (!in_array($attribute, $filterColumns, true)) {
+                $filterColumns[] = $attribute;
+            }
+
+            if ($attribute === 'metric' && $method === Query::TYPE_EQUAL) {
+                $first = $values[0] ?? null;
+                if (is_string($first) && count($values) === 1) {
+                    $metric = $first;
+                }
+            }
+
+            if ($attribute === 'time') {
+                if ($method === Query::TYPE_GREATER_EQUAL || $method === Query::TYPE_GREATER) {
+                    $start = $this->stringifyTime($values[0] ?? null);
+                } elseif ($method === Query::TYPE_LESSER_EQUAL || $method === Query::TYPE_LESSER) {
+                    $end = $this->stringifyTime($values[0] ?? null);
+                } elseif ($method === Query::TYPE_BETWEEN) {
+                    $start = $this->stringifyTime($values[0] ?? null);
+                    $end = $this->stringifyTime($values[1] ?? null);
+                }
+            }
+        }
+
+        return [
+            'metric' => $metric,
+            'start' => $start,
+            'end' => $end,
+            'filterColumns' => $filterColumns,
+            'dimensions' => $dimensions,
+            'interval' => $interval,
+        ];
+    }
+
+    /**
+     * Pure routing decision: which physical table satisfies this read.
+     *
+     * Returns one of:
+     *   - 'raw'    — scan the events table (today's behaviour).
+     *   - 'daily'  — read the existing daily MV (whole window in closed days,
+     *                no grouping, only daily-MV-compatible filters).
+     *   - 'hybrid' — closed days from daily MV, today's partial from raw,
+     *                combined via outer SUM over UNION ALL.
+     *
+     * The hard rule (per `usage-final-plan.md` §P1) is that grouping or
+     * interval ever forces 'raw'; multi-dim MV routes land in commit 5.
+     *
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
+     */
+    private function selectAggregateSource(array $plan): string
+    {
+        if (!empty($plan['dimensions']) || $plan['interval'] !== null) {
+            return 'raw';
+        }
+
+        foreach ($plan['filterColumns'] as $column) {
+            if (!in_array($column, self::DAILY_COLUMNS, true) && $column !== 'tenant') {
+                return 'raw';
+            }
+        }
+
+        if ($plan['end'] === null) {
+            return 'raw';
+        }
+
+        $startOfToday = (new \DateTime('today', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+
+        try {
+            $endDt = new \DateTime($plan['end']);
+            $boundaryDt = new \DateTime($startOfToday);
+        } catch (\Exception $e) {
+            return 'raw';
+        }
+
+        return $endDt < $boundaryDt ? 'daily' : 'hybrid';
+    }
+
+    private function stringifyTime(mixed $value): ?string
+    {
+        if ($value instanceof \DateTime) {
+            return $value->format('Y-m-d H:i:s');
+        }
+        return is_string($value) ? $value : null;
+    }
+
+    /**
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
+     */
+    private function recordRoute(string $operation, array $plan, string $route): void
+    {
+        $this->routeLog[] = [
+            'operation' => $operation,
+            'metric' => $plan['metric'],
+            'route_decision' => $route,
+            'start' => $plan['start'],
+            'end' => $plan['end'],
+            'dimensions' => $plan['dimensions'],
+            'interval' => $plan['interval'],
+        ];
+    }
+
+    /**
+     * sumDaily() with the caller's queries forwarded as-is. Used by the
+     * 'daily' branch of selectAggregateSource(); the daily MV's
+     * SummingMergeTree engine re-aggregates over the dim columns so a flat
+     * `sum(value) WHERE metric=… AND time BETWEEN …` returns the same total
+     * as scanning raw events.
+     *
+     * @param array<Query> $queries
+     */
+    private function sumFromDaily(array $queries): int
+    {
+        return $this->sumDaily($queries, 'value');
+    }
+
+    /**
+     * Hybrid daily + raw read: closed days from the daily MV, today's
+     * partial from the raw events table, combined via outer SUM over
+     * UNION ALL.
+     *
+     * @param array<Query> $queries
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
+     */
+    private function sumHybridDailyAndRaw(array $queries, array $plan): int
+    {
+        $startOfToday = (new \DateTime('today', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
+
+        $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());
+        $eventsTable = $this->buildTableReference($this->getEventsTableName());
+
+        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
+        $rawFilters = $parsed['filters'];
+        $params = $parsed['params'];
+
+        $dailyFilters = $rawFilters;
+
+        $params['hybrid_boundary'] = $startOfToday;
+        $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3)}';
+        $rawFilters[] = '`time` >= {hybrid_boundary:DateTime64(3)}';
+
+        $dailyWhere = $this->buildWhereClause($dailyFilters, $params);
+        $rawWhere = $this->buildWhereClause($rawFilters, $dailyWhere['params']);
+
+        $sql = "
+            SELECT sum(total) AS total FROM (
+                SELECT sum(value) AS total FROM {$dailyTable}{$dailyWhere['clause']}
+                UNION ALL
+                SELECT sum(value) AS total FROM {$eventsTable}{$rawWhere['clause']}
+            )
+            FORMAT JSON
+        ";
+
+        $result = $this->query($sql, $rawWhere['params']);
+        $json = json_decode($result, true);
+
+        if (!is_array($json) || !isset($json['data'][0]['total'])) {
+            return 0;
+        }
+
+        return (int) $json['data'][0]['total'];
     }
 
     /**
