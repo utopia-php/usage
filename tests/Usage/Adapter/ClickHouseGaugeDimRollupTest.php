@@ -2,9 +2,8 @@
 
 namespace Utopia\Tests\Adapter;
 
-use PHPUnit\Framework\TestCase;
-use ReflectionClass;
 use Utopia\Query\Query;
+use Utopia\Tests\Usage\Adapter\ClickHouseTestCase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 use Utopia\Usage\Usage;
 
@@ -14,7 +13,7 @@ use Utopia\Usage\Usage;
  * argMaxState(value, time), and that writes to the raw gauges table fan out
  * into each rollup table.
  */
-class ClickHouseGaugeDimRollupTest extends TestCase
+class ClickHouseGaugeDimRollupTest extends ClickHouseTestCase
 {
     private Usage $usage;
 
@@ -28,21 +27,7 @@ class ClickHouseGaugeDimRollupTest extends TestCase
 
     protected function setUp(): void
     {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $this->adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $this->adapter->setNamespace('utopia_usage_gauge_dim_rollup');
-        $this->adapter->setSharedTables(true);
-        $this->adapter->setTenant('1');
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $this->adapter->setDatabase($database);
-        }
-
+        $this->adapter = $this->makeAdapter('utopia_usage_gauge_dim_rollup');
         $this->usage = new Usage($this->adapter);
         $this->usage->setup();
         $this->usage->purge();
@@ -166,30 +151,16 @@ class ClickHouseGaugeDimRollupTest extends TestCase
 
     private function getGaugeDimRollupTable(string $name): string
     {
-        $reflection = new ReflectionClass($this->adapter);
-        $method = $reflection->getMethod('getGaugeDimRollupTableName');
-        $method->setAccessible(true);
-        $raw = $method->invoke($this->adapter, $name);
-        return is_string($raw) ? $raw : '';
+        return $this->resolveTableName($this->adapter, 'getGaugeDimRollupTableName', [$name]);
     }
 
     private function tableExists(string $table): bool
     {
-        $reflection = new ReflectionClass($this->adapter);
-        $dbProp = $reflection->getProperty('database');
-        $dbProp->setAccessible(true);
-        $databaseValue = $dbProp->getValue($this->adapter);
-        $database = is_string($databaseValue) ? $databaseValue : '';
-
-        $sql = "EXISTS TABLE `{$database}`.`{$table}` FORMAT JSON";
-        $query = $reflection->getMethod('query');
-        $query->setAccessible(true);
-        $raw = $query->invoke($this->adapter, $sql, []);
-        $rawString = is_string($raw) ? $raw : '';
-        $json = json_decode($rawString, true);
+        $database = $this->databaseName($this->adapter);
+        $raw = $this->queryRaw($this->adapter, "EXISTS TABLE `{$database}`.`{$table}` FORMAT JSON");
+        $json = json_decode($raw, true);
         if (is_array($json) && isset($json['data'][0]) && is_array($json['data'][0])) {
-            $row = $json['data'][0];
-            $value = $row['result'] ?? 0;
+            $value = $json['data'][0]['result'] ?? 0;
             return ((int) $value) === 1;
         }
         return false;
@@ -197,18 +168,9 @@ class ClickHouseGaugeDimRollupTest extends TestCase
 
     private function countRows(string $table): int
     {
-        $reflection = new ReflectionClass($this->adapter);
-        $dbProp = $reflection->getProperty('database');
-        $dbProp->setAccessible(true);
-        $databaseValue = $dbProp->getValue($this->adapter);
-        $database = is_string($databaseValue) ? $databaseValue : '';
-
-        $sql = "SELECT count() AS c FROM `{$database}`.`{$table}` FORMAT JSON";
-        $query = $reflection->getMethod('query');
-        $query->setAccessible(true);
-        $raw = $query->invoke($this->adapter, $sql, []);
-        $rawString = is_string($raw) ? $raw : '';
-        $json = json_decode($rawString, true);
+        $database = $this->databaseName($this->adapter);
+        $raw = $this->queryRaw($this->adapter, "SELECT count() AS c FROM `{$database}`.`{$table}` FORMAT JSON");
+        $json = json_decode($raw, true);
         if (is_array($json) && isset($json['data'][0]) && is_array($json['data'][0])) {
             return (int) ($json['data'][0]['c'] ?? 0);
         }
@@ -220,15 +182,8 @@ class ClickHouseGaugeDimRollupTest extends TestCase
      */
     private function seedGaugeRow(string $metric, int $value, string $modifier, array $tags = []): void
     {
-        $reflection = new ReflectionClass($this->adapter);
-        $gauges = $reflection->getMethod('getGaugesTableName');
-        $gauges->setAccessible(true);
-        $raw = $gauges->invoke($this->adapter);
-        $gaugesTable = is_string($raw) ? $raw : '';
-        $dbProp = $reflection->getProperty('database');
-        $dbProp->setAccessible(true);
-        $dbRaw = $dbProp->getValue($this->adapter);
-        $database = is_string($dbRaw) ? $dbRaw : '';
+        $gaugesTable = $this->resolveTableName($this->adapter, 'getGaugesTableName');
+        $database = $this->databaseName($this->adapter);
 
         $time = (new \DateTime($modifier, new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
         $id = bin2hex(random_bytes(16));
@@ -249,9 +204,7 @@ class ClickHouseGaugeDimRollupTest extends TestCase
         }
 
         $sql = "INSERT INTO `{$database}`.`{$gaugesTable}` (" . implode(', ', $cols) . ") VALUES (" . implode(', ', $vals) . ")";
-        $query = $reflection->getMethod('query');
-        $query->setAccessible(true);
-        $query->invoke($this->adapter, $sql, []);
+        $this->queryRaw($this->adapter, $sql);
     }
 
     /**
@@ -260,21 +213,14 @@ class ClickHouseGaugeDimRollupTest extends TestCase
     private function argMaxMergeBy(string $rollupName, string $dim, string $metric): array
     {
         $table = $this->getGaugeDimRollupTable($rollupName);
-        $reflection = new ReflectionClass($this->adapter);
-        $dbProp = $reflection->getProperty('database');
-        $dbProp->setAccessible(true);
-        $dbRaw = $dbProp->getValue($this->adapter);
-        $database = is_string($dbRaw) ? $dbRaw : '';
+        $database = $this->databaseName($this->adapter);
 
         $sql = "SELECT `{$dim}` AS dim, argMaxMerge(value) AS value "
             . "FROM `{$database}`.`{$table}` "
             . "WHERE metric = '" . addslashes($metric) . "' "
             . "GROUP BY `{$dim}` FORMAT JSON";
-        $query = $reflection->getMethod('query');
-        $query->setAccessible(true);
-        $raw = $query->invoke($this->adapter, $sql, []);
-        $rawString = is_string($raw) ? $raw : '';
-        $json = json_decode($rawString, true);
+        $raw = $this->queryRaw($this->adapter, $sql);
+        $json = json_decode($raw, true);
         $out = [];
         if (is_array($json) && isset($json['data']) && is_array($json['data'])) {
             foreach ($json['data'] as $row) {

@@ -4,9 +4,9 @@ namespace Utopia\Tests\Adapter;
 
 use DateTime;
 use DateTimeZone;
-use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use Utopia\Query\Query;
+use Utopia\Tests\Usage\Adapter\ClickHouseTestCase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
@@ -17,7 +17,7 @@ use Utopia\Usage\UsageQuery;
  * picked and (b) that the routed read returns the same totals as a raw
  * scan.
  */
-class ClickHouseDimRoutingTest extends TestCase
+class ClickHouseDimRoutingTest extends ClickHouseTestCase
 {
     private Usage $usage;
 
@@ -27,21 +27,7 @@ class ClickHouseDimRoutingTest extends TestCase
 
     protected function setUp(): void
     {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $this->adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $this->adapter->setNamespace('utopia_usage_dim_routing');
-        $this->adapter->setSharedTables(true);
-        $this->adapter->setTenant('1');
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $this->adapter->setDatabase($database);
-        }
-
+        $this->adapter = $this->makeAdapter('utopia_usage_dim_routing');
         $this->usage = new Usage($this->adapter);
         $this->usage->setup();
         $this->usage->purge();
@@ -65,15 +51,8 @@ class ClickHouseDimRoutingTest extends TestCase
      */
     private function seedHistoricalRow(string $metric, int $value, string $modifier, array $tags = []): void
     {
-        $reflection = new ReflectionClass($this->adapter);
-        $events = $reflection->getMethod('getEventsTableName');
-        $events->setAccessible(true);
-        $eventsRaw = $events->invoke($this->adapter);
-        $eventsTable = is_string($eventsRaw) ? $eventsRaw : '';
-        $dbProp = $reflection->getProperty('database');
-        $dbProp->setAccessible(true);
-        $dbRaw = $dbProp->getValue($this->adapter);
-        $database = is_string($dbRaw) ? $dbRaw : '';
+        $eventsTable = $this->resolveTableName($this->adapter, 'getEventsTableName');
+        $database = $this->databaseName($this->adapter);
 
         $time = (new DateTime($modifier, new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
         $id = bin2hex(random_bytes(16));
@@ -94,96 +73,47 @@ class ClickHouseDimRoutingTest extends TestCase
         }
 
         $sql = "INSERT INTO `{$database}`.`{$eventsTable}` (" . implode(', ', $cols) . ") VALUES (" . implode(', ', $vals) . ")";
-        $query = $reflection->getMethod('query');
-        $query->setAccessible(true);
-        $query->invoke($this->adapter, $sql, []);
+        $this->queryRaw($this->adapter, $sql);
     }
 
-    public function testTopNByPathRoutesToPathMv(): void
+    /**
+     * @return array<string, array{0: array<int, string>, 1: string}>
+     */
+    public static function topNRoutingProvider(): array
+    {
+        return [
+            'by_path'           => [['path'], 'daily_by_path'],
+            'by_country'        => [['country'], 'daily_by_country'],
+            'by_service'        => [['service'], 'daily_by_service'],
+            'by_method_status'  => [['method', 'status'], 'daily_by_method_status'],
+        ];
+    }
+
+    /**
+     * @dataProvider topNRoutingProvider
+     * @param array<int, string> $dims
+     */
+    public function testTopNGroupedQueryRoutesToMatchingMv(array $dims, string $expectedRoute): void
     {
         $this->adapter->clearRouteLog();
 
         $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
         $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
-        $rolled = $this->usage->find([
-            UsageQuery::groupBy('path'),
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-            Query::limit(50),
-        ], Usage::TYPE_EVENT);
+        $queries = [];
+        foreach ($dims as $dim) {
+            $queries[] = UsageQuery::groupBy($dim);
+        }
+        $queries[] = Query::equal('metric', [$this->metric]);
+        $queries[] = Query::greaterThanEqual('time', $start);
+        $queries[] = Query::lessThanEqual('time', $end);
+        $queries[] = Query::limit(50);
+
+        $rolled = $this->usage->find($queries, Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('daily_by_path', $log[0]['route']);
-
-        $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
-    }
-
-    public function testTopNByCountryRoutesToCountryMv(): void
-    {
-        $this->adapter->clearRouteLog();
-
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
-
-        $rolled = $this->usage->find([
-            UsageQuery::groupBy('country'),
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-            Query::limit(50),
-        ], Usage::TYPE_EVENT);
-
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('daily_by_country', $log[0]['route']);
-
-        $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
-    }
-
-    public function testTopNByServiceRoutesToServiceMv(): void
-    {
-        $this->adapter->clearRouteLog();
-
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
-
-        $rolled = $this->usage->find([
-            UsageQuery::groupBy('service'),
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-            Query::limit(50),
-        ], Usage::TYPE_EVENT);
-
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('daily_by_service', $log[0]['route']);
-
-        $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
-    }
-
-    public function testTopNByMethodStatusRoutesToCombinedMv(): void
-    {
-        $this->adapter->clearRouteLog();
-
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
-
-        $rolled = $this->usage->find([
-            UsageQuery::groupBy('method'),
-            UsageQuery::groupBy('status'),
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-            Query::limit(50),
-        ], Usage::TYPE_EVENT);
-
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('daily_by_method_status', $log[0]['route']);
+        $this->assertSame($expectedRoute, $log[0]['route']);
 
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
     }
@@ -302,28 +232,6 @@ class ClickHouseDimRoutingTest extends TestCase
         $this->assertSame(100, $total, 'daily branch must floor start to toStartOfDay so a mid-day start still picks up the day rollup');
     }
 
-    public function testDualReadSamplerActivates(): void
-    {
-        $this->adapter->setDualReadSampleRate(1.0);
-        $this->adapter->clearRouteLog();
-
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
-
-        $this->usage->find([
-            UsageQuery::groupBy('path'),
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-        ], Usage::TYPE_EVENT);
-
-        $log = $this->adapter->getRouteLog();
-        $this->assertNotEmpty($log);
-        $this->assertSame('daily_by_path', $log[0]['route']);
-
-        $this->adapter->setDualReadSampleRate(0.0);
-    }
-
     public function testDualReadSamplerLogsWarningOnDivergence(): void
     {
         $divergentMetric = 'dim.routing.divergent';
@@ -359,10 +267,6 @@ class ClickHouseDimRoutingTest extends TestCase
 
     public function testDualReadSamplerLogsWarningOnPerGroupDivergenceWithSameTotal(): void
     {
-        // The raw side has 50 for /v1/group-a and 50 for /v1/group-b
-        // (total 100). The rollup is seeded with the SAME total but the
-        // wrong distribution: 80 + 20. The old sampler compared totals
-        // only — this regression test proves per-group comparison fires.
         $metric = 'dim.routing.per-group-divergent';
 
         $this->seedHistoricalRow($metric, 50, '-5 days', ['path' => '/v1/group-a', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']);
@@ -422,16 +326,8 @@ class ClickHouseDimRoutingTest extends TestCase
      */
     private function insertRollupRow(string $rollupName, string $metric, int $value, string $modifier, array $tags): void
     {
-        $reflection = new ReflectionClass($this->adapter);
-        $getTable = $reflection->getMethod('getDimRollupTableName');
-        $getTable->setAccessible(true);
-        $tableRaw = $getTable->invoke($this->adapter, $rollupName);
-        $table = is_string($tableRaw) ? $tableRaw : '';
-
-        $dbProp = $reflection->getProperty('database');
-        $dbProp->setAccessible(true);
-        $dbRaw = $dbProp->getValue($this->adapter);
-        $database = is_string($dbRaw) ? $dbRaw : '';
+        $table = $this->resolveTableName($this->adapter, 'getDimRollupTableName', [$rollupName]);
+        $database = $this->databaseName($this->adapter);
 
         $time = (new DateTime($modifier, new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s.v');
 
@@ -448,9 +344,7 @@ class ClickHouseDimRoutingTest extends TestCase
         }
 
         $sql = "INSERT INTO `{$database}`.`{$table}` (" . implode(', ', $cols) . ") VALUES (" . implode(', ', $vals) . ")";
-        $query = $reflection->getMethod('query');
-        $query->setAccessible(true);
-        $query->invoke($this->adapter, $sql, []);
+        $this->queryRaw($this->adapter, $sql);
     }
 
     private function rawTotal(string $start, string $end): int

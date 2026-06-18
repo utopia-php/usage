@@ -5,14 +5,14 @@ namespace Utopia\Tests\Adapter;
 use DateTime;
 use DateTimeZone;
 use Exception;
-use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use Utopia\Query\Query;
+use Utopia\Tests\Usage\Adapter\ClickHouseTestCase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 
-class ClickHouseRoutingTest extends TestCase
+class ClickHouseRoutingTest extends ClickHouseTestCase
 {
     private Usage $usage;
 
@@ -20,21 +20,7 @@ class ClickHouseRoutingTest extends TestCase
 
     protected function setUp(): void
     {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $this->adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $this->adapter->setNamespace('utopia_usage_routing');
-        $this->adapter->setSharedTables(true);
-        $this->adapter->setTenant('1');
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $this->adapter->setDatabase($database);
-        }
-
+        $this->adapter = $this->makeAdapter('utopia_usage_routing');
         $this->usage = new Usage($this->adapter);
         $this->usage->setup();
         $this->usage->purge();
@@ -56,15 +42,8 @@ class ClickHouseRoutingTest extends TestCase
      */
     private function seedHistoricalRow(string $metric, int $value, string $modifier, array $tags = []): void
     {
-        $reflection = new ReflectionClass($this->adapter);
-        $getEvents = $reflection->getMethod('getEventsTableName');
-        $getEvents->setAccessible(true);
-        $events = $getEvents->invoke($this->adapter);
-        $eventsTable = is_string($events) ? $events : '';
-        $getDb = $reflection->getProperty('database');
-        $getDb->setAccessible(true);
-        $databaseValue = $getDb->getValue($this->adapter);
-        $database = is_string($databaseValue) ? $databaseValue : '';
+        $eventsTable = $this->resolveTableName($this->adapter, 'getEventsTableName');
+        $database = $this->databaseName($this->adapter);
 
         $time = (new DateTime($modifier, new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
 
@@ -72,7 +51,7 @@ class ClickHouseRoutingTest extends TestCase
         $rawPath = $tags['path'] ?? null;
         $path = is_string($rawPath) ? $rawPath : null;
 
-        $rawSql = sprintf(
+        $sql = sprintf(
             "INSERT INTO `%s`.`%s` (id, metric, value, time, path, tenant) VALUES ('%s', '%s', %d, '%s', %s, '1')",
             $database,
             $eventsTable,
@@ -83,9 +62,7 @@ class ClickHouseRoutingTest extends TestCase
             $path === null ? 'NULL' : "'" . addslashes($path) . "'"
         );
 
-        $query = $reflection->getMethod('query');
-        $query->setAccessible(true);
-        $query->invoke($this->adapter, $rawSql, []);
+        $this->queryRaw($this->adapter, $sql);
     }
 
     public function testClosedDayWindowRoutesToDaily(): void

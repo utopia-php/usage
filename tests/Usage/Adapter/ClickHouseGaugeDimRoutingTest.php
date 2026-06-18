@@ -4,9 +4,9 @@ namespace Utopia\Tests\Adapter;
 
 use DateTime;
 use DateTimeZone;
-use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use Utopia\Query\Query;
+use Utopia\Tests\Usage\Adapter\ClickHouseTestCase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
@@ -17,7 +17,7 @@ use Utopia\Usage\UsageQuery;
  * the routed read returns the same latest-per-group values as a raw scan
  * against the gauges table.
  */
-class ClickHouseGaugeDimRoutingTest extends TestCase
+class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
 {
     private Usage $usage;
 
@@ -27,21 +27,7 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
     protected function setUp(): void
     {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $this->adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $this->adapter->setNamespace('utopia_usage_gauge_dim_routing');
-        $this->adapter->setSharedTables(true);
-        $this->adapter->setTenant('1');
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $this->adapter->setDatabase($database);
-        }
-
+        $this->adapter = $this->makeAdapter('utopia_usage_gauge_dim_routing');
         $this->usage = new Usage($this->adapter);
         $this->usage->setup();
         $this->usage->purge();
@@ -66,15 +52,8 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
      */
     private function seedHistoricalRow(string $metric, int $value, string $modifier, array $tags = []): void
     {
-        $reflection = new ReflectionClass($this->adapter);
-        $gauges = $reflection->getMethod('getGaugesTableName');
-        $gauges->setAccessible(true);
-        $raw = $gauges->invoke($this->adapter);
-        $gaugesTable = is_string($raw) ? $raw : '';
-        $dbProp = $reflection->getProperty('database');
-        $dbProp->setAccessible(true);
-        $dbRaw = $dbProp->getValue($this->adapter);
-        $database = is_string($dbRaw) ? $dbRaw : '';
+        $gaugesTable = $this->resolveTableName($this->adapter, 'getGaugesTableName');
+        $database = $this->databaseName($this->adapter);
 
         $time = (new DateTime($modifier, new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
         $id = bin2hex(random_bytes(16));
@@ -95,12 +74,24 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
         }
 
         $sql = "INSERT INTO `{$database}`.`{$gaugesTable}` (" . implode(', ', $cols) . ") VALUES (" . implode(', ', $vals) . ")";
-        $query = $reflection->getMethod('query');
-        $query->setAccessible(true);
-        $query->invoke($this->adapter, $sql, []);
+        $this->queryRaw($this->adapter, $sql);
     }
 
-    public function testTopGaugesByServiceRoutesToServiceMv(): void
+    /**
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public static function topGaugesRoutingProvider(): array
+    {
+        return [
+            'by_service'  => ['service', 'gauges_daily_by_service'],
+            'by_resource' => ['resource', 'gauges_daily_by_resource'],
+        ];
+    }
+
+    /**
+     * @dataProvider topGaugesRoutingProvider
+     */
+    public function testTopGaugesGroupedQueryRoutesToMatchingMv(string $dim, string $expectedRoute): void
     {
         $this->adapter->clearRouteLog();
 
@@ -108,7 +99,7 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
         $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
         $rolled = $this->usage->find([
-            UsageQuery::groupBy('service'),
+            UsageQuery::groupBy($dim),
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
@@ -117,35 +108,11 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('gauges_daily_by_service', $log[0]['route']);
+        $this->assertSame($expectedRoute, $log[0]['route']);
 
-        $rawByService = $this->rawTopByDim('service', $start, $end);
-        $rolledByService = $this->toMap($rolled, 'service');
-        $this->assertSame($rawByService, $rolledByService);
-    }
-
-    public function testTopGaugesByResourceRoutesToResourceMv(): void
-    {
-        $this->adapter->clearRouteLog();
-
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
-
-        $rolled = $this->usage->find([
-            UsageQuery::groupBy('resource'),
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-            Query::limit(50),
-        ], Usage::TYPE_GAUGE);
-
-        $log = $this->adapter->getRouteLog();
-        $this->assertCount(1, $log);
-        $this->assertSame('gauges_daily_by_resource', $log[0]['route']);
-
-        $rawByResource = $this->rawTopByDim('resource', $start, $end);
-        $rolledByResource = $this->toMap($rolled, 'resource');
-        $this->assertSame($rawByResource, $rolledByResource);
+        $raw = $this->rawTopByDim($dim, $start, $end);
+        $rolledMap = $this->toMap($rolled, $dim);
+        $this->assertSame($raw, $rolledMap);
     }
 
     public function testGaugesSubDayIntervalForcesRaw(): void
@@ -225,28 +192,6 @@ class ClickHouseGaugeDimRoutingTest extends TestCase
             $denom = $rawVal === 0 ? max(abs($rolledVal), 1) : abs($rawVal);
             $this->assertLessThan(0.0001, abs($rolledVal - $rawVal) / $denom, "hybrid value for {$svc} should match raw within 0.01%");
         }
-    }
-
-    public function testGaugesDualReadSamplerActivates(): void
-    {
-        $this->adapter->setDualReadSampleRate(1.0);
-        $this->adapter->clearRouteLog();
-
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
-
-        $this->usage->find([
-            UsageQuery::groupBy('service'),
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-        ], Usage::TYPE_GAUGE);
-
-        $log = $this->adapter->getRouteLog();
-        $this->assertNotEmpty($log);
-        $this->assertSame('gauges_daily_by_service', $log[0]['route']);
-
-        $this->adapter->setDualReadSampleRate(0.0);
     }
 
     public function testGaugesDualReadSamplerDoesNotWarnOnAgreement(): void
