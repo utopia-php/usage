@@ -2374,7 +2374,7 @@ class ClickHouse extends SQL
         $this->recordRoute($operation, $plan, $route);
 
         if ($route === 'daily') {
-            return $this->sumFromDaily($queries);
+            return $this->sumDaily($queries, 'value');
         }
         if ($route === 'hybrid') {
             return $this->sumHybridDailyAndRaw($queries, $plan);
@@ -2897,14 +2897,6 @@ class ClickHouse extends SQL
             $overflow = count($this->routeLog) - self::ROUTE_LOG_MAX;
             $this->routeLog = array_slice($this->routeLog, $overflow);
         }
-    }
-
-    /**
-     * @param array<Query> $queries
-     */
-    private function sumFromDaily(array $queries): int
-    {
-        return $this->sumDaily($queries, 'value');
     }
 
     /**
