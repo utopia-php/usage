@@ -32,6 +32,9 @@ abstract class BenchmarkBase extends TestCase
     /** @var array<string, array<int, string>> Per-scenario routing decisions captured for assertion. */
     protected array $routes = [];
 
+    /** @var array<string, array<int, string>> Per-scenario projection names captured from system.query_log. */
+    protected array $projectionsByScenario = [];
+
     /** @var int Default number of synthetic rows; override via BENCH_ROWS env */
     protected int $defaultRows = 1_000_000;
 
@@ -188,6 +191,7 @@ abstract class BenchmarkBase extends TestCase
         $callable($warmupId);
 
         $records = [];
+        $projections = [];
         for ($i = 0; $i < $iterations; $i++) {
             $queryId = $this->generateQueryId($name, $i);
 
@@ -199,7 +203,9 @@ abstract class BenchmarkBase extends TestCase
             $chStats['wall_ms'] = round($wallMs, 3);
 
             $records[] = $chStats;
+            $projections = array_merge($projections, $this->captureProjectionsUsed($queryId));
         }
+        $this->projectionsByScenario[$name] = array_values(array_unique($projections));
 
         $routes = [];
         foreach ($this->adapter->getRouteLog() as $entry) {
@@ -257,6 +263,72 @@ abstract class BenchmarkBase extends TestCase
         }
 
         return $stats;
+    }
+
+    /**
+     * Read the projection names that ClickHouse picked for a given query_id,
+     * via `system.query_log.projections`. Empty array means no projection
+     * fired (the optimizer chose the base table).
+     *
+     * @return array<int, string>
+     */
+    protected function captureProjectionsUsed(string $queryId): array
+    {
+        try {
+            $this->runRawSql('SYSTEM FLUSH LOGS');
+        } catch (Throwable $e) {
+            return [];
+        }
+
+        $escapedId = addslashes($queryId);
+        $sql = "SELECT projections FROM system.query_log "
+            . "WHERE query_id = '{$escapedId}' AND type = 'QueryFinish' "
+            . "ORDER BY event_time DESC LIMIT 1 FORMAT JSON";
+
+        try {
+            $reflection = new ReflectionClass($this->adapter);
+            $query = $reflection->getMethod('query');
+            $query->setAccessible(true);
+            $raw = $query->invoke($this->adapter, $sql, []);
+            $rawString = is_string($raw) ? $raw : '';
+            $json = json_decode($rawString, true);
+            if (!is_array($json) || empty($json['data'])) {
+                return [];
+            }
+            $row = $json['data'][0];
+            $projections = is_array($row) ? ($row['projections'] ?? []) : [];
+            $out = [];
+            foreach (is_array($projections) ? $projections : [] as $p) {
+                if (is_string($p)) {
+                    $out[] = $p;
+                }
+            }
+            return $out;
+        } catch (Throwable $e) {
+            return [];
+        }
+    }
+
+    protected function assertProjectionFiredAtLeastOnce(string $scenario, string $projectionName): void
+    {
+        $this->assertArrayHasKey(
+            $scenario,
+            $this->projectionsByScenario,
+            "scenario {$scenario} did not record any projection use"
+        );
+
+        $seen = $this->projectionsByScenario[$scenario];
+        $match = false;
+        foreach ($seen as $p) {
+            if ($p === $projectionName || str_ends_with($p, '.' . $projectionName)) {
+                $match = true;
+                break;
+            }
+        }
+        $this->assertTrue(
+            $match,
+            "{$scenario} expected projection {$projectionName} to fire; saw: " . implode(',', $seen)
+        );
     }
 
     /**

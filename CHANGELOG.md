@@ -1,85 +1,61 @@
 # Changelog
 
-## 0.4.0 — Per-dimension rollups and auto-routing
+## 0.4.0 — Per-dimension ClickHouse projections and auto-routing
 
-This release introduces per-dimension materialized views over the events
-and gauges tables and routes closed-day grouped reads to them
-automatically. The new MVs are:
+This release accelerates grouped reads against the events and gauges
+tables by declaring ClickHouse `PROJECTION`s on the base tables. The
+ClickHouse optimizer transparently routes any grouped query whose
+GROUP BY shape matches a projection — no library-level routing
+scaffolding required.
 
-- `<ns>_usage_events_daily_by_path`
-- `<ns>_usage_events_daily_by_country`
-- `<ns>_usage_events_daily_by_service`
-- `<ns>_usage_events_daily_by_method_status`
-- `<ns>_usage_gauges_daily_by_service`
-- `<ns>_usage_gauges_daily_by_resource`
+The projections live on the base tables themselves:
 
-`Usage::find()` / `Usage::sum()` route eligible queries to the cheapest
-source automatically — there is no configuration knob. Routing decisions
-are recorded in the adapter's route log (see
-`ClickHouse::getRouteLog()`) so downstream operators can audit the
-chosen path.
+- `projects_usage_events.p_by_path`
+- `projects_usage_events.p_by_country`
+- `projects_usage_events.p_by_service`
+- `projects_usage_events.p_by_method_status`
+- `projects_usage_gauges.p_by_service`
+- `projects_usage_gauges.p_by_resource`
 
-### Upgrade note: rollup backfill required
+`Usage::find()` issues a normal `GROUP BY` against the base table; the
+optimizer picks the matching projection when one exists. The decision
+is visible per query via `system.query_log.projections`.
 
-ClickHouse materialized views only capture rows inserted **after** the
-MV is created. Rows already in the events / gauges tables at upgrade
-time are NOT backfilled by the library. Auto-routing those queries to
-the empty MV will undercount until the backfill completes.
+### Upgrade note: projections are empty for pre-upgrade data
 
-**For existing deployments**, run a one-time backfill per MV before
-relying on grouped reads:
-
-```sql
--- events by_path
-INSERT INTO <ns>_usage_events_daily_by_path (metric, time, path, tenant, value)
-SELECT
-    metric,
-    toStartOfDay(time) AS time,
-    path,
-    tenant,
-    sum(value) AS value
-FROM <ns>_usage_events
-WHERE time < (SELECT min(time) FROM <ns>_usage_events_daily_by_path)
-GROUP BY metric, toStartOfDay(time), path, tenant;
-```
-
-Repeat for each rollup MV, substituting the dim columns
-(`country`, `service`, `method, status`). For gauges use
-`argMaxState(value, time)` instead of `sum(value)` since the gauge
-rollups use `AggregatingMergeTree`:
+ClickHouse projections only capture rows inserted **after** the
+projection is declared. Rows already in the events / gauges tables at
+upgrade time are not materialized into the projection by
+`ADD PROJECTION` alone. Queries that hit only pre-upgrade days will
+return the same result either way (the optimizer falls back to the
+base table when the projection can't satisfy the read), but to gain
+the routing win on historical days you need to materialize each
+projection per partition:
 
 ```sql
--- gauges by_service
-INSERT INTO <ns>_usage_gauges_daily_by_service (metric, time, service, tenant, value)
-SELECT
-    metric,
-    toStartOfDay(time) AS time,
-    service,
-    tenant,
-    argMaxState(value, time) AS value
-FROM <ns>_usage_gauges
-WHERE time < (SELECT min(time) FROM <ns>_usage_gauges_daily_by_service)
-GROUP BY metric, toStartOfDay(time), service, tenant;
+-- Materialize one partition at a time during off-peak hours.
+ALTER TABLE <ns>_usage_events
+  MATERIALIZE PROJECTION p_by_path
+  IN PARTITION 'YYYYMM' SETTINGS mutations_sync = 2;
 ```
 
-Backfill during off-peak hours; throttle by month if the source table is
-large. Once backfill completes, set
-`ClickHouse::setDualReadSampleRate(0.01)` (1% sampled dual-read) for a
-day or two to catch any per-group divergences before relying on the
-routed result.
-
-**Greenfield installs**: no action needed — MVs are created at first
-`setup()` and capture all subsequent inserts.
+Repeat for `p_by_country`, `p_by_service`, `p_by_method_status` on
+events, and `p_by_service`, `p_by_resource` on gauges. Throttle by
+partition if the source table is large. Greenfield installs need no
+action — projections capture all subsequent inserts.
 
 ### Other notable changes
 
-- Gauges schema gains `service` and `resource` columns (ALTER applied
-  in `setup()` for existing deployments).
-- Auto-routing falls back to raw scans for queries shaped in ways the
-  rollups cannot serve correctly (filters on `id` / `value`, cursor
-  pagination, `orderBy('time')` on grouped queries, sub-day intervals).
-- Purge operations propagate across rollups: when a purge filter
-  references a column the rollup doesn't store, the rollup still drops
-  the affected whole-day rows to avoid stale aggregates.
-- Dual-read sampler compares per-group values for grouped queries
-  (totals-only comparison missed distribution bugs that cancel out).
+- The pre-existing events daily MV (`projects_usage_events_daily`)
+  and its routing in `Usage::sum()` / `Usage::getTotal()` are
+  unchanged. The flat-sum path still chooses `daily` / `hybrid` /
+  `raw` based on the query shape; the route log surfaces that choice.
+- Gauges schema gains `service` and `resource` columns (idempotent
+  `ALTER` applied in `setup()` for existing deployments).
+- `ALTER TABLE ... MODIFY SETTING lightweight_mutation_projection_mode = 'rebuild'`
+  is applied to the events and gauges tables so `DELETE` (the purge
+  path) re-materializes affected projection parts atomically.
+- The dual-read sampler now applies only to the events daily MV path
+  (the one source that can drift from raw). Projection-routed reads
+  are derived in the same write transaction as the parent insert and
+  cannot diverge, so they're not sampled.

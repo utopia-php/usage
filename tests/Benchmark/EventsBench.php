@@ -4,7 +4,6 @@ namespace Utopia\Tests\Benchmark;
 
 use DateTime;
 use DateTimeZone;
-use ReflectionClass;
 use Utopia\Query\Query;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
@@ -153,11 +152,11 @@ class EventsBench extends BenchmarkBase
             ], Usage::TYPE_EVENT);
         });
 
-        $this->runBench('bench_insert_with_mvs', function (string $queryId): void {
+        $this->runBench('bench_insert_with_projections', function (string $queryId): void {
             $batch = [];
             for ($i = 0; $i < 10000; $i++) {
                 $batch[] = [
-                    'metric' => 'bench.insert.with_mvs',
+                    'metric' => 'bench.insert.with_projections',
                     'value' => $i,
                     'tags' => [
                         'path' => '/v1/mv/' . ($i % 100),
@@ -172,50 +171,29 @@ class EventsBench extends BenchmarkBase
             $this->usage->addBatch($batch, Usage::TYPE_EVENT);
         }, 3);
 
-        $this->runBench('bench_mv_lag', function (string $queryId): void {
-            $this->usage->addBatch([
-                ['metric' => 'bench.mv.lag', 'value' => 1, 'tags' => ['path' => '/v1/mv-lag']],
-            ], Usage::TYPE_EVENT);
-            $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
-                UsageQuery::groupBy('path'),
-                Query::equal('metric', ['bench.mv.lag']),
-                Query::limit(10),
-            ], Usage::TYPE_EVENT);
-        }, 3);
-
-        $this->runBench('bench_mv_storage_per_busy_project', function (string $queryId): void {
-            $reflection = new ReflectionClass($this->adapter);
-            $getDatabase = $reflection->getProperty('database');
-            $getDatabase->setAccessible(true);
-            $databaseValue = $getDatabase->getValue($this->adapter);
-            $database = is_string($databaseValue) ? $databaseValue : '';
-            $namespace = $this->namespace;
-            $this->adapter->setNextQueryId($queryId);
-            $this->runRawSql(
-                "SELECT sum(bytes_on_disk) AS total_bytes "
-                . "FROM system.parts "
-                . "WHERE database = '" . addslashes($database) . "' "
-                . "AND table LIKE '" . addslashes($namespace) . "_usage_events_daily_by_%' "
-                . "AND active = 1 FORMAT JSON"
-            );
-        }, 3);
-
         $this->assertNotEmpty($this->results, 'Benchmark scenarios must record results');
 
-        $expected = [
+        // Library-level routing for FLAT (non-grouped) events queries.
+        $expectedLibraryRoute = [
             'bench_events_sum_30d' => 'daily',
-            'bench_events_topN_path_30d' => 'daily_by_path',
-            'bench_events_topN_country_30d' => 'daily_by_country',
-            'bench_events_topN_service_30d' => 'daily_by_service',
-            'bench_events_topN_method_status_30d' => 'daily_by_method_status',
-            'bench_events_topN_path_today_partial' => 'hybrid_by_path',
-            'bench_events_topN_path_30d_filtered_resource' => 'raw',
-            'bench_events_topN_path_country' => 'raw',
         ];
-        foreach ($expected as $scenario => $route) {
+        foreach ($expectedLibraryRoute as $scenario => $route) {
             $this->assertArrayHasKey($scenario, $this->routes, "missing routing log for {$scenario}");
             $this->assertContains($route, $this->routes[$scenario], "{$scenario} expected to route to {$route}, got " . implode(',', $this->routes[$scenario]));
+        }
+
+        // Projection-level routing: grouped scenarios scan the base events
+        // table; the optimizer picks the matching projection. We assert
+        // projection usage by name via system.query_log.
+        $expectedProjections = [
+            'bench_events_topN_path_30d' => 'p_by_path',
+            'bench_events_topN_country_30d' => 'p_by_country',
+            'bench_events_topN_service_30d' => 'p_by_service',
+            'bench_events_topN_method_status_30d' => 'p_by_method_status',
+            'bench_events_topN_path_today_partial' => 'p_by_path',
+        ];
+        foreach ($expectedProjections as $scenario => $projection) {
+            $this->assertProjectionFiredAtLeastOnce($scenario, $projection);
         }
     }
 }
