@@ -20,8 +20,8 @@ class EventsBench extends BenchmarkBase
 
     public function testBenchmarks(): void
     {
-        $start = (new DateTime('-30 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-1 day'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-30 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $end = (new DateTime('-1 day', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
 
         $this->runBench('bench_events_sum_30d', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);

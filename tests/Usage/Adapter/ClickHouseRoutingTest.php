@@ -86,6 +86,30 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $this->assertSame($rawSum, $sum, 'daily MV must re-aggregate to the same total as raw');
     }
 
+    public function testInclusiveMidnightUpperBoundExcludesEndDayOnDailyRoute(): void
+    {
+        $this->adapter->clearRouteLog();
+
+        $this->seedHistoricalRow('routed.metric', 9999, '-2 days +14 hours', ['path' => '/v1/late']);
+
+        $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+
+        $rawSum = $this->sumRaw('routed.metric', $start, $end);
+
+        $sum = $this->usage->sum([
+            Query::equal('metric', ['routed.metric']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], 'value', Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('daily', $log[0]['route']);
+        $this->assertSame($rawSum, $sum, 'daily MV must not include the end-day full-day row for inclusive-midnight upper bounds');
+        $this->assertSame(300, $sum);
+    }
+
     public function testMidDayClosedWindowFallsBackToRaw(): void
     {
         // Daily rows are stored at midnight; a mid-day caller bound

@@ -2155,7 +2155,7 @@ class ClickHouse extends SQL
         $this->recordRoute($operation, $plan, $route);
 
         if ($route === 'daily') {
-            $total = $this->sumDaily($queries, 'value');
+            $total = $this->sumDaily($this->translateInclusiveMidnightForDaily($queries), 'value');
             $this->maybeDualRead($queries, $route, $plan, $total);
             return $total;
         }
@@ -2332,6 +2332,64 @@ class ClickHouse extends SQL
             return true;
         }
         return $dt->format('H:i:s.u') === '00:00:00.000000';
+    }
+
+    private function isMidnightString(?string $ts): bool
+    {
+        if ($ts === null) {
+            return false;
+        }
+        try {
+            return $this->isDayAligned(new DateTime($ts));
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Daily MV rows are keyed at toStartOfDay(time), so an inclusive
+     * `<= midnight` upper bound matches the row representing the entire
+     * end day and over-counts. Rewrite inclusive-midnight upper bounds
+     * (LESSER_EQUAL and BETWEEN upper) to exclusive `<` for the daily
+     * branch. Other bounds pass through untouched.
+     *
+     * @param array<Query> $queries
+     * @return array<Query>
+     */
+    private function translateInclusiveMidnightForDaily(array $queries): array
+    {
+        $result = [];
+        foreach ($queries as $q) {
+            if (!($q instanceof Query) || $q->getAttribute() !== 'time') {
+                $result[] = $q;
+                continue;
+            }
+            $method = $q->getMethod();
+            $values = $q->getValues();
+
+            if ($method === Query::TYPE_LESSER_EQUAL) {
+                $upper = $this->stringifyTime($values[0] ?? null);
+                if ($upper !== null && $this->isMidnightString($upper)) {
+                    $result[] = new Query(Query::TYPE_LESSER, 'time', [$upper]);
+                    continue;
+                }
+            }
+
+            if ($method === Query::TYPE_BETWEEN && count($values) >= 2) {
+                $upper = $this->stringifyTime($values[1] ?? null);
+                if ($upper !== null && $this->isMidnightString($upper)) {
+                    $lower = $this->stringifyTime($values[0] ?? null);
+                    if ($lower !== null) {
+                        $result[] = new Query(Query::TYPE_GREATER_EQUAL, 'time', [$lower]);
+                    }
+                    $result[] = new Query(Query::TYPE_LESSER, 'time', [$upper]);
+                    continue;
+                }
+            }
+
+            $result[] = $q;
+        }
+        return $result;
     }
 
     private function stringifyTime(mixed $value): ?string
@@ -2550,7 +2608,8 @@ class ClickHouse extends SQL
                 }
                 $name = 'daily_time_upper_' . $counter++;
                 $params[$name] = $upper;
-                $op = $method === Query::TYPE_LESSER ? '<' : '<=';
+                $inclusiveOnMidnight = $method === Query::TYPE_LESSER_EQUAL && $this->isMidnightString($upper);
+                $op = ($method === Query::TYPE_LESSER || $inclusiveOnMidnight) ? '<' : '<=';
                 $filters[] = '`time` ' . $op . ' {' . $name . ':DateTime64(3, \'UTC\')}';
                 continue;
             }
@@ -2566,7 +2625,8 @@ class ClickHouse extends SQL
                 if ($upper !== null) {
                     $name = 'daily_time_upper_' . $counter++;
                     $params[$name] = $upper;
-                    $filters[] = '`time` <= {' . $name . ':DateTime64(3, \'UTC\')}';
+                    $op = $this->isMidnightString($upper) ? '<' : '<=';
+                    $filters[] = '`time` ' . $op . ' {' . $name . ':DateTime64(3, \'UTC\')}';
                 }
                 continue;
             }
