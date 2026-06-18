@@ -1023,32 +1023,33 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Per-dim rollup MV slate. Each entry creates a SummingMergeTree table
-     * + materialized view that fans out off the raw events INSERT.
+     * Per-dim projection slate. Each entry declares an `ADD PROJECTION` on
+     * the base events table. The ClickHouse optimizer transparently routes
+     * grouped reads whose GROUP BY shape matches.
      *
      * The (method, status) cross-product is bounded (~180 keys) so the two
-     * dims share a single MV; everything else is single-dim.
+     * dims share a single projection; everything else is single-dim.
      *
      * @var array<array{name: string, dims: array<int, string>}>
      */
-    private const DIM_ROLLUPS = [
-        ['name' => 'by_path', 'dims' => ['path']],
-        ['name' => 'by_country', 'dims' => ['country']],
-        ['name' => 'by_service', 'dims' => ['service']],
-        ['name' => 'by_method_status', 'dims' => ['method', 'status']],
+    private const EVENT_PROJECTIONS = [
+        ['name' => 'p_by_path', 'dims' => ['path']],
+        ['name' => 'p_by_country', 'dims' => ['country']],
+        ['name' => 'p_by_service', 'dims' => ['service']],
+        ['name' => 'p_by_method_status', 'dims' => ['method', 'status']],
     ];
 
     /**
-     * Per-dim rollup MV slate for gauges. argMax(value, time) is non-additive,
-     * so each entry creates an AggregatingMergeTree table + materialized view
-     * that emits argMaxState on write and the read path collapses with
-     * argMaxMerge.
+     * Per-dim projection slate for gauges. The projection stores
+     * argMax(value, time) per (metric, time, [tenant,] dims) tuple; the
+     * ClickHouse optimizer rewrites grouped argMax reads against the base
+     * table to read from the projection.
      *
      * @var array<array{name: string, dims: array<int, string>}>
      */
-    private const GAUGE_DIM_ROLLUPS = [
-        ['name' => 'by_service', 'dims' => ['service']],
-        ['name' => 'by_resource', 'dims' => ['resource']],
+    private const GAUGE_PROJECTIONS = [
+        ['name' => 'p_by_service', 'dims' => ['service']],
+        ['name' => 'p_by_resource', 'dims' => ['resource']],
     ];
 
     /**
@@ -1059,7 +1060,7 @@ class ClickHouse extends SQL
      * 2. Events daily table (SummingMergeTree) for pre-aggregation
      * 3. Events daily materialized view
      * 4. Gauges table (MergeTree) with simple schema
-     * 5. Per-dim rollup tables + MVs (by_path, by_country, by_service, by_method_status)
+     * 5. Per-dim projections on the events / gauges base tables
      *
      * @throws Exception
      */
@@ -1085,12 +1086,6 @@ class ClickHouse extends SQL
         // --- Events daily materialized view ---
         $this->createDailyMaterializedView();
 
-        // --- Per-dim rollup tables + MVs ---
-        foreach (self::DIM_ROLLUPS as $rollup) {
-            $this->createDimRollupTable($rollup['name'], $rollup['dims']);
-            $this->createDimRollupMaterializedView($rollup['name'], $rollup['dims']);
-        }
-
         // --- Gauges table ---
         $this->createTable(
             $this->getGaugesTableName(),
@@ -1100,19 +1095,46 @@ class ClickHouse extends SQL
 
         $this->ensureGaugeDimColumns();
 
-        // --- Per-dim gauge rollup tables + MVs (AggregatingMergeTree) ---
-        foreach (self::GAUGE_DIM_ROLLUPS as $rollup) {
-            $this->createGaugeDimRollupTable($rollup['name'], $rollup['dims']);
-            $this->createGaugeDimRollupMaterializedView($rollup['name'], $rollup['dims']);
+        // --- Per-dim projections on the events / gauges base tables ---
+        $this->setLightweightMutationProjectionMode($this->getEventsTableName());
+        foreach (self::EVENT_PROJECTIONS as $projection) {
+            $this->addProjection(
+                $this->getEventsTableName(),
+                $projection['name'],
+                $projection['dims'],
+                'sum(value) AS value'
+            );
         }
+        $this->setLightweightMutationProjectionMode($this->getGaugesTableName());
+        foreach (self::GAUGE_PROJECTIONS as $projection) {
+            $this->addProjection(
+                $this->getGaugesTableName(),
+                $projection['name'],
+                $projection['dims'],
+                'argMax(value, time) AS value'
+            );
+        }
+    }
+
+    /**
+     * Allow lightweight DELETE on tables that carry projections. ClickHouse
+     * defaults to throwing because a delete can leave projection parts
+     * inconsistent; 'rebuild' tells the engine to re-materialize the
+     * affected projection parts after the delete.
+     */
+    private function setLightweightMutationProjectionMode(string $baseTable): void
+    {
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($baseTable);
+        $sql = "ALTER TABLE {$escapedTable} MODIFY SETTING lightweight_mutation_projection_mode = 'rebuild'";
+        $this->query($sql);
     }
 
     /**
      * Backfill the service / resource columns on an existing gauges table.
      * setup() uses CREATE TABLE IF NOT EXISTS, so deployments that came up
-     * before these columns were added never receive them — the gauge AMT
-     * MVs would then fail at insert time because their SELECT references
-     * columns the source table lacks.
+     * before these columns were added never receive them — the gauge
+     * projections would then fail because their SELECT references columns
+     * the source table lacks.
      */
     private function ensureGaugeDimColumns(): void
     {
@@ -1127,219 +1149,39 @@ class ClickHouse extends SQL
     }
 
     /**
-     * @return string e.g. utopia_usage_events_daily_by_path
-     */
-    private function getDimRollupTableName(string $name): string
-    {
-        return $this->getTableName() . '_events_daily_' . $name;
-    }
-
-    /**
+     * Idempotently add a projection to a base table. Projection columns are
+     * (metric, time, [tenant,] ...dims, aggregate) and the GROUP BY shape
+     * matches; the ClickHouse optimizer picks this projection for any
+     * grouped query whose GROUP BY is a subset of those keys and whose
+     * filters are expressible on the projection columns. Raw `time` is
+     * kept in the projection (not `toStartOfDay`) so `WHERE time BETWEEN`
+     * filters can match the projection without query rewriting.
+     *
      * @param array<int, string> $dims
      */
-    private function createDimRollupTable(string $name, array $dims): void
+    private function addProjection(string $baseTable, string $name, array $dims, string $aggregateExpr): void
     {
-        $tableName = $this->getDimRollupTableName($name);
-        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($baseTable);
 
-        $columns = [
-            'metric String',
-            'value Int64',
-            "time DateTime64(3, 'UTC') CODEC(Delta(4), LZ4)",
-        ];
-
-        foreach ($dims as $dim) {
-            $columns[] = $this->escapeIdentifier($dim) . ' ' . $this->getDimRollupColumnType($dim);
-        }
-
+        $selectParts = ['metric', 'time'];
+        $groupParts = ['metric', 'time'];
         if ($this->sharedTables) {
-            $columns[] = 'tenant Nullable(String)';
+            $selectParts[] = 'tenant';
+            $groupParts[] = 'tenant';
         }
-
-        $orderByParts = $this->sharedTables ? ['tenant', 'metric', 'time'] : ['metric', 'time'];
         foreach ($dims as $dim) {
-            $orderByParts[] = $dim;
+            $selectParts[] = $this->escapeIdentifier($dim);
+            $groupParts[] = $this->escapeIdentifier($dim);
         }
-        $orderBy = '(' . implode(', ', array_map(fn ($c) => $this->escapeIdentifier($c), $orderByParts)) . ')';
+        $selectParts[] = $aggregateExpr;
 
-        $columnDefs = implode(",\n                ", $columns);
+        $selectSql = implode(', ', $selectParts);
+        $groupSql = implode(', ', $groupParts);
 
-        $sql = "
-            CREATE TABLE IF NOT EXISTS {$escapedTable} (
-                {$columnDefs}
-            )
-            ENGINE = SummingMergeTree(value)
-            ORDER BY {$orderBy}
-            PARTITION BY toYYYYMM(time)
-            SETTINGS index_granularity = 8192, allow_nullable_key = 1
-        ";
-
-        $this->query($sql);
-    }
-
-    /**
-     * Pick the storage layout for a dim rollup column. Bounded-cardinality
-     * dimensions stay LowCardinality; unbounded ones (paths interpolate IDs,
-     * so cardinality scales with row count) get plain Nullable(String) with
-     * ZSTD to avoid LowCardinality overhead past its useful range.
-     */
-    private function getDimRollupColumnType(string $dim): string
-    {
-        if ($dim === 'path') {
-            return 'Nullable(String) CODEC(ZSTD(3))';
-        }
-        return 'LowCardinality(Nullable(String))';
-    }
-
-    /**
-     * @param array<int, string> $dims
-     */
-    private function createDimRollupMaterializedView(string $name, array $dims): void
-    {
-        $tableName = $this->getDimRollupTableName($name);
-        $mvName = $tableName . '_mv';
-
-        $escapedEvents = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->getEventsTableName());
-        $escapedTarget = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        $escapedMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($mvName);
-
-        $dimList = implode(', ', array_map(fn ($d) => $this->escapeIdentifier($d), $dims));
-
-        $selectColumns = ['metric', "toStartOfDay(time, 'UTC') AS time"];
-        foreach ($dims as $dim) {
-            $selectColumns[] = $this->escapeIdentifier($dim);
-        }
-        if ($this->sharedTables) {
-            $selectColumns[] = 'tenant';
-        }
-        $selectColumns[] = 'sum(value) AS value';
-
-        $groupByColumns = ['metric', 'time'];
-        foreach ($dims as $dim) {
-            $groupByColumns[] = $this->escapeIdentifier($dim);
-        }
-        if ($this->sharedTables) {
-            $groupByColumns[] = 'tenant';
-        }
-
-        $selectSql = implode(', ', $selectColumns);
-        $groupSql = implode(', ', $groupByColumns);
-
-        $sql = "
-            CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedMv}
-            TO {$escapedTarget}
-            AS SELECT {$selectSql}
-            FROM {$escapedEvents}
-            GROUP BY {$groupSql}
-        ";
-
-        $this->query($sql);
-    }
-
-    /**
-     * @return string e.g. utopia_usage_gauges_daily_by_service
-     */
-    private function getGaugeDimRollupTableName(string $name): string
-    {
-        return $this->getTableName() . '_gauges_daily_' . $name;
-    }
-
-    /**
-     * @param array<int, string> $dims
-     */
-    private function createGaugeDimRollupTable(string $name, array $dims): void
-    {
-        $tableName = $this->getGaugeDimRollupTableName($name);
-        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-
-        $columns = [
-            'metric String',
-            "time DateTime64(3, 'UTC') CODEC(Delta(4), LZ4)",
-        ];
-
-        foreach ($dims as $dim) {
-            $columns[] = $this->escapeIdentifier($dim) . ' LowCardinality(Nullable(String))';
-        }
-
-        $columns[] = "value AggregateFunction(argMax, Int64, DateTime64(3, 'UTC'))";
-
-        if ($this->sharedTables) {
-            $columns[] = 'tenant Nullable(String)';
-        }
-
-        $orderByParts = $this->sharedTables ? ['tenant', 'metric', 'time'] : ['metric', 'time'];
-        foreach ($dims as $dim) {
-            $orderByParts[] = $dim;
-        }
-        $orderBy = '(' . implode(', ', array_map(fn ($c) => $this->escapeIdentifier($c), $orderByParts)) . ')';
-
-        $columnDefs = implode(",\n                ", $columns);
-
-        $sql = "
-            CREATE TABLE IF NOT EXISTS {$escapedTable} (
-                {$columnDefs}
-            )
-            ENGINE = AggregatingMergeTree()
-            ORDER BY {$orderBy}
-            PARTITION BY toYYYYMM(time)
-            SETTINGS index_granularity = 8192, allow_nullable_key = 1
-        ";
-
-        $this->query($sql);
-    }
-
-    /**
-     * @param array<int, string> $dims
-     */
-    private function createGaugeDimRollupMaterializedView(string $name, array $dims): void
-    {
-        $tableName = $this->getGaugeDimRollupTableName($name);
-        $mvName = $tableName . '_mv';
-
-        $escapedGauges = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($this->getGaugesTableName());
-        $escapedTarget = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        $escapedMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($mvName);
-
-        $innerSelect = ['metric', "toStartOfDay(time, 'UTC') AS d", 'time AS t'];
-        foreach ($dims as $dim) {
-            $innerSelect[] = $this->escapeIdentifier($dim);
-        }
-        if ($this->sharedTables) {
-            $innerSelect[] = 'tenant';
-        }
-        $innerSelect[] = 'value';
-
-        $outerSelect = ['metric', 'd AS time'];
-        foreach ($dims as $dim) {
-            $outerSelect[] = $this->escapeIdentifier($dim);
-        }
-        if ($this->sharedTables) {
-            $outerSelect[] = 'tenant';
-        }
-        $outerSelect[] = 'argMaxState(value, t) AS value';
-
-        $groupBy = ['metric', 'd'];
-        foreach ($dims as $dim) {
-            $groupBy[] = $this->escapeIdentifier($dim);
-        }
-        if ($this->sharedTables) {
-            $groupBy[] = 'tenant';
-        }
-
-        $innerSelectSql = implode(', ', $innerSelect);
-        $outerSelectSql = implode(', ', $outerSelect);
-        $groupBySql = implode(', ', $groupBy);
-
-        $sql = "
-            CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedMv}
-            TO {$escapedTarget}
-            AS SELECT {$outerSelectSql}
-            FROM (
-                SELECT {$innerSelectSql}
-                FROM {$escapedGauges}
-            )
-            GROUP BY {$groupBySql}
-        ";
+        $sql = "ALTER TABLE {$escapedTable} ADD PROJECTION IF NOT EXISTS {$name} ("
+            . "SELECT {$selectSql} "
+            . "GROUP BY {$groupSql}"
+            . ")";
 
         $this->query($sql);
     }
@@ -1868,32 +1710,6 @@ class ClickHouse extends SQL
         $this->setOperationContext('find()');
 
         if ($type !== null) {
-            $isGauge = $type === Usage::TYPE_GAUGE;
-            $rollups = $isGauge ? self::GAUGE_DIM_ROLLUPS : self::DIM_ROLLUPS;
-            $dailyPrefix = $isGauge ? 'gauges_daily_' : 'daily_';
-            $hybridPrefix = $isGauge ? 'gauges_hybrid_' : 'hybrid_';
-
-            $plan = $this->extractRoutingPlan($queries);
-            $route = $this->selectAggregateSource($plan, $type);
-            $this->recordRoute('find', $plan, $route);
-
-            if (str_starts_with($route, $dailyPrefix . 'by_')) {
-                $rollup = $this->findRollupByName($rollups, substr($route, strlen($dailyPrefix)));
-                if ($rollup !== null) {
-                    $result = $this->findFromDailyByDim($rollup, $queries, $type);
-                    $this->maybeDualRead($queries, $type, $route, $plan, $result);
-                    return $result;
-                }
-            }
-            if (str_starts_with($route, $hybridPrefix . 'by_')) {
-                $rollup = $this->findRollupByName($rollups, substr($route, strlen($hybridPrefix)));
-                if ($rollup !== null) {
-                    $result = $this->findHybridFromDailyByDim($rollup, $queries, $type);
-                    $this->maybeDualRead($queries, $type, $route, $plan, $result);
-                    return $result;
-                }
-            }
-
             return $this->findFromTable($queries, $type);
         }
 
@@ -2339,10 +2155,14 @@ class ClickHouse extends SQL
         $this->recordRoute($operation, $plan, $route);
 
         if ($route === 'daily') {
-            return $this->sumDaily($queries, 'value');
+            $total = $this->sumDaily($queries, 'value');
+            $this->maybeDualRead($queries, $route, $plan, $total);
+            return $total;
         }
         if ($route === 'hybrid') {
-            return $this->sumHybridDailyAndRaw($queries, $plan);
+            $total = $this->sumHybridDailyAndRaw($queries, $plan);
+            $this->maybeDualRead($queries, $route, $plan, $total);
+            return $total;
         }
 
         return $this->sumFromTable($queries, 'value', Usage::TYPE_EVENT);
@@ -2438,28 +2258,21 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Pure routing decision: which physical table satisfies this read.
-     *
+     * Pure routing decision for the events flat-sum path (sum / getTotal).
      * Returns one of:
-     *   - 'raw'    — scan the raw events / gauges table.
-     *   - 'daily'  — read the existing events daily MV (no grouping, only
-     *                daily-MV-compatible filters, window in closed days).
+     *   - 'raw'    — scan the raw events table.
+     *   - 'daily'  — read the events daily MV (closed-day window, only
+     *                daily-MV-compatible filters, no grouping).
      *   - 'hybrid' — closed days from events daily MV, today's partial from raw.
-     *   - 'daily_by_path' / 'daily_by_country' / 'daily_by_service' /
-     *     'daily_by_method_status' — read an events per-dim rollup.
-     *   - 'hybrid_by_<dim>' — events multi-dim MV closed days + raw today's
-     *     partial.
-     *   - 'gauges_daily_by_service' / 'gauges_daily_by_resource' — read a
-     *     gauges per-dim AMT rollup.
-     *   - 'gauges_hybrid_by_<dim>' — gauges multi-dim AMT MV closed days +
-     *     raw today's partial.
      *
-     * Any caller-requested sub-day interval forces 'raw' because the
-     * rollups are day-grained.
+     * Grouped reads (`dimensions` non-empty) route to 'raw' here; the
+     * base `find()` issues a GROUP BY query against the events / gauges
+     * table and the ClickHouse optimizer transparently picks the
+     * matching projection.
      *
      * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
      */
-    private function selectAggregateSource(array $plan, string $type = Usage::TYPE_EVENT): string
+    private function selectAggregateSource(array $plan): string
     {
         if ($plan['interval'] !== null) {
             return 'raw';
@@ -2477,6 +2290,10 @@ class ClickHouse extends SQL
             return 'raw';
         }
 
+        if (!empty($plan['dimensions'])) {
+            return 'raw';
+        }
+
         try {
             $endDt = new DateTime($plan['end']);
             $boundaryDt = new DateTime('today', new DateTimeZone('UTC'));
@@ -2484,115 +2301,18 @@ class ClickHouse extends SQL
         } catch (Exception $e) {
             return 'raw';
         }
-        $straddlesToday = $endDt >= $boundaryDt;
 
         if ($startDt !== null && $startDt >= $boundaryDt) {
             return 'raw';
         }
 
-        $orderColumns = $plan['orderColumns'] ?? [];
-        $orderHasTime = in_array('time', $orderColumns, true);
-
-        if ($type === Usage::TYPE_GAUGE) {
-            if (empty($plan['dimensions'])) {
-                return 'raw';
-            }
-
-            $dimMatch = $this->matchRollupByDims(self::GAUGE_DIM_ROLLUPS, $plan['dimensions']);
-            if ($dimMatch === null) {
-                return 'raw';
-            }
-
-            if ($orderHasTime) {
-                return 'raw';
-            }
-            foreach ($orderColumns as $orderCol) {
-                if (!in_array($orderCol, $dimMatch['dims'], true) && $orderCol !== 'metric' && $orderCol !== 'value') {
-                    return 'raw';
-                }
-            }
-
-            $allowedFilters = array_merge(['metric', 'time', 'tenant'], $dimMatch['dims']);
-            foreach ($plan['filterColumns'] as $column) {
-                if (!in_array($column, $allowedFilters, true)) {
-                    return 'raw';
-                }
-            }
-
-            $base = 'gauges_daily_' . $dimMatch['name'];
-            return $straddlesToday ? 'gauges_hybrid_' . $dimMatch['name'] : $base;
-        }
-
-        if (empty($plan['dimensions'])) {
-            foreach ($plan['filterColumns'] as $column) {
-                if (!in_array($column, self::DAILY_COLUMNS, true) && $column !== 'tenant') {
-                    return 'raw';
-                }
-            }
-            return $straddlesToday ? 'hybrid' : 'daily';
-        }
-
-        if ($orderHasTime) {
-            return 'raw';
-        }
-
-        $dimMatch = $this->matchRollupByDims(self::DIM_ROLLUPS, $plan['dimensions']);
-        if ($dimMatch === null) {
-            return 'raw';
-        }
-
-        foreach ($orderColumns as $orderCol) {
-            if (!in_array($orderCol, $dimMatch['dims'], true) && $orderCol !== 'metric' && $orderCol !== 'value') {
-                return 'raw';
-            }
-        }
-
-        $allowedFilters = array_merge(['metric', 'time', 'tenant'], $dimMatch['dims']);
         foreach ($plan['filterColumns'] as $column) {
-            if (!in_array($column, $allowedFilters, true)) {
+            if (!in_array($column, self::DAILY_COLUMNS, true) && $column !== 'tenant') {
                 return 'raw';
             }
         }
 
-        $base = 'daily_' . $dimMatch['name'];
-        return $straddlesToday ? 'hybrid_' . $dimMatch['name'] : $base;
-    }
-
-    /**
-     * Find the per-dim rollup whose dim set matches the request exactly
-     * (order-insensitive). Returns null when no MV covers this shape.
-     *
-     * @param array<array{name: string, dims: array<int, string>}> $rollups
-     * @param array<int, string> $dimensions
-     * @return array{name: string, dims: array<int, string>}|null
-     */
-    private function matchRollupByDims(array $rollups, array $dimensions): ?array
-    {
-        $needle = $dimensions;
-        sort($needle);
-
-        foreach ($rollups as $rollup) {
-            $candidate = $rollup['dims'];
-            sort($candidate);
-            if ($candidate === $needle) {
-                return $rollup;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * @param array<array{name: string, dims: array<int, string>}> $rollups
-     * @return array{name: string, dims: array<int, string>}|null
-     */
-    private function findRollupByName(array $rollups, string $name): ?array
-    {
-        foreach ($rollups as $rollup) {
-            if ($rollup['name'] === $name) {
-                return $rollup;
-            }
-        }
-        return null;
+        return $endDt >= $boundaryDt ? 'hybrid' : 'daily';
     }
 
     private function stringifyTime(mixed $value): ?string
@@ -2865,162 +2585,20 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Day-grained aggregated read from a per-dim rollup table. Same return
-     * shape as findAggregatedFromTable() but without GROUP BY interval —
-     * the rollup is already day-bucketed. Branches on $type:
-     * Usage::TYPE_EVENT uses sum(value) over the event SummingMergeTree
-     * rollup; Usage::TYPE_GAUGE uses argMaxMerge(value) over the gauge
-     * AggregatingMergeTree rollup.
-     *
-     * @param array{name: string, dims: array<int, string>} $rollup
-     * @param array<Query> $queries
-     * @return array<Metric>
-     */
-    private function findFromDailyByDim(array $rollup, array $queries, string $type): array
-    {
-        $tableName = $type === Usage::TYPE_GAUGE
-            ? $this->getGaugeDimRollupTableName($rollup['name'])
-            : $this->getDimRollupTableName($rollup['name']);
-        $fromTable = $this->buildTableReference($tableName);
-
-        $parsed = $this->parseQueries($queries, $type);
-        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
-
-        $dimList = '';
-        if (!empty($rollup['dims'])) {
-            $escapedDims = array_map(fn (string $d): string => $this->escapeIdentifier($d), $rollup['dims']);
-            $dimList = ', ' . implode(', ', $escapedDims);
-        }
-
-        $orderClause = ' ORDER BY ' . $this->escapeIdentifier('value') . ' DESC';
-        if (!empty($parsed['orderBy'])) {
-            $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
-        }
-        $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
-        $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
-
-        $aggregate = $type === Usage::TYPE_GAUGE ? 'argMaxMerge(value)' : 'sum(value)';
-
-        $sql = "
-            SELECT metric, {$aggregate} AS value{$dimList}
-            FROM {$fromTable}{$whereData['clause']}
-            GROUP BY metric{$dimList}{$orderClause}{$limitClause}{$offsetClause}
-            FORMAT JSON
-        ";
-
-        $result = $this->query($sql, $whereData['params']);
-        return $this->parseAggregatedResults($result, $type);
-    }
-
-    /**
-     * UNION ALL of the per-dim rollup (closed days) + raw events / gauges
-     * (today's partial), merged back together by the outer GROUP BY. Events
-     * use sum on both sides; gauges read pre-merged argMaxState partials
-     * from the rollup and re-state from raw, then argMaxMerge across the
-     * union.
-     *
-     * @param array{name: string, dims: array<int, string>} $rollup
-     * @param array<Query> $queries
-     * @return array<Metric>
-     */
-    private function findHybridFromDailyByDim(array $rollup, array $queries, string $type): array
-    {
-        $startOfToday = (new DateTime('today', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
-
-        if ($type === Usage::TYPE_GAUGE) {
-            $dailyTable = $this->buildTableReference($this->getGaugeDimRollupTableName($rollup['name']));
-            $rawTable = $this->buildTableReference($this->getGaugesTableName());
-        } else {
-            $dailyTable = $this->buildTableReference($this->getDimRollupTableName($rollup['name']));
-            $rawTable = $this->buildTableReference($this->getEventsTableName());
-        }
-
-        $split = $this->splitTimeQueries($queries);
-        $parsed = $this->parseQueries($queries, $type);
-        $dailyParsed = $this->parseQueries($split['nonTime'], $type);
-
-        $params = array_merge($parsed['params'], $dailyParsed['params']);
-
-        $rawFilters = $parsed['filters'];
-        $dailyFilters = $this->buildDailyTimeFilters($dailyParsed['filters'], $split['time'], $params);
-
-        $params['hybrid_boundary'] = $startOfToday;
-        $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3, \'UTC\')}';
-        $rawFilters[] = '`time` >= {hybrid_boundary:DateTime64(3, \'UTC\')}';
-
-        $dailyWhere = $this->buildWhereClause($dailyFilters, $params);
-        $rawWhere = $this->buildWhereClause($rawFilters, $dailyWhere['params']);
-
-        $dimList = '';
-        if (!empty($rollup['dims'])) {
-            $escapedDims = array_map(fn (string $d): string => $this->escapeIdentifier($d), $rollup['dims']);
-            $dimList = ', ' . implode(', ', $escapedDims);
-        }
-
-        $orderClause = ' ORDER BY ' . $this->escapeIdentifier('value') . ' DESC';
-        if (!empty($parsed['orderBy'])) {
-            $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
-        }
-        $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
-        $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
-
-        if ($type === Usage::TYPE_GAUGE) {
-            $outerAggregate = 'argMaxMerge(value)';
-            $dailyInnerSelect = "metric{$dimList}, value";
-            $rawInnerSelect = "metric{$dimList}, argMaxState(value, time) AS value";
-            $sql = "
-                SELECT metric, {$outerAggregate} AS value{$dimList}
-                FROM (
-                    SELECT {$dailyInnerSelect}
-                    FROM {$dailyTable}{$dailyWhere['clause']}
-                    UNION ALL
-                    SELECT {$rawInnerSelect}
-                    FROM {$rawTable}{$rawWhere['clause']}
-                    GROUP BY metric{$dimList}
-                )
-                GROUP BY metric{$dimList}{$orderClause}{$limitClause}{$offsetClause}
-                FORMAT JSON
-            ";
-        } else {
-            $sql = "
-                SELECT metric, sum(value) AS value{$dimList}
-                FROM (
-                    SELECT metric{$dimList}, sum(value) AS value
-                    FROM {$dailyTable}{$dailyWhere['clause']}
-                    GROUP BY metric{$dimList}
-                    UNION ALL
-                    SELECT metric{$dimList}, sum(value) AS value
-                    FROM {$rawTable}{$rawWhere['clause']}
-                    GROUP BY metric{$dimList}
-                )
-                GROUP BY metric{$dimList}{$orderClause}{$limitClause}{$offsetClause}
-                FORMAT JSON
-            ";
-        }
-
-        $result = $this->query($sql, $rawWhere['params']);
-        return $this->parseAggregatedResults($result, $type);
-    }
-
-    /**
      * Dual-read sampler: with probability `$dualReadSampleRate`, re-run
-     * the same logical query against raw events / gauges and log a
-     * warning when results diverge.
+     * the same flat-sum query against the raw events table and log a
+     * warning when the totals diverge.
      *
-     * For flat (non-grouped) reads the comparison is against the total —
-     * a single number on each side. For grouped reads the comparison is
-     * per-group, keyed by the dimension tuple. Totals-only comparison
-     * misses the kind of bug the sampler is supposed to catch: a rollup
-     * that inflates one group and deflates another by the same amount
-     * keeps the total but every individual reading is wrong.
+     * Only the billing daily MV (`daily` / `hybrid` route) can diverge
+     * from raw — projections are derived in the same write transaction
+     * as the parent insert and cannot drift, so the sampler skips grouped
+     * (projection-routed) reads.
      *
      * @param array<Query> $queries
-     * @param string $type
      * @param string $route
      * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
-     * @param array<Metric> $rolledResult
      */
-    private function maybeDualRead(array $queries, string $type, string $route, array $plan, array $rolledResult): void
+    private function maybeDualRead(array $queries, string $route, array $plan, int $rolledTotal): void
     {
         if ($this->dualReadSampleRate <= 0.0) {
             return;
@@ -3030,18 +2608,11 @@ class ClickHouse extends SQL
         }
 
         try {
-            $rawResult = $this->findFromTable($queries, $type);
+            $rawTotal = $this->sumFromTable($queries, 'value', Usage::TYPE_EVENT);
         } catch (Throwable $e) {
             return;
         }
 
-        if (!empty($plan['dimensions'])) {
-            $this->compareDualReadPerGroup($plan, $route, $rolledResult, $rawResult);
-            return;
-        }
-
-        $rolledTotal = $this->sumMetricValues($rolledResult);
-        $rawTotal = $this->sumMetricValues($rawResult);
         if ($rawTotal === 0 && $rolledTotal === 0) {
             return;
         }
@@ -3059,109 +2630,6 @@ class ClickHouse extends SQL
                 'interval' => $plan['interval'],
             ]);
         }
-    }
-
-    /**
-     * Number of diverging groups to log when many groups disagree, to
-     * keep the route log bounded even when a rollup is broadly stale.
-     */
-    private const DUAL_READ_MAX_GROUP_WARNINGS = 10;
-
-    /**
-     * Compare per-group values between the routed result and the raw
-     * result. Both sides are keyed by the dimension tuple; a group on
-     * one side without a match on the other counts as a 100% divergence
-     * for that group.
-     *
-     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
-     * @param array<Metric> $rolledResult
-     * @param array<Metric> $rawResult
-     */
-    private function compareDualReadPerGroup(array $plan, string $route, array $rolledResult, array $rawResult): void
-    {
-        $dimensions = $plan['dimensions'];
-        $rolledByKey = $this->indexMetricsByGroup($rolledResult, $dimensions);
-        $rawByKey = $this->indexMetricsByGroup($rawResult, $dimensions);
-
-        $allKeys = array_unique(array_merge(array_keys($rolledByKey), array_keys($rawByKey)));
-        $divergences = [];
-
-        foreach ($allKeys as $key) {
-            $rolledValue = $rolledByKey[$key] ?? 0;
-            $rawValue = $rawByKey[$key] ?? 0;
-            if ($rolledValue === 0 && $rawValue === 0) {
-                continue;
-            }
-            $denominator = $rawValue === 0 ? max(abs($rolledValue), 1) : abs($rawValue);
-            $delta = abs($rolledValue - $rawValue) / $denominator;
-            if ($delta > 0.01) {
-                $divergences[] = ['key' => $key, 'delta' => $delta];
-            }
-        }
-
-        if (empty($divergences)) {
-            return;
-        }
-
-        usort($divergences, fn (array $a, array $b): int => $b['delta'] <=> $a['delta']);
-        $top = array_slice($divergences, 0, self::DUAL_READ_MAX_GROUP_WARNINGS);
-
-        foreach ($top as $divergence) {
-            $this->appendRouteLogEntry([
-                'operation' => 'dual_read_warning',
-                'metric' => $plan['metric'],
-                'route' => $route . ':group=' . $divergence['key'] . ':delta=' . round($divergence['delta'], 4),
-                'start' => $plan['start'],
-                'end' => $plan['end'],
-                'dimensions' => $dimensions,
-                'interval' => $plan['interval'],
-            ]);
-        }
-    }
-
-    /**
-     * Build a per-group value map from a metrics list. The key is the
-     * dimension tuple joined with a separator that's safe across the dim
-     * column values we emit (path / country / service / method / status /
-     * resource — none of these contain the pipe character we use).
-     *
-     * @param array<Metric> $metrics
-     * @param array<int, string> $dimensions
-     * @return array<string, int>
-     */
-    private function indexMetricsByGroup(array $metrics, array $dimensions): array
-    {
-        $indexed = [];
-        foreach ($metrics as $metric) {
-            $parts = [];
-            foreach ($dimensions as $dim) {
-                $raw = $metric->getAttribute($dim);
-                $parts[] = is_scalar($raw) ? (string) $raw : '';
-            }
-            $key = implode('|', $parts);
-
-            $value = $metric->getValue(0);
-            $intValue = is_int($value) ? $value : (is_float($value) ? (int) $value : 0);
-            $indexed[$key] = ($indexed[$key] ?? 0) + $intValue;
-        }
-        return $indexed;
-    }
-
-    /**
-     * @param array<Metric> $metrics
-     */
-    private function sumMetricValues(array $metrics): int
-    {
-        $sum = 0;
-        foreach ($metrics as $metric) {
-            $value = $metric->getValue(0);
-            if (is_int($value)) {
-                $sum += $value;
-            } elseif (is_float($value)) {
-                $sum += (int) $value;
-            }
-        }
-        return $sum;
     }
 
     /**
@@ -4516,82 +3984,10 @@ class ClickHouse extends SQL
 
             if ($purgeType === Usage::TYPE_EVENT) {
                 $this->purgeDaily($queries);
-                $this->purgeDimRollups($queries, Usage::TYPE_EVENT);
-            }
-
-            if ($purgeType === Usage::TYPE_GAUGE) {
-                $this->purgeDimRollups($queries, Usage::TYPE_GAUGE);
             }
         }
 
         return true;
-    }
-
-    /**
-     * Forward the purge to each per-dim rollup table.
-     *
-     * When every filter attribute fits the rollup's columns the filter is
-     * applied verbatim (after time bounds get widened to whole-day
-     * boundaries). When the purge filter references a column the rollup
-     * does NOT store, the rollup row count for that day is already stale
-     * relative to the raw delete — leaving it in place causes routed reads
-     * to over-report. We delete the affected whole-day rows from the
-     * rollup anyway, scoped to the rollup-safe subset of filters
-     * (metric, time, tenant). The next ingest cycle re-populates that
-     * day's rollup row from the remaining raw rows.
-     *
-     * The events allow-list intentionally omits both `id` (no column on
-     * the rollup) and `value` (the rollup column is an aggregate, not the
-     * raw row's value). The gauges allow-list omits both for the same
-     * reasons; gauges store argMaxState(value) rather than the raw value.
-     *
-     * @param array<Query> $queries
-     * @throws Exception
-     */
-    private function purgeDimRollups(array $queries, string $type): void
-    {
-        $rollups = $type === Usage::TYPE_GAUGE ? self::GAUGE_DIM_ROLLUPS : self::DIM_ROLLUPS;
-        $baseAllowed = ['metric', 'time'];
-
-        $safeFallbackKeys = $baseAllowed;
-        if ($this->sharedTables) {
-            $safeFallbackKeys[] = 'tenant';
-        }
-
-        foreach ($rollups as $rollup) {
-            $allowed = array_merge($baseAllowed, $rollup['dims']);
-            if ($this->sharedTables) {
-                $allowed[] = 'tenant';
-            }
-
-            $compatible = true;
-            foreach ($queries as $query) {
-                $attr = $query->getAttribute();
-                if (!empty($attr) && !in_array($attr, $allowed, true)) {
-                    $compatible = false;
-                    break;
-                }
-            }
-
-            $rollupQueries = $compatible
-                ? $this->translateTimeQueriesToDayBoundaries($queries)
-                : $this->buildStaleRollupPurgeQueries($queries, $safeFallbackKeys);
-
-            $tableName = $type === Usage::TYPE_GAUGE
-                ? $this->getGaugeDimRollupTableName($rollup['name'])
-                : $this->getDimRollupTableName($rollup['name']);
-            $table = $this->buildTableReference($tableName);
-            $parsed = $this->parseQueries($rollupQueries, $type);
-            $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
-            $whereClause = $whereData['clause'];
-
-            if (empty($whereClause)) {
-                $whereClause = ' WHERE 1=1';
-            }
-
-            $sql = "DELETE FROM {$table}{$whereClause}";
-            $this->query($sql, $whereData['params']);
-        }
     }
 
     /**
