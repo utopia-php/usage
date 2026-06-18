@@ -124,6 +124,12 @@ class ClickHouse extends SQL
     private bool $asyncInsertWait = true;
 
     /**
+     * Opt-in query_id forwarded to ClickHouse on the next query() call only.
+     * Cleared after a single use so callers must set it explicitly per query.
+     */
+    private ?string $nextQueryId = null;
+
+    /**
      * @param  string  $host  ClickHouse host
      * @param  string  $username  ClickHouse username (default: 'default')
      * @param  string  $password  ClickHouse password (default: '')
@@ -252,6 +258,20 @@ class ClickHouse extends SQL
     {
         $this->asyncInserts = $enable;
         $this->asyncInsertWait = $waitForConfirmation;
+        return $this;
+    }
+
+    /**
+     * Forward an opt-in `query_id` to ClickHouse on the next `query()` call.
+     *
+     * Single-use: cleared automatically after one query is dispatched. Pass
+     * null to clear without dispatching. Benchmarks use this to look up the
+     * matching row in `system.query_log` (rows_read / read_bytes /
+     * query_duration_ms).
+     */
+    public function setNextQueryId(?string $queryId): self
+    {
+        $this->nextQueryId = $queryId;
         return $this;
     }
 
@@ -739,11 +759,17 @@ class ClickHouse extends SQL
      */
     private function query(string $sql, array $params = []): string
     {
+        $queryId = $this->nextQueryId;
+        $this->nextQueryId = null;
+
         return $this->executeWithRetry(
-            function (int $attempt) use ($sql, $params): string {
+            function (int $attempt) use ($sql, $params, $queryId): string {
                 $startTime = microtime(true);
                 $scheme = $this->secure ? 'https' : 'http';
                 $url = "{$scheme}://{$this->host}:{$this->port}/";
+                if ($queryId !== null && $queryId !== '') {
+                    $url .= '?' . http_build_query(['query_id' => $queryId]);
+                }
 
                 $this->client->addHeader('X-ClickHouse-Database', $this->database);
 

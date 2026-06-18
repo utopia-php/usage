@@ -6,6 +6,10 @@
     <testsuites>
         <testsuite name="Test Suite">
             <directory>tests</directory>
+            <exclude>tests/Benchmark</exclude>
+        </testsuite>
+        <testsuite name="Benchmark">
+            <directory suffix="Bench.php">tests/Benchmark</directory>
         </testsuite>
     </testsuites>
     <coverage processUncoveredFiles="true">
