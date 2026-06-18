@@ -1159,7 +1159,7 @@ class ClickHouse extends SQL
         $columns = [
             'metric String',
             'value Int64',
-            'time DateTime64(3) CODEC(Delta(4), LZ4)',
+            "time DateTime64(3, 'UTC') CODEC(Delta(4), LZ4)",
         ];
 
         foreach ($dims as $dim) {
@@ -1205,7 +1205,7 @@ class ClickHouse extends SQL
 
         $dimList = implode(', ', array_map(fn ($d) => $this->escapeIdentifier($d), $dims));
 
-        $selectColumns = ['metric', 'toStartOfDay(time) AS time'];
+        $selectColumns = ['metric', "toStartOfDay(time, 'UTC') AS time"];
         foreach ($dims as $dim) {
             $selectColumns[] = $this->escapeIdentifier($dim);
         }
@@ -1259,14 +1259,14 @@ class ClickHouse extends SQL
 
         $columns = [
             'metric String',
-            'time DateTime64(3) CODEC(Delta(4), LZ4)',
+            "time DateTime64(3, 'UTC') CODEC(Delta(4), LZ4)",
         ];
 
         foreach ($dims as $dim) {
             $columns[] = $this->escapeIdentifier($dim) . ' LowCardinality(Nullable(String))';
         }
 
-        $columns[] = 'value AggregateFunction(argMax, Int64, DateTime64(3))';
+        $columns[] = "value AggregateFunction(argMax, Int64, DateTime64(3, 'UTC'))";
 
         if ($this->sharedTables) {
             $columns[] = 'tenant Nullable(String)';
@@ -1305,7 +1305,7 @@ class ClickHouse extends SQL
         $escapedTarget = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
         $escapedMv = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($mvName);
 
-        $innerSelect = ['metric', 'toStartOfDay(time) AS d', 'time AS t'];
+        $innerSelect = ['metric', "toStartOfDay(time, 'UTC') AS d", 'time AS t'];
         foreach ($dims as $dim) {
             $innerSelect[] = $this->escapeIdentifier($dim);
         }
@@ -1366,7 +1366,7 @@ class ClickHouse extends SQL
             $id = $attribute['$id'];
 
             if ($id === 'time') {
-                $columns[] = 'time DateTime64(3) ' . $this->getColumnCodec('time');
+                $columns[] = "time DateTime64(3, 'UTC') " . $this->getColumnCodec('time');
             } else {
                 $columns[] = $this->getColumnDefinition($id, $type);
             }
@@ -1434,7 +1434,7 @@ class ClickHouse extends SQL
         $columns = [
             'metric String',
             'value Int64',
-            'time DateTime64(3)',
+            "time DateTime64(3, 'UTC')",
             'resource LowCardinality(Nullable(String))',
             'resourceId Nullable(String)',
             'resourceInternalId Nullable(String)',
@@ -1487,11 +1487,11 @@ class ClickHouse extends SQL
         $dimensions = 'resource, resourceId, resourceInternalId, teamId, teamInternalId';
 
         if ($this->sharedTables) {
-            $innerSelect  = "metric, tenant, {$dimensions}, sum(value) as value, toStartOfDay(time) as d";
+            $innerSelect  = "metric, tenant, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
             $innerGroupBy = "metric, tenant, {$dimensions}, d";
             $outerSelect  = "metric, value, d as time, tenant, {$dimensions}";
         } else {
-            $innerSelect  = "metric, {$dimensions}, sum(value) as value, toStartOfDay(time) as d";
+            $innerSelect  = "metric, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
             $innerGroupBy = "metric, {$dimensions}, d";
             $outerSelect  = "metric, value, d as time, {$dimensions}";
         }
@@ -1662,7 +1662,7 @@ class ClickHouse extends SQL
             'integer' => 'Int64',
             'float' => 'Float64',
             'boolean' => 'UInt8',
-            'datetime' => 'DateTime64(3)',
+            'datetime' => "DateTime64(3, 'UTC')",
             default => 'String',
         };
 
@@ -2754,7 +2754,7 @@ class ClickHouse extends SQL
                 }
                 $name = 'daily_time_lower_' . $counter++;
                 $params[$name] = $floored;
-                $filters[] = '`time` >= {' . $name . ':DateTime64(3)}';
+                $filters[] = '`time` >= {' . $name . ':DateTime64(3, \'UTC\')}';
                 continue;
             }
 
@@ -2766,7 +2766,7 @@ class ClickHouse extends SQL
                 $name = 'daily_time_upper_' . $counter++;
                 $params[$name] = $upper;
                 $op = $method === Query::TYPE_LESSER ? '<' : '<=';
-                $filters[] = '`time` ' . $op . ' {' . $name . ':DateTime64(3)}';
+                $filters[] = '`time` ' . $op . ' {' . $name . ':DateTime64(3, \'UTC\')}';
                 continue;
             }
 
@@ -2776,12 +2776,12 @@ class ClickHouse extends SQL
                 if ($lower !== null) {
                     $name = 'daily_time_lower_' . $counter++;
                     $params[$name] = $lower;
-                    $filters[] = '`time` >= {' . $name . ':DateTime64(3)}';
+                    $filters[] = '`time` >= {' . $name . ':DateTime64(3, \'UTC\')}';
                 }
                 if ($upper !== null) {
                     $name = 'daily_time_upper_' . $counter++;
                     $params[$name] = $upper;
-                    $filters[] = '`time` <= {' . $name . ':DateTime64(3)}';
+                    $filters[] = '`time` <= {' . $name . ':DateTime64(3, \'UTC\')}';
                 }
                 continue;
             }
@@ -2902,8 +2902,8 @@ class ClickHouse extends SQL
         $dailyFilters = $this->buildDailyTimeFilters($dailyParsed['filters'], $split['time'], $params);
 
         $params['hybrid_boundary'] = $startOfToday;
-        $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3)}';
-        $rawFilters[] = '`time` >= {hybrid_boundary:DateTime64(3)}';
+        $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3, \'UTC\')}';
+        $rawFilters[] = '`time` >= {hybrid_boundary:DateTime64(3, \'UTC\')}';
 
         $dailyWhere = $this->buildWhereClause($dailyFilters, $params);
         $rawWhere = $this->buildWhereClause($rawFilters, $dailyWhere['params']);
@@ -3016,8 +3016,8 @@ class ClickHouse extends SQL
         $dailyFilters = $this->buildDailyTimeFilters($dailyParsed['filters'], $split['time'], $params);
 
         $params['hybrid_boundary'] = $startOfToday;
-        $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3)}';
-        $rawFilters[] = '`time` >= {hybrid_boundary:DateTime64(3)}';
+        $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3, \'UTC\')}';
+        $rawFilters[] = '`time` >= {hybrid_boundary:DateTime64(3, \'UTC\')}';
 
         $dailyWhere = $this->buildWhereClause($dailyFilters, $params);
         $rawWhere = $this->buildWhereClause($rawFilters, $dailyWhere['params']);
@@ -3147,8 +3147,8 @@ class ClickHouse extends SQL
         $dailyFilters = $this->buildDailyTimeFilters($dailyParsed['filters'], $split['time'], $params);
 
         $params['hybrid_boundary'] = $startOfToday;
-        $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3)}';
-        $rawFilters[] = '`time` >= {hybrid_boundary:DateTime64(3)}';
+        $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3, \'UTC\')}';
+        $rawFilters[] = '`time` >= {hybrid_boundary:DateTime64(3, \'UTC\')}';
 
         $dailyWhere = $this->buildWhereClause($dailyFilters, $params);
         $rawWhere = $this->buildWhereClause($rawFilters, $dailyWhere['params']);
@@ -3505,11 +3505,11 @@ class ClickHouse extends SQL
         $sql = "
             SELECT
                 metric,
-                {$timeFunction}(time) as bucket,
+                {$timeFunction}(time, 'UTC') as bucket,
                 {$valueExpr}
             FROM {$fromTable}
             WHERE metric IN ({$metricInClause})
-                AND time BETWEEN {start_date:DateTime64(3)} AND {end_date:DateTime64(3)}
+                AND time BETWEEN {start_date:DateTime64(3, 'UTC')} AND {end_date:DateTime64(3, 'UTC')}
                 {$tenantFilter}{$additionalWhere}
             GROUP BY metric, bucket
             ORDER BY bucket ASC
@@ -3877,12 +3877,12 @@ class ClickHouse extends SQL
      * branch here when introducing a new typed column.
      *
      * @param string $attribute
-     * @return string ClickHouse parameter type (e.g. 'String', 'DateTime64(3)', 'Int64')
+     * @return string ClickHouse parameter type (e.g. 'String', 'DateTime64(3, \'UTC\')', 'Int64')
      */
     private function getParamType(string $attribute): string
     {
         return match ($attribute) {
-            'time' => 'DateTime64(3)',
+            'time' => "DateTime64(3, 'UTC')",
             'value' => 'Int64',
             default => 'String',
         };
@@ -3902,7 +3902,7 @@ class ClickHouse extends SQL
      */
     private function formatTypedValue(string $chType, mixed $value): string
     {
-        if ($chType === 'DateTime64(3)') {
+        if ($chType === "DateTime64(3, 'UTC')") {
             if ($value === null) {
                 throw new Exception('DateTime parameter value cannot be null');
             }

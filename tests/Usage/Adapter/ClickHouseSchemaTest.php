@@ -43,7 +43,7 @@ class ClickHouseSchemaTest extends TestCase
     {
         $ddl = $this->showCreate($this->resolveTableName('getEventsTableName'));
 
-        $this->assertStringContainsString('`time` DateTime64(3) CODEC(Delta(4), LZ4)', $ddl);
+        $this->assertStringContainsString("`time` DateTime64(3, 'UTC') CODEC(Delta(4), LZ4)", $ddl);
         $this->assertStringContainsString('`id` String CODEC(ZSTD(3))', $ddl);
         $this->assertStringContainsString('`path` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
         $this->assertStringContainsString('`hostname` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
@@ -93,8 +93,8 @@ class ClickHouseSchemaTest extends TestCase
 
         $ddl = $this->showCreate($dailyTable);
 
-        $this->assertStringContainsString('`time` DateTime64(3)', $ddl);
-        $this->assertStringNotContainsString('`time` DateTime64(3) CODEC', $ddl);
+        $this->assertStringContainsString("`time` DateTime64(3, 'UTC')", $ddl);
+        $this->assertStringNotContainsString("`time` DateTime64(3, 'UTC') CODEC", $ddl);
         $this->assertStringContainsString('`resourceId` Nullable(String)', $ddl);
         $this->assertStringNotContainsString('`resourceId` Nullable(String) CODEC', $ddl);
     }
@@ -115,7 +115,7 @@ class ClickHouseSchemaTest extends TestCase
 
         $this->assertStringContainsString('`service` LowCardinality(Nullable(String))', $ddl);
         $this->assertStringContainsString('`resource` LowCardinality(Nullable(String))', $ddl);
-        $this->assertStringContainsString('`time` DateTime64(3) CODEC(Delta(4), LZ4)', $ddl);
+        $this->assertStringContainsString("`time` DateTime64(3, 'UTC') CODEC(Delta(4), LZ4)", $ddl);
         $this->assertStringContainsString('`resourceId` Nullable(String) CODEC(ZSTD(3))', $ddl);
         $this->assertStringContainsString('`teamId` Nullable(String) CODEC(ZSTD(3))', $ddl);
     }
