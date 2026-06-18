@@ -335,6 +335,21 @@ class Usage
     }
 
     /**
+     * Set the dual-read sampling rate for the adapter. Forwarded to the
+     * underlying adapter; only adapters that implement
+     * `setDualReadSampleRate()` honour the value (ClickHouse does today).
+     *
+     * @param float $rate 0.0 (off) … 1.0 (every read)
+     */
+    public function setDualReadSampleRate(float $rate): self
+    {
+        if (method_exists($this->adapter, 'setDualReadSampleRate')) {
+            $this->adapter->setDualReadSampleRate($rate);
+        }
+        return $this;
+    }
+
+    /**
      * Collect a metric into the in-memory buffer for deferred flushing.
      *
      * For event type: multiple collect() calls for the same metric are summed.

@@ -146,6 +146,13 @@ class ClickHouse extends SQL
     private array $routeLog = [];
 
     /**
+     * Probability (0.0 - 1.0) that the next eligible read also runs against
+     * the raw events table and logs the delta. Recommended 0.01 for
+     * progressive rollout; default 0.0 (off).
+     */
+    private float $dualReadSampleRate = 0.0;
+
+    /**
      * @param  string  $host  ClickHouse host
      * @param  string  $username  ClickHouse username (default: 'default')
      * @param  string  $password  ClickHouse password (default: '')
@@ -329,6 +336,30 @@ class ClickHouse extends SQL
     {
         $this->routeLog = [];
         return $this;
+    }
+
+    /**
+     * Sample rate for dual-read parity checks. When > 0, eligible
+     * routed reads also execute against the raw events table and log a
+     * `warning` route_decision entry if the totals diverge by >1%.
+     *
+     * @param float $rate 0.0 (off) … 1.0 (every read)
+     */
+    public function setDualReadSampleRate(float $rate): self
+    {
+        if ($rate < 0.0) {
+            $rate = 0.0;
+        }
+        if ($rate > 1.0) {
+            $rate = 1.0;
+        }
+        $this->dualReadSampleRate = $rate;
+        return $this;
+    }
+
+    public function getDualReadSampleRate(): float
+    {
+        return $this->dualReadSampleRate;
     }
 
     /**
@@ -1731,6 +1762,30 @@ class ClickHouse extends SQL
         $this->setOperationContext('find()');
 
         if ($type !== null) {
+            if ($this->useDailyRollups && $type === Usage::TYPE_EVENT) {
+                $plan = $this->extractRoutingPlan($queries);
+                $route = $this->selectAggregateSource($plan);
+                $this->recordRoute('find', $plan, $route);
+
+                if (str_starts_with($route, 'daily_by_')) {
+                    $name = substr($route, strlen('daily_'));
+                    $rollup = $this->getRollupByName($name);
+                    if ($rollup !== null) {
+                        $result = $this->findFromDailyByDim($rollup, $queries);
+                        $this->maybeDualRead($queries, $type, $route, $plan, $result);
+                        return $result;
+                    }
+                }
+                if (str_starts_with($route, 'hybrid_by_')) {
+                    $name = substr($route, strlen('hybrid_'));
+                    $rollup = $this->getRollupByName($name);
+                    if ($rollup !== null) {
+                        $result = $this->findHybridFromDailyByDim($rollup, $queries);
+                        $this->maybeDualRead($queries, $type, $route, $plan, $result);
+                        return $result;
+                    }
+                }
+            }
             return $this->findFromTable($queries, $type);
         }
 
@@ -2247,43 +2302,84 @@ class ClickHouse extends SQL
      * Pure routing decision: which physical table satisfies this read.
      *
      * Returns one of:
-     *   - 'raw'    — scan the events table (today's behaviour).
-     *   - 'daily'  — read the existing daily MV (whole window in closed days,
-     *                no grouping, only daily-MV-compatible filters).
-     *   - 'hybrid' — closed days from daily MV, today's partial from raw,
-     *                combined via outer SUM over UNION ALL.
+     *   - 'raw'    — scan the events table.
+     *   - 'daily'  — read the existing daily MV (no grouping, only
+     *                daily-MV-compatible filters, window in closed days).
+     *   - 'hybrid' — closed days from daily MV, today's partial from raw.
+     *   - 'daily_by_path' / 'daily_by_country' / 'daily_by_service' /
+     *     'daily_by_method_status' — read a per-dim rollup when the
+     *     requested dimensions[] and filter columns match one of the
+     *     four MVs.
+     *   - 'hybrid_by_<dim>' — multi-dim MV closed days + raw today's partial.
      *
-     * The hard rule (per `usage-final-plan.md` §P1) is that grouping or
-     * interval ever forces 'raw'; multi-dim MV routes land in commit 5.
+     * Any caller-requested sub-day interval forces 'raw' because the
+     * rollups are day-grained.
      *
      * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
      */
     private function selectAggregateSource(array $plan): string
     {
-        if (!empty($plan['dimensions']) || $plan['interval'] !== null) {
+        if ($plan['interval'] !== null) {
             return 'raw';
-        }
-
-        foreach ($plan['filterColumns'] as $column) {
-            if (!in_array($column, self::DAILY_COLUMNS, true) && $column !== 'tenant') {
-                return 'raw';
-            }
         }
 
         if ($plan['end'] === null) {
             return 'raw';
         }
 
-        $startOfToday = (new \DateTime('today', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
-
         try {
             $endDt = new \DateTime($plan['end']);
-            $boundaryDt = new \DateTime($startOfToday);
+            $boundaryDt = new \DateTime('today', new \DateTimeZone('UTC'));
         } catch (\Exception $e) {
             return 'raw';
         }
+        $straddlesToday = $endDt >= $boundaryDt;
 
-        return $endDt < $boundaryDt ? 'daily' : 'hybrid';
+        if (empty($plan['dimensions'])) {
+            foreach ($plan['filterColumns'] as $column) {
+                if (!in_array($column, self::DAILY_COLUMNS, true) && $column !== 'tenant') {
+                    return 'raw';
+                }
+            }
+            return $straddlesToday ? 'hybrid' : 'daily';
+        }
+
+        $dimMatch = $this->matchDimRollup($plan['dimensions']);
+        if ($dimMatch === null) {
+            return 'raw';
+        }
+
+        $allowedFilters = array_merge(['metric', 'time', 'tenant'], $dimMatch['dims']);
+        foreach ($plan['filterColumns'] as $column) {
+            if (!in_array($column, $allowedFilters, true)) {
+                return 'raw';
+            }
+        }
+
+        $base = 'daily_' . $dimMatch['name'];
+        return $straddlesToday ? 'hybrid_' . $dimMatch['name'] : $base;
+    }
+
+    /**
+     * Find the per-dim rollup whose dim set matches the request exactly
+     * (order-insensitive). Returns null when no MV covers this shape.
+     *
+     * @param array<int, string> $dimensions
+     * @return array{name: string, dims: array<int, string>}|null
+     */
+    private function matchDimRollup(array $dimensions): ?array
+    {
+        $needle = $dimensions;
+        sort($needle);
+
+        foreach (self::DIM_ROLLUPS as $rollup) {
+            $candidate = $rollup['dims'];
+            sort($candidate);
+            if ($candidate === $needle) {
+                return $rollup;
+            }
+        }
+        return null;
     }
 
     private function stringifyTime(mixed $value): ?string
@@ -2322,6 +2418,192 @@ class ClickHouse extends SQL
     private function sumFromDaily(array $queries): int
     {
         return $this->sumDaily($queries, 'value');
+    }
+
+    /**
+     * @return array{name: string, dims: array<int, string>}|null
+     */
+    private function getRollupByName(string $name): ?array
+    {
+        foreach (self::DIM_ROLLUPS as $rollup) {
+            if ($rollup['name'] === $name) {
+                return $rollup;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Day-grained aggregated read from a per-dim rollup table. Same return
+     * shape as findAggregatedFromTable() but without GROUP BY interval —
+     * the rollup is already day-bucketed.
+     *
+     * @param array{name: string, dims: array<int, string>} $rollup
+     * @param array<Query> $queries
+     * @return array<Metric>
+     */
+    private function findFromDailyByDim(array $rollup, array $queries): array
+    {
+        $tableName = $this->getDimRollupTableName($rollup['name']);
+        $fromTable = $this->buildTableReference($tableName);
+
+        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
+        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+
+        $dimSelect = '';
+        $dimGroup = '';
+        if (!empty($rollup['dims'])) {
+            $escapedDims = array_map(fn (string $d): string => $this->escapeIdentifier($d), $rollup['dims']);
+            $dimSelect = ', ' . implode(', ', $escapedDims);
+            $dimGroup = ', ' . implode(', ', $escapedDims);
+        }
+
+        $orderClause = ' ORDER BY value DESC';
+        if (!empty($parsed['orderBy'])) {
+            $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
+        }
+        $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
+        $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
+
+        $sql = "
+            SELECT metric, sum(value) AS value{$dimSelect}
+            FROM {$fromTable}{$whereData['clause']}
+            GROUP BY metric{$dimGroup}{$orderClause}{$limitClause}{$offsetClause}
+            FORMAT JSON
+        ";
+
+        $result = $this->query($sql, $whereData['params']);
+        return $this->parseAggregatedResults($result, Usage::TYPE_EVENT);
+    }
+
+    /**
+     * UNION ALL of the per-dim rollup (closed days) + raw events (today's
+     * partial), summed back together by the outer GROUP BY.
+     *
+     * @param array{name: string, dims: array<int, string>} $rollup
+     * @param array<Query> $queries
+     * @return array<Metric>
+     */
+    private function findHybridFromDailyByDim(array $rollup, array $queries): array
+    {
+        $startOfToday = (new \DateTime('today', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
+
+        $dailyName = $this->getDimRollupTableName($rollup['name']);
+        $dailyTable = $this->buildTableReference($dailyName);
+        $eventsTable = $this->buildTableReference($this->getEventsTableName());
+
+        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
+        $rawFilters = $parsed['filters'];
+        $params = $parsed['params'];
+
+        $dailyFilters = $rawFilters;
+
+        $params['hybrid_boundary'] = $startOfToday;
+        $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3)}';
+        $rawFilters[] = '`time` >= {hybrid_boundary:DateTime64(3)}';
+
+        $dailyWhere = $this->buildWhereClause($dailyFilters, $params);
+        $rawWhere = $this->buildWhereClause($rawFilters, $dailyWhere['params']);
+
+        $dimSelect = '';
+        $dimGroup = '';
+        $dimCols = '';
+        if (!empty($rollup['dims'])) {
+            $escapedDims = array_map(fn (string $d): string => $this->escapeIdentifier($d), $rollup['dims']);
+            $dimList = implode(', ', $escapedDims);
+            $dimSelect = ', ' . $dimList;
+            $dimGroup = ', ' . $dimList;
+            $dimCols = ', ' . $dimList;
+        }
+
+        $orderClause = ' ORDER BY value DESC';
+        if (!empty($parsed['orderBy'])) {
+            $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
+        }
+        $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
+        $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
+
+        $sql = "
+            SELECT metric, sum(value) AS value{$dimSelect}
+            FROM (
+                SELECT metric{$dimCols}, sum(value) AS value
+                FROM {$dailyTable}{$dailyWhere['clause']}
+                GROUP BY metric{$dimGroup}
+                UNION ALL
+                SELECT metric{$dimCols}, sum(value) AS value
+                FROM {$eventsTable}{$rawWhere['clause']}
+                GROUP BY metric{$dimGroup}
+            )
+            GROUP BY metric{$dimGroup}{$orderClause}{$limitClause}{$offsetClause}
+            FORMAT JSON
+        ";
+
+        $result = $this->query($sql, $rawWhere['params']);
+        return $this->parseAggregatedResults($result, Usage::TYPE_EVENT);
+    }
+
+    /**
+     * Dual-read sampler: with probability `$dualReadSampleRate`, re-run
+     * the same logical query against raw events and log a warning if the
+     * totals diverge by more than 1%.
+     *
+     * @param array<Query> $queries
+     * @param string $type
+     * @param string $route
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
+     * @param array<Metric> $rolledResult
+     */
+    private function maybeDualRead(array $queries, string $type, string $route, array $plan, array $rolledResult): void
+    {
+        if ($this->dualReadSampleRate <= 0.0) {
+            return;
+        }
+        if (mt_rand() / mt_getrandmax() > $this->dualReadSampleRate) {
+            return;
+        }
+
+        try {
+            $rawResult = $this->findFromTable($queries, $type);
+        } catch (\Throwable $e) {
+            return;
+        }
+
+        $rolledTotal = $this->sumMetricValues($rolledResult);
+        $rawTotal = $this->sumMetricValues($rawResult);
+        if ($rawTotal === 0 && $rolledTotal === 0) {
+            return;
+        }
+
+        $denominator = $rawTotal === 0 ? max(abs($rolledTotal), 1) : abs($rawTotal);
+        $delta = abs($rolledTotal - $rawTotal) / $denominator;
+        if ($delta > 0.01) {
+            $this->routeLog[] = [
+                'operation' => 'dual_read_warning',
+                'metric' => $plan['metric'],
+                'route_decision' => $route . ':delta=' . round($delta, 4),
+                'start' => $plan['start'],
+                'end' => $plan['end'],
+                'dimensions' => $plan['dimensions'],
+                'interval' => $plan['interval'],
+            ];
+        }
+    }
+
+    /**
+     * @param array<Metric> $metrics
+     */
+    private function sumMetricValues(array $metrics): int
+    {
+        $sum = 0;
+        foreach ($metrics as $metric) {
+            $value = $metric->getValue(0);
+            if (is_int($value)) {
+                $sum += $value;
+            } elseif (is_float($value)) {
+                $sum += (int) $value;
+            }
+        }
+        return $sum;
     }
 
     /**
@@ -3721,6 +4003,7 @@ class ClickHouse extends SQL
 
             if ($purgeType === Usage::TYPE_EVENT) {
                 $this->purgeDaily($queries);
+                $this->purgeDimRollups($queries);
             }
         }
 
@@ -3736,6 +4019,53 @@ class ClickHouse extends SQL
      * leaving the daily rows in place is safer than throwing here
      * because callers commonly purge by path/method/etc.
      *
+     * @param array<Query> $queries
+     * @throws Exception
+     */
+    /**
+     * Forward the purge to each per-dim rollup table when every filter
+     * attribute fits the rollup's columns.
+     *
+     * @param array<Query> $queries
+     * @throws Exception
+     */
+    private function purgeDimRollups(array $queries): void
+    {
+        foreach (self::DIM_ROLLUPS as $rollup) {
+            $allowed = array_merge(['id', 'metric', 'value', 'time'], $rollup['dims']);
+            if ($this->sharedTables) {
+                $allowed[] = 'tenant';
+            }
+
+            $compatible = true;
+            $rollupQueries = [];
+            foreach ($queries as $query) {
+                $attr = $query->getAttribute();
+                if (!empty($attr) && !in_array($attr, $allowed, true)) {
+                    $compatible = false;
+                    break;
+                }
+                $rollupQueries[] = $query;
+            }
+            if (!$compatible) {
+                continue;
+            }
+
+            $table = $this->buildTableReference($this->getDimRollupTableName($rollup['name']));
+            $parsed = $this->parseQueries($rollupQueries, Usage::TYPE_EVENT);
+            $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
+            $whereClause = $whereData['clause'];
+
+            if (empty($whereClause)) {
+                $whereClause = ' WHERE 1=1';
+            }
+
+            $sql = "DELETE FROM {$table}{$whereClause}";
+            $this->query($sql, $whereData['params']);
+        }
+    }
+
+    /**
      * @param array<Query> $queries
      * @throws Exception
      */
