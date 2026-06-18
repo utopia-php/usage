@@ -3535,12 +3535,9 @@ class ClickHouse extends SQL
             $additionalWhere = ' AND ' . implode(' AND ', $additionalFilters);
         }
 
-        // Use appropriate aggregation based on type
-        if ($type === Usage::TYPE_EVENT) {
-            $valueExpr = 'SUM(value) as agg_value';
-        } else {
-            $valueExpr = 'argMax(value, time) as agg_value';
-        }
+        $valueExpr = $type === Usage::TYPE_EVENT
+            ? 'SUM(value) as agg_value'
+            : 'argMax(value, time) as agg_value';
 
         $sql = "
             SELECT
