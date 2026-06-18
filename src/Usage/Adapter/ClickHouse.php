@@ -595,13 +595,7 @@ class ClickHouse extends SQL
      */
     private function getTableName(): string
     {
-        $tableName = $this->table;
-
-        if (!empty($this->namespace)) {
-            $tableName = $this->namespace . '_' . $tableName;
-        }
-
-        return $tableName;
+        return !empty($this->namespace) ? $this->namespace . '_' . $this->table : $this->table;
     }
 
     /**
@@ -653,8 +647,7 @@ class ClickHouse extends SQL
      */
     private function buildTableReference(string $tableName): string
     {
-        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        return $escapedTable;
+        return $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
     }
 
     /**
@@ -1666,13 +1659,9 @@ class ClickHouse extends SQL
 
     protected function getColumnDefinition(string $id, string $type = 'event'): string
     {
-        $chType = $this->getColumnType($id, $type);
-        $escapedId = $this->escapeIdentifier($id);
         $codec = $this->getColumnCodec($id);
-        if ($codec !== '') {
-            return "{$escapedId} {$chType} {$codec}";
-        }
-        return "{$escapedId} {$chType}";
+        $suffix = $codec !== '' ? ' ' . $codec : '';
+        return $this->escapeIdentifier($id) . ' ' . $this->getColumnType($id, $type) . $suffix;
     }
 
     /**
