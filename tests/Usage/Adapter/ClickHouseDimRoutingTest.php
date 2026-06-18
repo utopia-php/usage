@@ -445,4 +445,83 @@ class ClickHouseDimRoutingTest extends TestCase
         }
         return $sum;
     }
+
+    /**
+     * @param array<Query|UsageQuery> $queries
+     */
+    private function routeFor(array $queries, string $type = Usage::TYPE_EVENT): string
+    {
+        $reflection = new ReflectionClass($this->adapter);
+        $extract = $reflection->getMethod('extractRoutingPlan');
+        $extract->setAccessible(true);
+        $select = $reflection->getMethod('selectAggregateSource');
+        $select->setAccessible(true);
+        $plan = $extract->invoke($this->adapter, $queries);
+        $route = $select->invoke($this->adapter, $plan, $type);
+        return is_string($route) ? $route : '';
+    }
+
+    public function testIdFilterForcesRaw(): void
+    {
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+
+        $route = $this->routeFor([
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', [$this->metric]),
+            Query::equal('id', ['fixed-id']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ]);
+
+        $this->assertSame('raw', $route);
+    }
+
+    public function testValueFilterForcesRaw(): void
+    {
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+
+        $route = $this->routeFor([
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', [$this->metric]),
+            Query::greaterThan('value', 10),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ]);
+
+        $this->assertSame('raw', $route);
+    }
+
+    public function testOrderByTimeOnGroupedQueryForcesRaw(): void
+    {
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+
+        $route = $this->routeFor([
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', [$this->metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+            Query::orderDesc('time'),
+        ]);
+
+        $this->assertSame('raw', $route);
+    }
+
+    public function testCursorAfterForcesRaw(): void
+    {
+        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+
+        $route = $this->routeFor([
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', [$this->metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+            Query::cursorAfter(['$id' => 'cursor-token']),
+        ]);
+
+        $this->assertSame('raw', $route);
+    }
 }

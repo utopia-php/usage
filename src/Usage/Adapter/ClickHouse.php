@@ -2397,7 +2397,7 @@ class ClickHouse extends SQL
      * Snapshot of the parsed query shape relevant for routing.
      *
      * @param array<Query> $queries
-     * @return array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string}
+     * @return array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns: array<int, string>, hasCursor: bool}
      */
     private function extractRoutingPlan(array $queries): array
     {
@@ -2407,6 +2407,8 @@ class ClickHouse extends SQL
         $filterColumns = [];
         $dimensions = [];
         $interval = null;
+        $orderColumns = [];
+        $hasCursor = false;
 
         foreach ($queries as $query) {
             $method = $query->getMethod();
@@ -2424,11 +2426,24 @@ class ClickHouse extends SQL
                 $interval = is_string($intervalValue) ? $intervalValue : null;
                 continue;
             }
-            if (in_array($method, [Query::TYPE_LIMIT, Query::TYPE_OFFSET, Query::TYPE_ORDER_ASC, Query::TYPE_ORDER_DESC, Query::TYPE_CURSOR_AFTER, Query::TYPE_CURSOR_BEFORE], true)) {
+            if ($method === Query::TYPE_CURSOR_AFTER || $method === Query::TYPE_CURSOR_BEFORE) {
+                $rawCursor = $values[0] ?? null;
+                if ($rawCursor !== null) {
+                    $hasCursor = true;
+                }
+                continue;
+            }
+            if ($method === Query::TYPE_ORDER_ASC || $method === Query::TYPE_ORDER_DESC) {
+                if ($attribute !== '' && !in_array($attribute, $orderColumns, true)) {
+                    $orderColumns[] = $attribute;
+                }
+                continue;
+            }
+            if (in_array($method, [Query::TYPE_LIMIT, Query::TYPE_OFFSET], true)) {
                 continue;
             }
 
-            if ($attribute === '' || $attribute === 'id') {
+            if ($attribute === '') {
                 continue;
             }
 
@@ -2462,6 +2477,8 @@ class ClickHouse extends SQL
             'filterColumns' => $filterColumns,
             'dimensions' => $dimensions,
             'interval' => $interval,
+            'orderColumns' => $orderColumns,
+            'hasCursor' => $hasCursor,
         ];
     }
 
@@ -2485,7 +2502,7 @@ class ClickHouse extends SQL
      * Any caller-requested sub-day interval forces 'raw' because the
      * rollups are day-grained.
      *
-     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
      */
     private function selectAggregateSource(array $plan, string $type = Usage::TYPE_EVENT): string
     {
@@ -2494,6 +2511,14 @@ class ClickHouse extends SQL
         }
 
         if ($plan['end'] === null) {
+            return 'raw';
+        }
+
+        if (!empty($plan['hasCursor'])) {
+            return 'raw';
+        }
+
+        if (in_array('id', $plan['filterColumns'], true) || in_array('value', $plan['filterColumns'], true)) {
             return 'raw';
         }
 
@@ -2510,6 +2535,9 @@ class ClickHouse extends SQL
             return 'raw';
         }
 
+        $orderColumns = $plan['orderColumns'] ?? [];
+        $orderHasTime = in_array('time', $orderColumns, true);
+
         if ($type === Usage::TYPE_GAUGE) {
             if (empty($plan['dimensions'])) {
                 return 'raw';
@@ -2518,6 +2546,15 @@ class ClickHouse extends SQL
             $dimMatch = $this->matchGaugeDimRollup($plan['dimensions']);
             if ($dimMatch === null) {
                 return 'raw';
+            }
+
+            if ($orderHasTime) {
+                return 'raw';
+            }
+            foreach ($orderColumns as $orderCol) {
+                if (!in_array($orderCol, $dimMatch['dims'], true) && $orderCol !== 'metric' && $orderCol !== 'value') {
+                    return 'raw';
+                }
             }
 
             $allowedFilters = array_merge(['metric', 'time', 'tenant'], $dimMatch['dims']);
@@ -2540,9 +2577,19 @@ class ClickHouse extends SQL
             return $straddlesToday ? 'hybrid' : 'daily';
         }
 
+        if ($orderHasTime) {
+            return 'raw';
+        }
+
         $dimMatch = $this->matchDimRollup($plan['dimensions']);
         if ($dimMatch === null) {
             return 'raw';
+        }
+
+        foreach ($orderColumns as $orderCol) {
+            if (!in_array($orderCol, $dimMatch['dims'], true) && $orderCol !== 'metric' && $orderCol !== 'value') {
+                return 'raw';
+            }
         }
 
         $allowedFilters = array_merge(['metric', 'time', 'tenant'], $dimMatch['dims']);
@@ -2855,7 +2902,7 @@ class ClickHouse extends SQL
     }
 
     /**
-     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
      */
     private function recordRoute(string $operation, array $plan, string $route): void
     {
@@ -3049,7 +3096,7 @@ class ClickHouse extends SQL
      * @param array<Query> $queries
      * @param string $type
      * @param string $route
-     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
      * @param array<Metric> $rolledResult
      */
     private function maybeDualRead(array $queries, string $type, string $route, array $plan, array $rolledResult): void
