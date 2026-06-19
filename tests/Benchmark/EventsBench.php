@@ -103,18 +103,6 @@ class EventsBench extends BenchmarkBase
             ], Usage::TYPE_EVENT);
         });
 
-        $this->runBench('bench_events_topN_method_status_30d', function (string $queryId) use ($start, $end): void {
-            $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
-                UsageQuery::groupBy('method'),
-                UsageQuery::groupBy('status'),
-                Query::equal('metric', [$this->metric]),
-                Query::greaterThanEqual('time', $start),
-                Query::lessThanEqual('time', $end),
-                Query::limit(200),
-            ], Usage::TYPE_EVENT);
-        });
-
         $todayStart = (new DateTime('today', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
         $todayEnd = (new DateTime('+2 hour'))->format('Y-m-d H:i:s');
         $this->runBench('bench_events_topN_path_today_partial', function (string $queryId) use ($todayStart, $todayEnd): void {
@@ -189,7 +177,6 @@ class EventsBench extends BenchmarkBase
             'bench_events_topN_path_30d' => 'p_by_path',
             'bench_events_topN_country_30d' => 'p_by_country',
             'bench_events_topN_service_30d' => 'p_by_service',
-            'bench_events_topN_method_status_30d' => 'p_by_method_status',
             'bench_events_topN_path_today_partial' => 'p_by_path',
         ];
         foreach ($expectedProjections as $scenario => $projection) {

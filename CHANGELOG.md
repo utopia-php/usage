@@ -13,9 +13,9 @@ The projections live on the base tables themselves:
 - `projects_usage_events.p_by_path`
 - `projects_usage_events.p_by_country`
 - `projects_usage_events.p_by_service`
-- `projects_usage_events.p_by_method_status`
 - `projects_usage_gauges.p_by_service`
 - `projects_usage_gauges.p_by_resource`
+- `projects_usage_gauges.p_by_resourceId`
 
 `Usage::find()` issues a normal `GROUP BY` against the base table; the
 optimizer picks the matching projection when one exists. The decision
@@ -39,10 +39,10 @@ ALTER TABLE <ns>_usage_events
   IN PARTITION 'YYYYMM' SETTINGS mutations_sync = 2;
 ```
 
-Repeat for `p_by_country`, `p_by_service`, `p_by_method_status` on
-events, and `p_by_service`, `p_by_resource` on gauges. Throttle by
-partition if the source table is large. Greenfield installs need no
-action — projections capture all subsequent inserts.
+Repeat for `p_by_country`, `p_by_service` on events and
+`p_by_service`, `p_by_resource`, `p_by_resourceId` on gauges. Throttle
+by partition if the source table is large. Greenfield installs need
+no action — projections capture all subsequent inserts.
 
 ### Other notable changes
 

@@ -13,7 +13,7 @@ use Utopia\Usage\UsageQuery;
 
 /**
  * Routing tests for the per-dim projection slate: p_by_path, p_by_country,
- * p_by_service, p_by_method_status. Each grouped scenario asserts:
+ * p_by_service. Each grouped scenario asserts:
  *   (a) the totals match the raw scan, and
  *   (b) the ClickHouse optimizer picked the matching projection per
  *       `system.query_log.projections`.
@@ -83,10 +83,9 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
     public static function topNProjectionProvider(): array
     {
         return [
-            'by_path'           => [['path'], 'p_by_path'],
-            'by_country'        => [['country'], 'p_by_country'],
-            'by_service'        => [['service'], 'p_by_service'],
-            'by_method_status'  => [['method', 'status'], 'p_by_method_status'],
+            'by_path'    => [['path'], 'p_by_path'],
+            'by_country' => [['country'], 'p_by_country'],
+            'by_service' => [['service'], 'p_by_service'],
         ];
     }
 

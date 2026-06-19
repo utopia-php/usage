@@ -64,7 +64,6 @@ Events (`EventsBench`):
 | `bench_events_topN_path_30d` | closed-day `groupBy('path')` MV | p50 < 100ms |
 | `bench_events_topN_country_30d` | closed-day `groupBy('country')` MV | p50 < 100ms |
 | `bench_events_topN_service_30d` | closed-day `groupBy('service')` MV | p50 < 100ms |
-| `bench_events_topN_method_status_30d` | closed-day `groupBy(method, status)` MV | p50 < 100ms |
 | `bench_events_topN_path_today_partial` | today-only path hybrid | p50 < 80ms |
 | `bench_events_topN_path_30d_filtered_resource` | dim+non-MV filter → raw | p50 < 400ms |
 | `bench_events_topN_path_country` | multi-dim not in any single MV → raw | p50 < 500ms |

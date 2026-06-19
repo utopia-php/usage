@@ -1036,7 +1036,6 @@ class ClickHouse extends SQL
         ['name' => 'p_by_path', 'dims' => ['path']],
         ['name' => 'p_by_country', 'dims' => ['country']],
         ['name' => 'p_by_service', 'dims' => ['service']],
-        ['name' => 'p_by_method_status', 'dims' => ['method', 'status']],
     ];
 
     /**
