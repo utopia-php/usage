@@ -2296,9 +2296,9 @@ class ClickHouse extends SQL
         }
 
         try {
-            $endDt = new DateTime($plan['end']);
+            $endDt = new DateTime($plan['end'], new DateTimeZone('UTC'));
             $boundaryDt = new DateTime('today', new DateTimeZone('UTC'));
-            $startDt = $plan['start'] !== null ? new DateTime($plan['start']) : null;
+            $startDt = $plan['start'] !== null ? new DateTime($plan['start'], new DateTimeZone('UTC')) : null;
         } catch (Exception $e) {
             return 'raw';
         }
@@ -2345,10 +2345,37 @@ class ClickHouse extends SQL
             return false;
         }
         try {
-            return $this->isDayAligned(new DateTime($ts));
+            return $this->isDayAligned(new DateTime($ts, new DateTimeZone('UTC')));
         } catch (Exception $e) {
             return false;
         }
+    }
+
+    /**
+     * Rewrite `param_N` bind names in a parseQueries() result so a second
+     * parse can be merged with the first without colliding on `param_0`,
+     * `param_1`, …. The hybrid sum path parses the full query list once for
+     * the raw branch and the non-time subset once for the daily branch; both
+     * counters restart at zero, so without a prefix the merged params dict
+     * silently overwrites with whichever value lands last (often a string in
+     * a slot the SQL expects to be a DateTime).
+     *
+     * @param array{filters: array<int, string>, params: array<string, mixed>} $parsed
+     * @return array{filters: array<int, string>, params: array<string, mixed>}
+     */
+    private function prefixParsedParams(array $parsed, string $prefix): array
+    {
+        $renamedParams = [];
+        $renamedFilters = $parsed['filters'];
+        foreach ($parsed['params'] as $key => $value) {
+            $newKey = $prefix . $key;
+            $renamedParams[$newKey] = $value;
+            $pattern = '/\{' . preg_quote($key, '/') . '(:[^}]+)\}/';
+            foreach ($renamedFilters as $i => $filter) {
+                $renamedFilters[$i] = preg_replace($pattern, '{' . $newKey . '$1}', $filter) ?? $filter;
+            }
+        }
+        return ['filters' => $renamedFilters, 'params' => $renamedParams];
     }
 
     /**
@@ -2737,7 +2764,10 @@ class ClickHouse extends SQL
 
         $split = $this->splitTimeQueries($queries);
         $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
-        $dailyParsed = $this->parseQueries($split['nonTime'], Usage::TYPE_EVENT);
+        $dailyParsed = $this->prefixParsedParams(
+            $this->parseQueries($split['nonTime'], Usage::TYPE_EVENT),
+            'd_'
+        );
 
         $params = array_merge($parsed['params'], $dailyParsed['params']);
 

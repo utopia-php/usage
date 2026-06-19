@@ -153,6 +153,27 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $this->assertSame($rawSum, $sum, 'hybrid must equal full raw scan');
     }
 
+    public function testHybridSumKeepsParamsDistinctWhenMetricFollowsTimeBounds(): void
+    {
+        $this->adapter->clearRouteLog();
+
+        $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $end = (new DateTime('+1 hour'))->format('Y-m-d H:i:s');
+
+        $rawSum = $this->sumRaw('routed.metric', $start, $end);
+
+        $sum = $this->usage->sum([
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+            Query::equal('metric', ['routed.metric']),
+        ], 'value', Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('hybrid', $log[0]['route']);
+        $this->assertSame($rawSum, $sum, 'hybrid sum must match the raw scan even when the metric filter is appended after the time bounds');
+    }
+
     public function testDimensionPresentForcesRaw(): void
     {
         $this->adapter->clearRouteLog();
