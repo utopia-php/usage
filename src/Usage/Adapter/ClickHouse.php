@@ -2313,11 +2313,15 @@ class ClickHouse extends SQL
             }
         }
 
+        if (!$this->isDayAligned($startDt)) {
+            return 'raw';
+        }
+
         if ($endDt >= $boundaryDt) {
             return 'hybrid';
         }
 
-        if (!$this->isDayAligned($startDt) || !$this->isDayAligned($endDt)) {
+        if (!$this->isDayAligned($endDt)) {
             return 'raw';
         }
 
@@ -2494,10 +2498,11 @@ class ClickHouse extends SQL
 
     /**
      * Rewrite the time bounds in a query list so a purge against a
-     * day-bucketed rollup matches whole-day windows. Lower bounds are
-     * floored to start-of-day; upper bounds are floored to the start of the
-     * next day so a half-open mid-day end still includes that day's rollup
-     * row. Other queries pass through unchanged.
+     * day-bucketed rollup only touches days *entirely* covered by the
+     * caller's range. Mid-day boundaries shrink inward — lower bounds
+     * ceil to the next day's midnight (skipping a partial start day),
+     * upper bounds floor to the same day's midnight (skipping a partial
+     * end day). Other queries pass through unchanged.
      *
      * @param array<Query> $queries
      * @return array<Query>
@@ -2515,28 +2520,28 @@ class ClickHouse extends SQL
             $values = $query->getValues();
 
             if ($method === Query::TYPE_GREATER_EQUAL || $method === Query::TYPE_GREATER) {
+                $ceiled = $this->ceilLowerToFullyCoveredDayStart($this->stringifyTime($values[0] ?? null));
+                if ($ceiled === null) {
+                    $output[] = $query;
+                    continue;
+                }
+                $output[] = Query::greaterThanEqual('time', $ceiled);
+                continue;
+            }
+
+            if ($method === Query::TYPE_LESSER_EQUAL || $method === Query::TYPE_LESSER) {
                 $floored = $this->floorToStartOfDay($this->stringifyTime($values[0] ?? null));
                 if ($floored === null) {
                     $output[] = $query;
                     continue;
                 }
-                $output[] = Query::greaterThanEqual('time', $floored);
-                continue;
-            }
-
-            if ($method === Query::TYPE_LESSER_EQUAL || $method === Query::TYPE_LESSER) {
-                $ceiled = $this->floorToStartOfNextDay($this->stringifyTime($values[0] ?? null));
-                if ($ceiled === null) {
-                    $output[] = $query;
-                    continue;
-                }
-                $output[] = Query::lessThan('time', $ceiled);
+                $output[] = Query::lessThan('time', $floored);
                 continue;
             }
 
             if ($method === Query::TYPE_BETWEEN) {
-                $lower = $this->floorToStartOfDay($this->stringifyTime($values[0] ?? null));
-                $upper = $this->floorToStartOfNextDay($this->stringifyTime($values[1] ?? null));
+                $lower = $this->ceilLowerToFullyCoveredDayStart($this->stringifyTime($values[0] ?? null));
+                $upper = $this->floorToStartOfDay($this->stringifyTime($values[1] ?? null));
                 if ($lower !== null) {
                     $output[] = Query::greaterThanEqual('time', $lower);
                 }
@@ -2553,22 +2558,25 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Floor a stringified timestamp to the UTC start of the next day. Used to
-     * expand an inclusive upper bound into a half-open `< floor(next_day)`
-     * window for day-bucketed rollups.
+     * Round a lower-bound timestamp up to the first day-start that is fully
+     * inside the caller's range. Midnight stays as-is; any non-midnight value
+     * advances to the next day's midnight so the rollup purge skips the
+     * partially-covered start day.
      */
-    private function floorToStartOfNextDay(?string $value): ?string
+    private function ceilLowerToFullyCoveredDayStart(?string $value): ?string
     {
-        $floored = $this->floorToStartOfDay($value);
-        if ($floored === null) {
+        if ($value === null) {
             return null;
         }
         try {
-            $dt = new DateTime($floored, new DateTimeZone('UTC'));
+            $dt = new DateTime($value, new DateTimeZone('UTC'));
         } catch (Exception $e) {
             return null;
         }
-        $dt->modify('+1 day');
+        if ($dt->format('H:i:s.u') !== '00:00:00.000000') {
+            $dt->setTime(0, 0, 0, 0);
+            $dt->modify('+1 day');
+        }
         return $dt->format('Y-m-d H:i:s.v');
     }
 

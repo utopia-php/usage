@@ -136,7 +136,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
     {
         $this->adapter->clearRouteLog();
 
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
+        $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
         $end = (new DateTime('+1 hour'))->format('Y-m-d H:i:s');
 
         $rawSum = $this->sumRaw('routed.metric', $start, $end);
@@ -191,10 +191,10 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $this->assertSame('raw', $log[0]['route']);
     }
 
-    public function testHybridSumFloorsDailyLowerBoundToStartOfDay(): void
+    public function testMidDayStartWithHybridWindowFallsBackToRaw(): void
     {
-        $metric = 'routed.metric.hybrid_boundary';
-        $this->seedHistoricalRow($metric, 70, '-2 days 03:00:00', ['path' => '/v1/floor']);
+        $metric = 'routed.metric.hybrid_mid_day';
+        $this->seedHistoricalRow($metric, 70, '-2 days 03:00:00', ['path' => '/v1/early']);
 
         $this->adapter->clearRouteLog();
 
@@ -209,8 +209,8 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('hybrid', $log[0]['route']);
-        $this->assertSame(70, $sum, 'hybrid daily branch must include rollup row on the start day');
+        $this->assertSame('raw', $log[0]['route'], 'a mid-day start with a hybrid window must fall back to raw');
+        $this->assertSame(0, $sum, 'pre-start events on the same day must not be included in the result');
     }
 
     public function testIntervalPresentForcesRaw(): void
