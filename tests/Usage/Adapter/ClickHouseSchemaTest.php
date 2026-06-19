@@ -114,6 +114,10 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
                 metric String,
                 value Int64,
                 time DateTime64(3),
+                resourceId Nullable(String),
+                resourceInternalId Nullable(String),
+                teamId Nullable(String),
+                teamInternalId Nullable(String),
                 tenant Nullable(String)
             )
             ENGINE = MergeTree()
