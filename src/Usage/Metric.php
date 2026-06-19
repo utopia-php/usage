@@ -63,7 +63,7 @@ class Metric extends ArrayObject
     /**
      * Gauge-specific column names that are extracted from tags into dedicated columns.
      */
-    public const GAUGE_COLUMNS = ['teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
+    public const GAUGE_COLUMNS = ['service', 'resource', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
 
     /**
      * Construct a new metric object.
@@ -682,6 +682,8 @@ class Metric extends ArrayObject
                 'array' => false,
                 'filters' => ['datetime'],
             ],
+            $stringColumn('service', 256),
+            $stringColumn('resource', 256),
             $stringColumn('teamId', 255),
             $stringColumn('teamInternalId', 255),
             $stringColumn('resourceId', 255),
@@ -709,9 +711,6 @@ class Metric extends ArrayObject
      */
     public static function getEventIndexes(): array
     {
-        // `metric` and `time` are part of the ClickHouse primary key
-        // (ORDER BY (tenant, metric, time, id)), so separate bloom_filter
-        // indexes on them would be redundant.
         $indexed = [
             'path', 'method', 'status',
             'service', 'resource', 'resourceId', 'resourceInternalId',
@@ -720,16 +719,16 @@ class Metric extends ArrayObject
             'osName', 'clientType', 'clientName', 'deviceName',
         ];
 
+        $setIndexed = ['status', 'method', 'country', 'service', 'clientType', 'osName'];
+
         return array_map(
-            static function (string $col): array {
+            static function (string $col) use ($setIndexed): array {
                 $entry = [
                     '$id' => 'index-' . $col,
                     'type' => 'key',
                     'attributes' => [$col],
+                    'indexType' => in_array($col, $setIndexed, true) ? 'set(0)' : 'bloom_filter',
                 ];
-                // path is sized 1024 for data fidelity; cap the index key at
-                // 255 so the MariaDB single-attribute index stays within the
-                // 768-byte InnoDB key prefix limit.
                 if ($col === 'path') {
                     $entry['lengths'] = [255];
                 }
@@ -746,13 +745,18 @@ class Metric extends ArrayObject
      */
     public static function getGaugeIndexes(): array
     {
+        $indexed = ['service', 'resource', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'];
+
+        $setIndexed = ['service', 'resource'];
+
         return array_map(
             static fn (string $col): array => [
                 '$id' => 'index-' . $col,
                 'type' => 'key',
                 'attributes' => [$col],
+                'indexType' => in_array($col, $setIndexed, true) ? 'set(0)' : 'bloom_filter',
             ],
-            ['resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'],
+            $indexed,
         );
     }
 

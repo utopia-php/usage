@@ -2,9 +2,12 @@
 
 namespace Utopia\Usage\Adapter;
 
+use DateTime;
+use DateTimeZone;
 use Exception;
-use Utopia\Query\Query;
+use Throwable;
 use Utopia\Fetch\Client;
+use Utopia\Query\Query;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
@@ -41,6 +44,8 @@ class ClickHouse extends SQL
     private const DEFAULT_TABLE = self::COLLECTION;
 
     private const INSERT_BATCH_SIZE = 1_000;
+
+    private const ROUTE_LOG_MAX = 1_000;
 
     /** @var array<string, string> Maps interval strings to ClickHouse time functions */
     private const INTERVAL_FUNCTIONS = [
@@ -122,6 +127,27 @@ class ClickHouse extends SQL
 
     /** @var bool Whether to wait for async insert confirmation before returning */
     private bool $asyncInsertWait = true;
+
+    /**
+     * Opt-in query_id forwarded to ClickHouse on the next query() call only.
+     * Cleared after a single use so callers must set it explicitly per query.
+     */
+    private ?string $nextQueryId = null;
+
+    /**
+     * Structured log entries recorded for each routing decision. Ops
+     * dashboards read these to confirm rollup hit-rate.
+     *
+     * @var array<array{operation: string, metric: ?string, route: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string}>
+     */
+    private array $routeLog = [];
+
+    /**
+     * Probability (0.0 - 1.0) that the next eligible read also runs against
+     * the raw events table and logs the delta. Recommended 0.01 for
+     * progressive rollout; default 0.0 (off).
+     */
+    private float $dualReadSampleRate = 0.0;
 
     /**
      * @param  string  $host  ClickHouse host
@@ -252,6 +278,55 @@ class ClickHouse extends SQL
     {
         $this->asyncInserts = $enable;
         $this->asyncInsertWait = $waitForConfirmation;
+        return $this;
+    }
+
+    /**
+     * Forward a single-use query_id to ClickHouse on the next query() call.
+     * Cleared after one dispatch.
+     *
+     * @internal
+     */
+    public function setNextQueryId(?string $queryId): self
+    {
+        $this->nextQueryId = $queryId;
+        return $this;
+    }
+
+    /**
+     * Return the in-memory route-decision log (operation, metric,
+     * route, window, dimensions, interval). Cleared by
+     * clearRouteLog().
+     *
+     * @return array<array{operation: string, metric: ?string, route: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string}>
+     */
+    public function getRouteLog(): array
+    {
+        return $this->routeLog;
+    }
+
+    public function clearRouteLog(): self
+    {
+        $this->routeLog = [];
+        return $this;
+    }
+
+    /**
+     * Sample rate for dual-read parity checks. When > 0, eligible
+     * routed reads also execute against the raw events table and log a
+     * `warning` route entry if the totals diverge by >1%.
+     *
+     * @param float $rate 0.0 (off) … 1.0 (every read)
+     */
+    public function setDualReadSampleRate(float $rate): self
+    {
+        if ($rate < 0.0) {
+            $rate = 0.0;
+        }
+        if ($rate > 1.0) {
+            $rate = 1.0;
+        }
+        $this->dualReadSampleRate = $rate;
         return $this;
     }
 
@@ -520,13 +595,7 @@ class ClickHouse extends SQL
      */
     private function getTableName(): string
     {
-        $tableName = $this->table;
-
-        if (!empty($this->namespace)) {
-            $tableName = $this->namespace . '_' . $tableName;
-        }
-
-        return $tableName;
+        return !empty($this->namespace) ? $this->namespace . '_' . $this->table : $this->table;
     }
 
     /**
@@ -578,8 +647,7 @@ class ClickHouse extends SQL
      */
     private function buildTableReference(string $tableName): string
     {
-        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
-        return $escapedTable;
+        return $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
     }
 
     /**
@@ -739,11 +807,17 @@ class ClickHouse extends SQL
      */
     private function query(string $sql, array $params = []): string
     {
+        $queryId = $this->nextQueryId;
+        $this->nextQueryId = null;
+
         return $this->executeWithRetry(
-            function (int $attempt) use ($sql, $params): string {
+            function (int $attempt) use ($sql, $params, $queryId): string {
                 $startTime = microtime(true);
                 $scheme = $this->secure ? 'https' : 'http';
                 $url = "{$scheme}://{$this->host}:{$this->port}/";
+                if ($queryId !== null) {
+                    $url .= '?' . http_build_query(['query_id' => $queryId]);
+                }
 
                 $this->client->addHeader('X-ClickHouse-Database', $this->database);
 
@@ -949,6 +1023,37 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Per-dim projection slate. Each entry declares an `ADD PROJECTION` on
+     * the base events table. The ClickHouse optimizer transparently routes
+     * grouped reads whose GROUP BY shape matches.
+     *
+     * The (method, status) cross-product is bounded (~180 keys) so the two
+     * dims share a single projection; everything else is single-dim.
+     *
+     * @var array<array{name: string, dims: array<int, string>}>
+     */
+    private const EVENT_PROJECTIONS = [
+        ['name' => 'p_by_path', 'dims' => ['path']],
+        ['name' => 'p_by_country', 'dims' => ['country']],
+        ['name' => 'p_by_service', 'dims' => ['service']],
+    ];
+
+    /**
+     * Per-dim projection slate for gauges. The projection stores
+     * argMax(value, time) per (metric, time, [tenant,] dims) tuple; the
+     * ClickHouse optimizer rewrites grouped argMax reads against the base
+     * table to read from the projection.
+     *
+     * @var array<array{name: string, dims: array<int, string>}>
+     */
+    private const GAUGE_PROJECTIONS = [
+        ['name' => 'p_by_service', 'dims' => ['service']],
+        ['name' => 'p_by_resource', 'dims' => ['resource']],
+        ['name' => 'p_by_resourceId', 'dims' => ['resourceId']],
+        ['name' => 'p_by_resource_resourceId', 'dims' => ['resource', 'resourceId']],
+    ];
+
+    /**
      * Setup ClickHouse table structure.
      *
      * Creates:
@@ -956,6 +1061,7 @@ class ClickHouse extends SQL
      * 2. Events daily table (SummingMergeTree) for pre-aggregation
      * 3. Events daily materialized view
      * 4. Gauges table (MergeTree) with simple schema
+     * 5. Per-dim projections on the events / gauges base tables
      *
      * @throws Exception
      */
@@ -987,6 +1093,98 @@ class ClickHouse extends SQL
             'gauge',
             $this->getGaugeIndexes()
         );
+
+        $this->ensureGaugeDimColumns();
+
+        // --- Per-dim projections on the events / gauges base tables ---
+        $this->setLightweightMutationProjectionMode($this->getEventsTableName());
+        foreach (self::EVENT_PROJECTIONS as $projection) {
+            $this->addProjection(
+                $this->getEventsTableName(),
+                $projection['name'],
+                $projection['dims'],
+                'sum(value) AS value'
+            );
+        }
+        $this->setLightweightMutationProjectionMode($this->getGaugesTableName());
+        foreach (self::GAUGE_PROJECTIONS as $projection) {
+            $this->addProjection(
+                $this->getGaugesTableName(),
+                $projection['name'],
+                $projection['dims'],
+                'argMax(value, time) AS value'
+            );
+        }
+    }
+
+    /**
+     * Allow lightweight DELETE on tables that carry projections. ClickHouse
+     * defaults to throwing because a delete can leave projection parts
+     * inconsistent; 'rebuild' tells the engine to re-materialize the
+     * affected projection parts after the delete.
+     */
+    private function setLightweightMutationProjectionMode(string $baseTable): void
+    {
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($baseTable);
+        $sql = "ALTER TABLE {$escapedTable} MODIFY SETTING lightweight_mutation_projection_mode = 'rebuild'";
+        $this->query($sql);
+    }
+
+    /**
+     * Backfill the service / resource columns on an existing gauges table.
+     * setup() uses CREATE TABLE IF NOT EXISTS, so deployments that came up
+     * before these columns were added never receive them — the gauge
+     * projections would then fail because their SELECT references columns
+     * the source table lacks.
+     */
+    private function ensureGaugeDimColumns(): void
+    {
+        $gaugesTable = $this->escapeIdentifier($this->database)
+            . '.' . $this->escapeIdentifier($this->getGaugesTableName());
+
+        $sql = "ALTER TABLE {$gaugesTable} "
+            . 'ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String)), '
+            . 'ADD COLUMN IF NOT EXISTS resource LowCardinality(Nullable(String))';
+
+        $this->query($sql);
+    }
+
+    /**
+     * Idempotently add a projection to a base table. Projection columns are
+     * (metric, time, [tenant,] ...dims, aggregate) and the GROUP BY shape
+     * matches; the ClickHouse optimizer picks this projection for any
+     * grouped query whose GROUP BY is a subset of those keys and whose
+     * filters are expressible on the projection columns. Raw `time` is
+     * kept in the projection (not `toStartOfDay`) so `WHERE time BETWEEN`
+     * filters can match the projection without query rewriting.
+     *
+     * @param array<int, string> $dims
+     */
+    private function addProjection(string $baseTable, string $name, array $dims, string $aggregateExpr): void
+    {
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($baseTable);
+
+        $selectParts = ['metric', 'time'];
+        $groupParts = ['metric', 'time'];
+        if ($this->sharedTables) {
+            $selectParts[] = 'tenant';
+            $groupParts[] = 'tenant';
+        }
+        foreach ($dims as $dim) {
+            $selectParts[] = $this->escapeIdentifier($dim);
+            $groupParts[] = $this->escapeIdentifier($dim);
+        }
+        $selectParts[] = $aggregateExpr;
+
+        $selectSql = implode(', ', $selectParts);
+        $groupSql = implode(', ', $groupParts);
+
+        $sql = "ALTER TABLE {$escapedTable} ADD PROJECTION IF NOT EXISTS {$name} ("
+            . "SELECT {$selectSql} "
+            . "GROUP BY {$groupSql}"
+            . ")";
+
+        $this->query($sql);
     }
 
     /**
@@ -999,14 +1197,14 @@ class ClickHouse extends SQL
      */
     private function createTable(string $tableName, string $type, array $indexes): void
     {
-        $columns = ['id String'];
+        $columns = ['id String ' . $this->getColumnCodec('id')];
 
         foreach ($this->getAttributes($type) as $attribute) {
             /** @var string $id */
             $id = $attribute['$id'];
 
             if ($id === 'time') {
-                $columns[] = 'time DateTime64(3)';
+                $columns[] = "time DateTime64(3, 'UTC') " . $this->getColumnCodec('time');
             } else {
                 $columns[] = $this->getColumnDefinition($id, $type);
             }
@@ -1017,17 +1215,17 @@ class ClickHouse extends SQL
             $columns[] = 'tenant Nullable(String)';
         }
 
-        // Build indexes
         $indexDefs = [];
         foreach ($indexes as $index) {
             /** @var string $indexName */
             $indexName = $index['$id'];
             /** @var array<string> $attributes */
             $attributes = $index['attributes'];
+            $indexType = is_string($index['indexType'] ?? null) ? $index['indexType'] : 'bloom_filter';
             $escapedIndexName = $this->escapeIdentifier($indexName);
             $escapedAttributes = array_map(fn ($attr) => $this->escapeIdentifier($attr), $attributes);
             $attributeList = implode(', ', $escapedAttributes);
-            $indexDefs[] = "INDEX {$escapedIndexName} ({$attributeList}) TYPE bloom_filter GRANULARITY 1";
+            $indexDefs[] = "INDEX {$escapedIndexName} ({$attributeList}) TYPE {$indexType} GRANULARITY 1";
         }
 
         $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
@@ -1071,7 +1269,7 @@ class ClickHouse extends SQL
         $columns = [
             'metric String',
             'value Int64',
-            'time DateTime64(3)',
+            "time DateTime64(3, 'UTC')",
             'resource LowCardinality(Nullable(String))',
             'resourceId Nullable(String)',
             'resourceInternalId Nullable(String)',
@@ -1107,10 +1305,6 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    // NOTE: setup() uses CREATE IF NOT EXISTS for idempotency. If sharedTables
-    // is toggled between calls, the original MV definition is kept (DROP+CREATE
-    // would lose buffered data). This is acceptable for v1 since setup() is
-    // expected to run once per environment lifecycle.
     private function createDailyMaterializedView(): void
     {
         $eventsTable = $this->getEventsTableName();
@@ -1124,11 +1318,11 @@ class ClickHouse extends SQL
         $dimensions = 'resource, resourceId, resourceInternalId, teamId, teamInternalId';
 
         if ($this->sharedTables) {
-            $innerSelect  = "metric, tenant, {$dimensions}, sum(value) as value, toStartOfDay(time) as d";
+            $innerSelect  = "metric, tenant, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
             $innerGroupBy = "metric, tenant, {$dimensions}, d";
             $outerSelect  = "metric, value, d as time, tenant, {$dimensions}";
         } else {
-            $innerSelect  = "metric, {$dimensions}, sum(value) as value, toStartOfDay(time) as d";
+            $innerSelect  = "metric, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
             $innerGroupBy = "metric, {$dimensions}, d";
             $outerSelect  = "metric, value, d as time, {$dimensions}";
         }
@@ -1239,25 +1433,25 @@ class ClickHouse extends SQL
     /**
      * Format datetime for ClickHouse compatibility.
      *
-     * @param \DateTime|string|null $dateTime
+     * @param DateTime|string|null $dateTime
      * @return string
      * @throws Exception
      */
     private function formatDateTime($dateTime): string
     {
         if ($dateTime === null) {
-            return (new \DateTime())->format('Y-m-d H:i:s.v');
+            return (new DateTime())->format('Y-m-d H:i:s.v');
         }
 
-        if ($dateTime instanceof \DateTime) {
+        if ($dateTime instanceof DateTime) {
             return $dateTime->format('Y-m-d H:i:s.v');
         }
 
         if (is_string($dateTime)) {
             try {
-                $dt = new \DateTime($dateTime);
+                $dt = new DateTime($dateTime);
                 return $dt->format('Y-m-d H:i:s.v');
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 throw new Exception("Invalid datetime string: {$dateTime}");
             }
         }
@@ -1283,8 +1477,11 @@ class ClickHouse extends SQL
 
         $lowCardinality = [
             'country', 'region', 'service', 'resource',
-            'osCode', 'osName', 'clientType', 'clientCode', 'clientName',
-            'clientEngine', 'deviceName', 'deviceBrand',
+            'osCode', 'osName', 'osVersion',
+            'clientType', 'clientCode', 'clientName', 'clientVersion',
+            'clientEngine', 'clientEngineVersion',
+            'deviceName', 'deviceBrand', 'deviceModel',
+            'hostname',
         ];
 
         if (in_array($id, $lowCardinality, true)) {
@@ -1296,7 +1493,7 @@ class ClickHouse extends SQL
             'integer' => 'Int64',
             'float' => 'Float64',
             'boolean' => 'UInt8',
-            'datetime' => 'DateTime64(3)',
+            'datetime' => "DateTime64(3, 'UTC')",
             default => 'String',
         };
 
@@ -1305,9 +1502,33 @@ class ClickHouse extends SQL
 
     protected function getColumnDefinition(string $id, string $type = 'event'): string
     {
-        $chType = $this->getColumnType($id, $type);
-        $escapedId = $this->escapeIdentifier($id);
-        return "{$escapedId} {$chType}";
+        $codec = $this->getColumnCodec($id);
+        $suffix = $codec !== '' ? ' ' . $codec : '';
+        return $this->escapeIdentifier($id) . ' ' . $this->getColumnType($id, $type) . $suffix;
+    }
+
+    /**
+     * Return the per-column ClickHouse CODEC clause for the events / gauges
+     * tables. Empty string when no codec is overridden for this column.
+     */
+    private function getColumnCodec(string $id): string
+    {
+        if ($id === 'time') {
+            return 'CODEC(Delta(4), LZ4)';
+        }
+
+        $zstdColumns = [
+            'id', 'path', 'hostname',
+            'resourceId', 'resourceInternalId',
+            'teamId', 'teamInternalId',
+            'osVersion', 'clientVersion', 'clientEngineVersion', 'deviceModel',
+        ];
+
+        if (in_array($id, $zstdColumns, true)) {
+            return 'CODEC(ZSTD(3))';
+        }
+
+        return '';
     }
 
     /**
@@ -1914,7 +2135,669 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('sum()');
 
+        if ($type === Usage::TYPE_EVENT && $attribute === 'value') {
+            return $this->routedSum($queries, 'sum');
+        }
+
         return $this->sumFromTable($queries, $attribute, $type);
+    }
+
+    /**
+     * Routed event flat-sum: pick the cheapest source (closed-day MV, hybrid
+     * MV+raw, or raw) for a `SELECT sum(value)` over the events table and
+     * record the decision in the route log under `$operation`.
+     *
+     * @param array<Query> $queries
+     */
+    private function routedSum(array $queries, string $operation): int
+    {
+        $plan = $this->extractRoutingPlan($queries);
+        $route = $this->selectAggregateSource($plan);
+        $this->recordRoute($operation, $plan, $route);
+
+        if ($route === 'daily') {
+            $total = $this->sumDaily($this->translateInclusiveMidnightForDaily($queries), 'value');
+            $this->maybeDualRead($queries, $route, $plan, $total);
+            return $total;
+        }
+        if ($route === 'hybrid') {
+            $total = $this->sumHybridDailyAndRaw($queries, $plan);
+            $this->maybeDualRead($queries, $route, $plan, $total);
+            return $total;
+        }
+
+        return $this->sumFromTable($queries, 'value', Usage::TYPE_EVENT);
+    }
+
+    /**
+     * Snapshot of the parsed query shape relevant for routing.
+     *
+     * @param array<Query> $queries
+     * @return array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns: array<int, string>, hasCursor: bool}
+     */
+    private function extractRoutingPlan(array $queries): array
+    {
+        $metric = null;
+        $start = null;
+        $end = null;
+        $filterColumns = [];
+        $dimensions = [];
+        $interval = null;
+        $orderColumns = [];
+        $hasCursor = false;
+
+        foreach ($queries as $query) {
+            $method = $query->getMethod();
+            $attribute = $query->getAttribute();
+            $values = $query->getValues();
+
+            if ($method === UsageQuery::TYPE_GROUP_BY) {
+                if (!in_array($attribute, $dimensions, true)) {
+                    $dimensions[] = $attribute;
+                }
+                continue;
+            }
+            if ($method === UsageQuery::TYPE_GROUP_BY_INTERVAL) {
+                $intervalValue = $values[0] ?? null;
+                $interval = is_string($intervalValue) ? $intervalValue : null;
+                continue;
+            }
+            if ($method === Query::TYPE_CURSOR_AFTER || $method === Query::TYPE_CURSOR_BEFORE) {
+                $rawCursor = $values[0] ?? null;
+                if ($rawCursor !== null) {
+                    $hasCursor = true;
+                }
+                continue;
+            }
+            if ($method === Query::TYPE_ORDER_ASC || $method === Query::TYPE_ORDER_DESC) {
+                if ($attribute !== '' && !in_array($attribute, $orderColumns, true)) {
+                    $orderColumns[] = $attribute;
+                }
+                continue;
+            }
+            if (in_array($method, [Query::TYPE_LIMIT, Query::TYPE_OFFSET], true)) {
+                continue;
+            }
+
+            if ($attribute === '') {
+                continue;
+            }
+
+            if (!in_array($attribute, $filterColumns, true)) {
+                $filterColumns[] = $attribute;
+            }
+
+            if ($attribute === 'metric' && $method === Query::TYPE_EQUAL) {
+                $first = $values[0] ?? null;
+                if (is_string($first) && count($values) === 1) {
+                    $metric = $first;
+                }
+            }
+
+            if ($attribute === 'time') {
+                if ($method === Query::TYPE_GREATER_EQUAL || $method === Query::TYPE_GREATER) {
+                    $start = $this->tightenLowerBound($start, $this->stringifyTime($values[0] ?? null));
+                } elseif ($method === Query::TYPE_LESSER_EQUAL || $method === Query::TYPE_LESSER) {
+                    $end = $this->tightenUpperBound($end, $this->stringifyTime($values[0] ?? null));
+                } elseif ($method === Query::TYPE_BETWEEN) {
+                    $start = $this->tightenLowerBound($start, $this->stringifyTime($values[0] ?? null));
+                    $end = $this->tightenUpperBound($end, $this->stringifyTime($values[1] ?? null));
+                }
+            }
+        }
+
+        return [
+            'metric' => $metric,
+            'start' => $start,
+            'end' => $end,
+            'filterColumns' => $filterColumns,
+            'dimensions' => $dimensions,
+            'interval' => $interval,
+            'orderColumns' => $orderColumns,
+            'hasCursor' => $hasCursor,
+        ];
+    }
+
+    /**
+     * Pure routing decision for the events flat-sum path (sum / getTotal).
+     * Returns one of:
+     *   - 'raw'    — scan the raw events table.
+     *   - 'daily'  — read the events daily MV (closed-day window, only
+     *                daily-MV-compatible filters, no grouping).
+     *   - 'hybrid' — closed days from events daily MV, today's partial from raw.
+     *
+     * Grouped reads (`dimensions` non-empty) route to 'raw' here; the
+     * base `find()` issues a GROUP BY query against the events / gauges
+     * table and the ClickHouse optimizer transparently picks the
+     * matching projection.
+     *
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
+     */
+    private function selectAggregateSource(array $plan): string
+    {
+        if ($plan['interval'] !== null) {
+            return 'raw';
+        }
+
+        if ($plan['end'] === null) {
+            return 'raw';
+        }
+
+        if (!empty($plan['hasCursor'])) {
+            return 'raw';
+        }
+
+        if (in_array('id', $plan['filterColumns'], true) || in_array('value', $plan['filterColumns'], true)) {
+            return 'raw';
+        }
+
+        if (!empty($plan['dimensions'])) {
+            return 'raw';
+        }
+
+        try {
+            $endDt = new DateTime($plan['end'], new DateTimeZone('UTC'));
+            $boundaryDt = new DateTime('today', new DateTimeZone('UTC'));
+            $startDt = $plan['start'] !== null ? new DateTime($plan['start'], new DateTimeZone('UTC')) : null;
+        } catch (Exception $e) {
+            return 'raw';
+        }
+
+        if ($startDt !== null && $startDt >= $boundaryDt) {
+            return 'raw';
+        }
+
+        foreach ($plan['filterColumns'] as $column) {
+            if (!in_array($column, self::DAILY_COLUMNS, true) && $column !== 'tenant') {
+                return 'raw';
+            }
+        }
+
+        if (!$this->isDayAligned($startDt)) {
+            return 'raw';
+        }
+
+        if ($endDt >= $boundaryDt) {
+            return 'hybrid';
+        }
+
+        if (!$this->isDayAligned($endDt)) {
+            return 'raw';
+        }
+
+        return 'daily';
+    }
+
+    /**
+     * Returns true when the timestamp falls exactly on a UTC midnight.
+     */
+    private function isDayAligned(?DateTime $dt): bool
+    {
+        if ($dt === null) {
+            return true;
+        }
+        return $dt->format('H:i:s.u') === '00:00:00.000000';
+    }
+
+    private function isMidnightString(?string $ts): bool
+    {
+        if ($ts === null) {
+            return false;
+        }
+        try {
+            return $this->isDayAligned(new DateTime($ts, new DateTimeZone('UTC')));
+        } catch (Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Rewrite `param_N` bind names in a parseQueries() result so a second
+     * parse can be merged with the first without colliding on `param_0`,
+     * `param_1`, …. The hybrid sum path parses the full query list once for
+     * the raw branch and the non-time subset once for the daily branch; both
+     * counters restart at zero, so without a prefix the merged params dict
+     * silently overwrites with whichever value lands last (often a string in
+     * a slot the SQL expects to be a DateTime).
+     *
+     * @param array{filters: array<int, string>, params: array<string, mixed>} $parsed
+     * @return array{filters: array<int, string>, params: array<string, mixed>}
+     */
+    private function prefixParsedParams(array $parsed, string $prefix): array
+    {
+        $renamedParams = [];
+        $renamedFilters = $parsed['filters'];
+        foreach ($parsed['params'] as $key => $value) {
+            $newKey = $prefix . $key;
+            $renamedParams[$newKey] = $value;
+            $pattern = '/\{' . preg_quote($key, '/') . '(:[^}]+)\}/';
+            foreach ($renamedFilters as $i => $filter) {
+                $renamedFilters[$i] = preg_replace($pattern, '{' . $newKey . '$1}', $filter) ?? $filter;
+            }
+        }
+        return ['filters' => $renamedFilters, 'params' => $renamedParams];
+    }
+
+    /**
+     * Daily MV rows are keyed at toStartOfDay(time), so an inclusive
+     * `<= midnight` upper bound matches the row representing the entire
+     * end day and over-counts. Rewrite inclusive-midnight upper bounds
+     * (LESSER_EQUAL and BETWEEN upper) to exclusive `<` for the daily
+     * branch. Other bounds pass through untouched.
+     *
+     * @param array<Query> $queries
+     * @return array<Query>
+     */
+    private function translateInclusiveMidnightForDaily(array $queries): array
+    {
+        $result = [];
+        foreach ($queries as $q) {
+            if (!($q instanceof Query) || $q->getAttribute() !== 'time') {
+                $result[] = $q;
+                continue;
+            }
+            $method = $q->getMethod();
+            $values = $q->getValues();
+
+            if ($method === Query::TYPE_LESSER_EQUAL) {
+                $upper = $this->stringifyTime($values[0] ?? null);
+                if ($upper !== null && $this->isMidnightString($upper)) {
+                    $result[] = new Query(Query::TYPE_LESSER, 'time', [$upper]);
+                    continue;
+                }
+            }
+
+            if ($method === Query::TYPE_BETWEEN && count($values) >= 2) {
+                $upper = $this->stringifyTime($values[1] ?? null);
+                if ($upper !== null && $this->isMidnightString($upper)) {
+                    $lower = $this->stringifyTime($values[0] ?? null);
+                    if ($lower !== null) {
+                        $result[] = new Query(Query::TYPE_GREATER_EQUAL, 'time', [$lower]);
+                    }
+                    $result[] = new Query(Query::TYPE_LESSER, 'time', [$upper]);
+                    continue;
+                }
+            }
+
+            $result[] = $q;
+        }
+        return $result;
+    }
+
+    private function stringifyTime(mixed $value): ?string
+    {
+        if ($value instanceof DateTime) {
+            return $value->format('Y-m-d H:i:s');
+        }
+        return is_string($value) ? $value : null;
+    }
+
+    /**
+     * Combine two candidate lower bounds into the tighter (later) one.
+     * Returns whichever input is non-null when only one is present.
+     */
+    private function tightenLowerBound(?string $current, ?string $candidate): ?string
+    {
+        if ($current === null) {
+            return $candidate;
+        }
+        if ($candidate === null) {
+            return $current;
+        }
+        try {
+            $cur = new DateTime($current);
+            $cand = new DateTime($candidate);
+        } catch (Exception $e) {
+            return $current;
+        }
+        return $cand > $cur ? $candidate : $current;
+    }
+
+    /**
+     * Combine two candidate upper bounds into the tighter (earlier) one.
+     */
+    private function tightenUpperBound(?string $current, ?string $candidate): ?string
+    {
+        if ($current === null) {
+            return $candidate;
+        }
+        if ($candidate === null) {
+            return $current;
+        }
+        try {
+            $cur = new DateTime($current);
+            $cand = new DateTime($candidate);
+        } catch (Exception $e) {
+            return $current;
+        }
+        return $cand < $cur ? $candidate : $current;
+    }
+
+    /**
+     * Partition a query list into non-time filters and time filters. Used by
+     * the hybrid helpers so the daily branch can substitute a day-floored
+     * lower bound while the raw branch keeps the caller's original literal.
+     *
+     * @param array<Query> $queries
+     * @return array{nonTime: array<Query>, time: array<Query>}
+     */
+    private function splitTimeQueries(array $queries): array
+    {
+        $timeMethods = [
+            Query::TYPE_GREATER,
+            Query::TYPE_GREATER_EQUAL,
+            Query::TYPE_LESSER,
+            Query::TYPE_LESSER_EQUAL,
+            Query::TYPE_BETWEEN,
+            Query::TYPE_NOT_BETWEEN,
+        ];
+
+        $nonTime = [];
+        $time = [];
+        foreach ($queries as $query) {
+            if ($query->getAttribute() === 'time' && in_array($query->getMethod(), $timeMethods, true)) {
+                $time[] = $query;
+            } else {
+                $nonTime[] = $query;
+            }
+        }
+
+        return ['nonTime' => $nonTime, 'time' => $time];
+    }
+
+    /**
+     * Floor a stringified timestamp to its UTC start-of-day. Returns null if
+     * the input can't be parsed.
+     */
+    private function floorToStartOfDay(?string $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        try {
+            $dt = new DateTime($value, new DateTimeZone('UTC'));
+        } catch (Exception $e) {
+            return null;
+        }
+        $dt->setTime(0, 0, 0);
+        return $dt->format('Y-m-d H:i:s.v');
+    }
+
+    /**
+     * Rewrite the time bounds in a query list so a purge against a
+     * day-bucketed rollup only touches days *entirely* covered by the
+     * caller's range. Mid-day boundaries shrink inward — lower bounds
+     * ceil to the next day's midnight (skipping a partial start day),
+     * upper bounds floor to the same day's midnight (skipping a partial
+     * end day). Other queries pass through unchanged.
+     *
+     * @param array<Query> $queries
+     * @return array<Query>
+     */
+    private function translateTimeQueriesToDayBoundaries(array $queries): array
+    {
+        $output = [];
+        foreach ($queries as $query) {
+            if ($query->getAttribute() !== 'time') {
+                $output[] = $query;
+                continue;
+            }
+
+            $method = $query->getMethod();
+            $values = $query->getValues();
+
+            if ($method === Query::TYPE_GREATER_EQUAL || $method === Query::TYPE_GREATER) {
+                $ceiled = $this->ceilLowerToFullyCoveredDayStart($this->stringifyTime($values[0] ?? null));
+                if ($ceiled === null) {
+                    $output[] = $query;
+                    continue;
+                }
+                $output[] = Query::greaterThanEqual('time', $ceiled);
+                continue;
+            }
+
+            if ($method === Query::TYPE_LESSER_EQUAL || $method === Query::TYPE_LESSER) {
+                $floored = $this->floorToStartOfDay($this->stringifyTime($values[0] ?? null));
+                if ($floored === null) {
+                    $output[] = $query;
+                    continue;
+                }
+                $output[] = Query::lessThan('time', $floored);
+                continue;
+            }
+
+            if ($method === Query::TYPE_BETWEEN) {
+                $lower = $this->ceilLowerToFullyCoveredDayStart($this->stringifyTime($values[0] ?? null));
+                $upper = $this->floorToStartOfDay($this->stringifyTime($values[1] ?? null));
+                if ($lower !== null) {
+                    $output[] = Query::greaterThanEqual('time', $lower);
+                }
+                if ($upper !== null) {
+                    $output[] = Query::lessThan('time', $upper);
+                }
+                continue;
+            }
+
+            $output[] = $query;
+        }
+
+        return $output;
+    }
+
+    /**
+     * Round a lower-bound timestamp up to the first day-start that is fully
+     * inside the caller's range. Midnight stays as-is; any non-midnight value
+     * advances to the next day's midnight so the rollup purge skips the
+     * partially-covered start day.
+     */
+    private function ceilLowerToFullyCoveredDayStart(?string $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        try {
+            $dt = new DateTime($value, new DateTimeZone('UTC'));
+        } catch (Exception $e) {
+            return null;
+        }
+        if ($dt->format('H:i:s.u') !== '00:00:00.000000') {
+            $dt->setTime(0, 0, 0, 0);
+            $dt->modify('+1 day');
+        }
+        return $dt->format('Y-m-d H:i:s.v');
+    }
+
+    /**
+     * Translate the caller's time-bound queries into filter fragments suited
+     * to a day-bucketed rollup. Lower bounds are floored to start-of-day so
+     * a mid-day start still picks up that day's rollup row; upper bounds
+     * pass through unchanged.
+     *
+     * @param array<int, string> $existing Pre-built non-time filter fragments.
+     * @param array<int, Query> $timeQueries
+     * @param array<string, mixed> $params Mutated with the new bind values.
+     * @return array<int, string>
+     */
+    private function buildDailyTimeFilters(array $existing, array $timeQueries, array &$params): array
+    {
+        $filters = $existing;
+        $counter = 0;
+        foreach ($timeQueries as $query) {
+            $method = $query->getMethod();
+            $values = $query->getValues();
+
+            if ($method === Query::TYPE_GREATER_EQUAL || $method === Query::TYPE_GREATER) {
+                $floored = $this->floorToStartOfDay($this->stringifyTime($values[0] ?? null));
+                if ($floored === null) {
+                    continue;
+                }
+                $name = 'daily_time_lower_' . $counter++;
+                $params[$name] = $floored;
+                $filters[] = '`time` >= {' . $name . ':DateTime64(3, \'UTC\')}';
+                continue;
+            }
+
+            if ($method === Query::TYPE_LESSER_EQUAL || $method === Query::TYPE_LESSER) {
+                $upper = $this->stringifyTime($values[0] ?? null);
+                if ($upper === null) {
+                    continue;
+                }
+                $name = 'daily_time_upper_' . $counter++;
+                $params[$name] = $upper;
+                $inclusiveOnMidnight = $method === Query::TYPE_LESSER_EQUAL && $this->isMidnightString($upper);
+                $op = ($method === Query::TYPE_LESSER || $inclusiveOnMidnight) ? '<' : '<=';
+                $filters[] = '`time` ' . $op . ' {' . $name . ':DateTime64(3, \'UTC\')}';
+                continue;
+            }
+
+            if ($method === Query::TYPE_BETWEEN) {
+                $lower = $this->floorToStartOfDay($this->stringifyTime($values[0] ?? null));
+                $upper = $this->stringifyTime($values[1] ?? null);
+                if ($lower !== null) {
+                    $name = 'daily_time_lower_' . $counter++;
+                    $params[$name] = $lower;
+                    $filters[] = '`time` >= {' . $name . ':DateTime64(3, \'UTC\')}';
+                }
+                if ($upper !== null) {
+                    $name = 'daily_time_upper_' . $counter++;
+                    $params[$name] = $upper;
+                    $op = $this->isMidnightString($upper) ? '<' : '<=';
+                    $filters[] = '`time` ' . $op . ' {' . $name . ':DateTime64(3, \'UTC\')}';
+                }
+                continue;
+            }
+        }
+
+        return $filters;
+    }
+
+    /**
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
+     */
+    private function recordRoute(string $operation, array $plan, string $route): void
+    {
+        $this->appendRouteLogEntry([
+            'operation' => $operation,
+            'metric' => $plan['metric'],
+            'route' => $route,
+            'start' => $plan['start'],
+            'end' => $plan['end'],
+            'dimensions' => $plan['dimensions'],
+            'interval' => $plan['interval'],
+        ]);
+    }
+
+    /**
+     * @param array{operation: string, metric: ?string, route: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string} $entry
+     */
+    private function appendRouteLogEntry(array $entry): void
+    {
+        $this->routeLog[] = $entry;
+        if (count($this->routeLog) > self::ROUTE_LOG_MAX) {
+            $overflow = count($this->routeLog) - self::ROUTE_LOG_MAX;
+            $this->routeLog = array_slice($this->routeLog, $overflow);
+        }
+    }
+
+    /**
+     * Dual-read sampler: with probability `$dualReadSampleRate`, re-run
+     * the same flat-sum query against the raw events table and log a
+     * warning when the totals diverge.
+     *
+     * Only the billing daily MV (`daily` / `hybrid` route) can diverge
+     * from raw — projections are derived in the same write transaction
+     * as the parent insert and cannot drift, so the sampler skips grouped
+     * (projection-routed) reads.
+     *
+     * @param array<Query> $queries
+     * @param string $route
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
+     */
+    private function maybeDualRead(array $queries, string $route, array $plan, int $rolledTotal): void
+    {
+        if ($this->dualReadSampleRate <= 0.0) {
+            return;
+        }
+        if (mt_rand() / mt_getrandmax() > $this->dualReadSampleRate) {
+            return;
+        }
+
+        try {
+            $rawTotal = $this->sumFromTable($queries, 'value', Usage::TYPE_EVENT);
+        } catch (Throwable $e) {
+            return;
+        }
+
+        if ($rawTotal === 0 && $rolledTotal === 0) {
+            return;
+        }
+
+        $denominator = $rawTotal === 0 ? max(abs($rolledTotal), 1) : abs($rawTotal);
+        $delta = abs($rolledTotal - $rawTotal) / $denominator;
+        if ($delta > 0.01) {
+            $this->appendRouteLogEntry([
+                'operation' => 'dual_read_warning',
+                'metric' => $plan['metric'],
+                'route' => $route . ':delta=' . round($delta, 4),
+                'start' => $plan['start'],
+                'end' => $plan['end'],
+                'dimensions' => $plan['dimensions'],
+                'interval' => $plan['interval'],
+            ]);
+        }
+    }
+
+    /**
+     * Hybrid daily + raw read: closed days from the daily MV, today's
+     * partial from the raw events table, combined via outer SUM over
+     * UNION ALL.
+     *
+     * @param array<Query> $queries
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
+     */
+    private function sumHybridDailyAndRaw(array $queries, array $plan): int
+    {
+        $startOfToday = (new DateTime('today', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
+
+        $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());
+        $eventsTable = $this->buildTableReference($this->getEventsTableName());
+
+        $split = $this->splitTimeQueries($queries);
+        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
+        $dailyParsed = $this->prefixParsedParams(
+            $this->parseQueries($split['nonTime'], Usage::TYPE_EVENT),
+            'd_'
+        );
+
+        $params = array_merge($parsed['params'], $dailyParsed['params']);
+
+        $rawFilters = $parsed['filters'];
+        $dailyFilters = $this->buildDailyTimeFilters($dailyParsed['filters'], $split['time'], $params);
+
+        $params['hybrid_boundary'] = $startOfToday;
+        $dailyFilters[] = '`time` < {hybrid_boundary:DateTime64(3, \'UTC\')}';
+        $rawFilters[] = '`time` >= {hybrid_boundary:DateTime64(3, \'UTC\')}';
+
+        $dailyWhere = $this->buildWhereClause($dailyFilters, $params);
+        $rawWhere = $this->buildWhereClause($rawFilters, $dailyWhere['params']);
+
+        $sql = "
+            SELECT sum(total) AS total FROM (
+                SELECT sum(value) AS total FROM {$dailyTable}{$dailyWhere['clause']}
+                UNION ALL
+                SELECT sum(value) AS total FROM {$eventsTable}{$rawWhere['clause']}
+            )
+            FORMAT JSON
+        ";
+
+        $result = $this->query($sql, $rawWhere['params']);
+        $json = json_decode($result, true);
+
+        if (!is_array($json) || !isset($json['data'][0]['total'])) {
+            return 0;
+        }
+
+        return (int) $json['data'][0]['total'];
     }
 
     /**
@@ -1969,7 +2852,6 @@ class ClickHouse extends SQL
 
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
 
-        // Validate query attributes against daily table schema (metric, value, time, tenant only)
         foreach ($queries as $query) {
             $attr = $query->getAttribute();
             if (!empty($attr)) {
@@ -1979,20 +2861,27 @@ class ClickHouse extends SQL
         $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
-        $dailyColumns = ['metric', 'value', 'time'];
-        if ($this->sharedTables) {
-            $dailyColumns[] = 'tenant';
+        $groupByColumns = $this->sharedTables ? ['tenant'] : [];
+        $groupByColumns[] = 'metric';
+        $groupByColumns[] = 'time';
+        foreach (['resource', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'] as $dim) {
+            $groupByColumns[] = $dim;
         }
-        $selectColumns = implode(', ', array_map(fn ($c) => $this->escapeIdentifier($c), $dailyColumns));
+
+        $selectExpressions = [];
+        foreach ($groupByColumns as $column) {
+            $selectExpressions[] = $this->escapeIdentifier($column);
+        }
+        $selectExpressions[] = 'sum(`value`) AS `value`';
+
+        $selectColumns = implode(', ', $selectExpressions);
+        $groupBySql = implode(', ', array_map(fn ($c) => $this->escapeIdentifier($c), $groupByColumns));
 
         $orderClause = !empty($parsed['orderBy']) ? ' ORDER BY ' . implode(', ', $parsed['orderBy']) : '';
         $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
         $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
 
-        // The daily table is SummingMergeTree. Reading raw rows returns
-        // un-merged duplicates until background merges run. FINAL forces
-        // merge-on-read so callers always see fully-collapsed values.
-        $sql = "SELECT {$selectColumns} FROM {$fromTable} FINAL{$whereData['clause']}{$orderClause}{$limitClause}{$offsetClause} FORMAT JSON";
+        $sql = "SELECT {$selectColumns} FROM {$fromTable}{$whereData['clause']} GROUP BY {$groupBySql}{$orderClause}{$limitClause}{$offsetClause} FORMAT JSON";
 
         return $this->parseResults($this->query($sql, $whereData['params']), Usage::TYPE_EVENT);
     }
@@ -2232,21 +3121,18 @@ class ClickHouse extends SQL
             $additionalWhere = ' AND ' . implode(' AND ', $additionalFilters);
         }
 
-        // Use appropriate aggregation based on type
-        if ($type === Usage::TYPE_EVENT) {
-            $valueExpr = 'SUM(value) as agg_value';
-        } else {
-            $valueExpr = 'argMax(value, time) as agg_value';
-        }
+        $valueExpr = $type === Usage::TYPE_EVENT
+            ? 'SUM(value) as agg_value'
+            : 'argMax(value, time) as agg_value';
 
         $sql = "
             SELECT
                 metric,
-                {$timeFunction}(time) as bucket,
+                {$timeFunction}(time, 'UTC') as bucket,
                 {$valueExpr}
             FROM {$fromTable}
             WHERE metric IN ({$metricInClause})
-                AND time BETWEEN {start_date:DateTime64(3)} AND {end_date:DateTime64(3)}
+                AND time BETWEEN {start_date:DateTime64(3, 'UTC')} AND {end_date:DateTime64(3, 'UTC')}
                 {$tenantFilter}{$additionalWhere}
             GROUP BY metric, bucket
             ORDER BY bucket ASC
@@ -2306,15 +3192,15 @@ class ClickHouse extends SQL
         // Build lookup of existing data points by formatted date
         $existing = [];
         foreach ($data as $point) {
-            $dt = new \DateTime($point['date']);
+            $dt = new DateTime($point['date']);
             $key = $dt->format($format);
             // If multiple points in the same bucket, sum them
             $existing[$key] = ($existing[$key] ?? 0) + $point['value'];
         }
 
         // Generate all time buckets in range
-        $start = new \DateTime($startDate);
-        $end = new \DateTime($endDate);
+        $start = new DateTime($startDate);
+        $end = new DateTime($endDate);
 
         $result = [];
         $current = clone $start;
@@ -2370,7 +3256,8 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Get total from events table (SUM).
+     * Get total from events table (SUM). Routes through routedSum() so
+     * closed-day windows hit the daily MV.
      *
      * @param string $metric
      * @param array<Query> $queries
@@ -2379,43 +3266,13 @@ class ClickHouse extends SQL
      */
     private function getTotalFromEvents(string $metric, array $queries): int
     {
-        $tableName = $this->getEventsTableName();
-        $fromTable = $this->buildTableReference($tableName);
-
-        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
-        $params = $parsed['params'];
-        $params['metric_name'] = $metric;
-
-        $whereData = $this->buildWhereClause($parsed['filters'], $params);
-        $whereClause = $whereData['clause'];
-        $params = $whereData['params'];
-
-        // Add metric filter
-        $metricFilter = $this->escapeIdentifier('metric') . ' = {metric_name:String}';
-        if (!empty($whereClause)) {
-            $whereClause .= ' AND ' . $metricFilter;
-        } else {
-            $whereClause = ' WHERE ' . $metricFilter;
-        }
-
-        $sql = "
-            SELECT SUM(value) as total
-            FROM {$fromTable}{$whereClause}
-            FORMAT JSON
-        ";
-
-        $result = $this->query($sql, $params);
-        $json = json_decode($result, true);
-
-        if (!is_array($json) || !isset($json['data'][0]['total'])) {
-            return 0;
-        }
-
-        return (int) $json['data'][0]['total'];
+        $queries[] = Query::equal('metric', [$metric]);
+        return $this->routedSum($queries, 'getTotal');
     }
 
     /**
-     * Get total from gauges table (argMax).
+     * Get total from gauges table (argMax). Records a route decision so
+     * ops dashboards see gauge getTotal calls alongside the rest.
      *
      * @param string $metric
      * @param array<Query> $queries
@@ -2424,32 +3281,24 @@ class ClickHouse extends SQL
      */
     private function getTotalFromGauges(string $metric, array $queries): int
     {
+        $queries[] = Query::equal('metric', [$metric]);
+
+        $plan = $this->extractRoutingPlan($queries);
+        $this->recordRoute('getTotal', $plan, 'raw');
+
         $tableName = $this->getGaugesTableName();
         $fromTable = $this->buildTableReference($tableName);
 
         $parsed = $this->parseQueries($queries, Usage::TYPE_GAUGE);
-        $params = $parsed['params'];
-        $params['metric_name'] = $metric;
-
-        $whereData = $this->buildWhereClause($parsed['filters'], $params);
-        $whereClause = $whereData['clause'];
-        $params = $whereData['params'];
-
-        // Add metric filter
-        $metricFilter = $this->escapeIdentifier('metric') . ' = {metric_name:String}';
-        if (!empty($whereClause)) {
-            $whereClause .= ' AND ' . $metricFilter;
-        } else {
-            $whereClause = ' WHERE ' . $metricFilter;
-        }
+        $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
         $sql = "
             SELECT argMax(value, time) as total
-            FROM {$fromTable}{$whereClause}
+            FROM {$fromTable}{$whereData['clause']}
             FORMAT JSON
         ";
 
-        $result = $this->query($sql, $params);
+        $result = $this->query($sql, $whereData['params']);
         $json = json_decode($result, true);
 
         if (!is_array($json) || !isset($json['data'][0]['total'])) {
@@ -2517,20 +3366,14 @@ class ClickHouse extends SQL
             $whereClause = $whereData['clause'];
             $params = $whereData['params'];
 
-            $escapedMetric = $this->escapeIdentifier('metric');
-            $metricFilter = "{$escapedMetric} IN ({$metricInClause})";
-            if (!empty($whereClause)) {
-                $whereClause .= ' AND ' . $metricFilter;
-            } else {
-                $whereClause = ' WHERE ' . $metricFilter;
-            }
+            $metricFilter = $this->escapeIdentifier('metric') . " IN ({$metricInClause})";
+            $whereClause = !empty($whereClause)
+                ? $whereClause . ' AND ' . $metricFilter
+                : ' WHERE ' . $metricFilter;
 
-            // Use appropriate aggregation
-            if ($queryType === Usage::TYPE_EVENT) {
-                $valueExpr = 'SUM(value) as agg_val';
-            } else {
-                $valueExpr = 'argMax(value, time) as agg_val';
-            }
+            $valueExpr = $queryType === Usage::TYPE_EVENT
+                ? 'SUM(value) as agg_val'
+                : 'argMax(value, time) as agg_val';
 
             $sql = "
                 SELECT
@@ -2614,12 +3457,12 @@ class ClickHouse extends SQL
      * branch here when introducing a new typed column.
      *
      * @param string $attribute
-     * @return string ClickHouse parameter type (e.g. 'String', 'DateTime64(3)', 'Int64')
+     * @return string ClickHouse parameter type (e.g. 'String', 'DateTime64(3, \'UTC\')', 'Int64')
      */
     private function getParamType(string $attribute): string
     {
         return match ($attribute) {
-            'time' => 'DateTime64(3)',
+            'time' => "DateTime64(3, 'UTC')",
             'value' => 'Int64',
             default => 'String',
         };
@@ -2639,11 +3482,11 @@ class ClickHouse extends SQL
      */
     private function formatTypedValue(string $chType, mixed $value): string
     {
-        if ($chType === 'DateTime64(3)') {
+        if ($chType === "DateTime64(3, 'UTC')") {
             if ($value === null) {
                 throw new Exception('DateTime parameter value cannot be null');
             }
-            /** @var \DateTime|string $value */
+            /** @var DateTime|string $value */
             return $this->formatDateTime($value);
         }
 
@@ -2741,7 +3584,7 @@ class ClickHouse extends SQL
             $direction = $entry['direction'];
 
             if (!array_key_exists($attr, $cursor)) {
-                throw new \Exception("Cursor is missing required attribute '{$attr}'");
+                throw new Exception("Cursor is missing required attribute '{$attr}'");
             }
 
             // Flip comparison direction for `before` so we paginate to the previous page.
@@ -2846,7 +3689,7 @@ class ClickHouse extends SQL
             // otherwise turn `Query::contains('attr', [])` into a full-table
             // match instead of an empty result.
             if (\in_array($method, self::VALUE_REQUIRED_METHODS, true) && empty($values)) {
-                throw new \Exception(\ucfirst($method) . ' queries require at least one value.');
+                throw new Exception(\ucfirst($method) . ' queries require at least one value.');
             }
 
             switch ($method) {
@@ -3034,7 +3877,7 @@ class ClickHouse extends SQL
                 case Query::TYPE_LIMIT:
                     $limitVal = is_array($values) && !empty($values) ? $values[0] : $values;
                     if (!\is_int($limitVal)) {
-                        throw new \Exception('Invalid limit value. Expected int');
+                        throw new Exception('Invalid limit value. Expected int');
                     }
                     $limit = $limitVal;
                     $params['limit'] = $limit;
@@ -3043,7 +3886,7 @@ class ClickHouse extends SQL
                 case Query::TYPE_OFFSET:
                     $offsetVal = is_array($values) && !empty($values) ? $values[0] : $values;
                     if (!\is_int($offsetVal)) {
-                        throw new \Exception('Invalid offset value. Expected int');
+                        throw new Exception('Invalid offset value. Expected int');
                     }
                     $offset = $offsetVal;
                     $params['offset'] = $offset;
@@ -3053,13 +3896,13 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute, $type);
                     $interval = $values[0] ?? '1h';
                     if (!is_string($interval)) {
-                        throw new \Exception(
+                        throw new Exception(
                             'Invalid groupByInterval interval: expected string, got ' . get_debug_type($interval) . '. Allowed: '
                             . implode(', ', array_keys(UsageQuery::VALID_INTERVALS))
                         );
                     }
                     if (!isset(UsageQuery::VALID_INTERVALS[$interval])) {
-                        throw new \Exception(
+                        throw new Exception(
                             "Invalid groupByInterval interval '{$interval}'. Allowed: "
                             . implode(', ', array_keys(UsageQuery::VALID_INTERVALS))
                         );
@@ -3266,30 +4109,82 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Purge matching rows from the daily aggregated table.
+     * Build a query list for the "filter not expressible on rollup" branch:
+     * keep only filters on rollup-safe columns (metric, time, tenant), drop
+     * any narrowing filter the rollup can't apply, then widen time to whole
+     * days. The result deletes a superset of the affected raw rows —
+     * accuracy on the rest of that day's rollup row degrades, but
+     * staleness is worse than degradation, and the next ingest cycle adds
+     * data back.
      *
-     * Only forwarded when every query attribute is daily-compatible
-     * (metric, value, time, tenant). If any query references an
-     * event-only column, the daily delete is skipped — silently
-     * leaving the daily rows in place is safer than throwing here
-     * because callers commonly purge by path/method/etc.
+     * @param array<Query> $queries
+     * @param array<int, string> $safeAttributes
+     * @return array<Query>
+     */
+    private function buildStaleRollupPurgeQueries(array $queries, array $safeAttributes): array
+    {
+        $filtered = [];
+        foreach ($queries as $query) {
+            $attr = $query->getAttribute();
+            if ($attr === '' || in_array($attr, $safeAttributes, true)) {
+                $filtered[] = $query;
+            }
+        }
+        return $this->translateTimeQueriesToDayBoundaries($filtered);
+    }
+
+    /**
+     * Purge the events_daily SummingMergeTree.
+     *
+     * id and value are dropped from the safe filter set: id doesn't exist
+     * on the daily table at all, and value is an aggregate column whose
+     * semantics differ from the raw row's value (a daily row's value is
+     * the SUM of the raw rows' values for that day, so `value = 10`
+     * means "the day's total was 10", not "a raw row had value 10").
+     * Time bounds widen to whole-day boundaries. Filters on event-only
+     * attributes (path / method / status / etc.) trigger a whole-day
+     * delete using only the daily-safe subset, because leaving the
+     * rollup with stale rows over-reports under routed reads.
+     *
+     * An empty `$queries` argument means "purge everything" and issues
+     * `DELETE WHERE 1=1`. A non-empty argument whose filters cannot be
+     * expressed on the daily schema AND leave no time bound is treated
+     * as a no-op on the daily side: an unbounded delete here would wipe
+     * unrelated metrics. The next ingest cycle will overwrite any rows
+     * the caller's raw-table purge left stale.
      *
      * @param array<Query> $queries
      * @throws Exception
      */
     private function purgeDaily(array $queries): void
     {
-        $dailyQueries = [];
+        $safeAttributes = array_values(array_filter(
+            self::DAILY_COLUMNS,
+            fn (string $col): bool => $col !== 'value'
+        ));
+        $safeAttributes = array_merge(['time'], $safeAttributes);
+        if ($this->sharedTables) {
+            $safeAttributes[] = 'tenant';
+        }
+
+        $compatible = true;
         foreach ($queries as $query) {
             $attr = $query->getAttribute();
-            if (!empty($attr)) {
-                if ($attr !== 'id'
-                    && !in_array($attr, self::DAILY_COLUMNS, true)
-                    && !($attr === 'tenant' && $this->sharedTables)) {
-                    return;
-                }
+            if ($attr === '') {
+                continue;
             }
-            $dailyQueries[] = $query;
+            if (!in_array($attr, $safeAttributes, true)) {
+                $compatible = false;
+                break;
+            }
+        }
+
+        $dailyQueries = $compatible
+            ? $this->translateTimeQueriesToDayBoundaries($queries)
+            : $this->buildStaleRollupPurgeQueries($queries, $safeAttributes);
+
+        if (!empty($queries) && empty($dailyQueries)) {
+            return;
         }
 
         $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());

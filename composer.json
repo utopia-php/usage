@@ -13,7 +13,8 @@
         "lint": "./vendor/bin/pint --test",
         "format": "./vendor/bin/pint",
         "check": "./vendor/bin/phpstan analyse --level max src tests",
-        "test": "./vendor/bin/phpunit --configuration phpunit.xml tests"
+        "test": "./vendor/bin/phpunit --configuration phpunit.xml --testsuite \"Test Suite\"",
+        "bench": "./vendor/bin/phpunit --configuration phpunit.xml --testsuite Benchmark"
     },
     "minimum-stability": "stable",
     "require": {

@@ -158,4 +158,18 @@ abstract class Adapter
      * @return array<string, int> Metric name => sum value
      */
     abstract public function sumDailyBatch(array $metrics, array $queries = []): array;
+
+    /**
+     * Enable parity sampling for routed reads. At rate=0 the sampler is
+     * disabled (default). At rate>0 each routed read is re-executed against
+     * the raw table with the given probability and logs a dual_read_warning
+     * entry when totals diverge by more than 1%. Pass 1.0 for every-read
+     * sampling (CI use) or small values (0.01) for production canaries.
+     *
+     * Adapters without parity sampling override this with a no-op.
+     */
+    public function setDualReadSampleRate(float $rate): self
+    {
+        return $this;
+    }
 }

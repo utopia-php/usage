@@ -629,7 +629,7 @@ class MetricTest extends TestCase
      */
     public function testGaugeColumnsConstant(): void
     {
-        $expected = ['teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
+        $expected = ['service', 'resource', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
         $this->assertSame($expected, Metric::GAUGE_COLUMNS);
     }
 
