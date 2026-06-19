@@ -144,7 +144,7 @@ abstract class BenchmarkBase extends TestCase
 
         $sql = "INSERT INTO {$tableRef} (id, metric, value, time, tenant, service, resource) "
             . "SELECT lower(hex(randomString(16))), '" . addslashes($metric) . "', "
-            . "number AS value, now() - toIntervalSecond(number % 86400) AS time, "
+            . "number AS value, now() - toIntervalSecond(intDiv(number * 86400 * 30, {$rows})) AS time, "
             . "'" . addslashes($this->tenant) . "' AS tenant, "
             . "{$svcExpr} AS service, {$resExpr} AS resource "
             . "FROM numbers({$rows})";
