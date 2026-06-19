@@ -31,13 +31,13 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
         $this->usage->setup();
         $this->usage->purge();
 
-        $this->seedHistoricalRow($this->metric, 100, '-5 days', ['service' => 'storage', 'resource' => 'file']);
-        $this->seedHistoricalRow($this->metric, 200, '-4 days', ['service' => 'storage', 'resource' => 'file']);
-        $this->seedHistoricalRow($this->metric, 50, '-3 days', ['service' => 'databases', 'resource' => 'database']);
-        $this->seedHistoricalRow($this->metric, 80, '-3 days', ['service' => 'functions', 'resource' => 'function']);
+        $this->seedHistoricalRow($this->metric, 100, '-5 days', ['service' => 'storage', 'resource' => 'file', 'resourceId' => 'f1']);
+        $this->seedHistoricalRow($this->metric, 200, '-4 days', ['service' => 'storage', 'resource' => 'file', 'resourceId' => 'f2']);
+        $this->seedHistoricalRow($this->metric, 50, '-3 days', ['service' => 'databases', 'resource' => 'database', 'resourceId' => 'db1']);
+        $this->seedHistoricalRow($this->metric, 80, '-3 days', ['service' => 'functions', 'resource' => 'function', 'resourceId' => 'fn1']);
 
         $this->usage->addBatch([
-            ['metric' => $this->metric, 'value' => 999, 'tags' => ['service' => 'storage', 'resource' => 'file']],
+            ['metric' => $this->metric, 'value' => 999, 'tags' => ['service' => 'storage', 'resource' => 'file', 'resourceId' => 'f1']],
         ], Usage::TYPE_GAUGE);
     }
 
@@ -77,33 +77,39 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
     }
 
     /**
-     * @return array<string, array{0: string, 1: string}>
+     * @return array<string, array{0: array<int, string>, 1: string}>
      */
     public static function topGaugesProjectionProvider(): array
     {
         return [
-            'by_service'  => ['service', 'p_by_service'],
-            'by_resource' => ['resource', 'p_by_resource'],
+            'by_service'             => [['service'], 'p_by_service'],
+            'by_resource'            => [['resource'], 'p_by_resource'],
+            'by_resourceId'          => [['resourceId'], 'p_by_resourceId'],
+            'by_resource_resourceId' => [['resource', 'resourceId'], 'p_by_resource_resourceId'],
         ];
     }
 
     /**
      * @dataProvider topGaugesProjectionProvider
+     * @param array<int, string> $dims
      */
-    public function testTopGaugesGroupedQueryRoutesToMatchingProjection(string $dim, string $expectedProjection): void
+    public function testTopGaugesGroupedQueryRoutesToMatchingProjection(array $dims, string $expectedProjection): void
     {
         $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
         $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
+        $queries = [];
+        foreach ($dims as $dim) {
+            $queries[] = UsageQuery::groupBy($dim);
+        }
+        $queries[] = Query::equal('metric', [$this->metric]);
+        $queries[] = Query::greaterThanEqual('time', $start);
+        $queries[] = Query::lessThanEqual('time', $end);
+        $queries[] = Query::limit(50);
+
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $this->usage->find([
-            UsageQuery::groupBy($dim),
-            Query::equal('metric', [$this->metric]),
-            Query::greaterThanEqual('time', $start),
-            Query::lessThanEqual('time', $end),
-            Query::limit(50),
-        ], Usage::TYPE_GAUGE);
+        $this->usage->find($queries, Usage::TYPE_GAUGE);
 
         $this->assertProjectionUsed($queryId, $expectedProjection);
     }

@@ -1050,6 +1050,7 @@ class ClickHouse extends SQL
         ['name' => 'p_by_service', 'dims' => ['service']],
         ['name' => 'p_by_resource', 'dims' => ['resource']],
         ['name' => 'p_by_resourceId', 'dims' => ['resourceId']],
+        ['name' => 'p_by_resource_resourceId', 'dims' => ['resource', 'resourceId']],
     ];
 
     /**

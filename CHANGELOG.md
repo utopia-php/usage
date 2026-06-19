@@ -16,6 +16,7 @@ The projections live on the base tables themselves:
 - `projects_usage_gauges.p_by_service`
 - `projects_usage_gauges.p_by_resource`
 - `projects_usage_gauges.p_by_resourceId`
+- `projects_usage_gauges.p_by_resource_resourceId`
 
 `Usage::find()` issues a normal `GROUP BY` against the base table; the
 optimizer picks the matching projection when one exists. The decision
