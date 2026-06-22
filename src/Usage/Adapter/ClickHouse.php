@@ -4122,12 +4122,22 @@ class ClickHouse extends SQL
             fn (string $col): bool => $col !== 'value'
         ));
         $safeAttributes = array_merge(['time'], $safeAttributes);
-        if ($this->sharedTables) {
-            $safeAttributes[] = 'tenant';
+
+        // Tenant scopes the delete but never narrows it: a tenant-only daily
+        // delete wipes every metric for that tenant. Keep it out of the
+        // compatibility / no-op decision and re-attach it to the final query.
+        $tenantQueries = [];
+        $narrowingQueries = [];
+        foreach ($queries as $query) {
+            if ($query->getAttribute() === 'tenant') {
+                $tenantQueries[] = $query;
+            } else {
+                $narrowingQueries[] = $query;
+            }
         }
 
         $compatible = true;
-        foreach ($queries as $query) {
+        foreach ($narrowingQueries as $query) {
             $attr = $query->getAttribute();
             if ($attr === '') {
                 continue;
@@ -4138,13 +4148,17 @@ class ClickHouse extends SQL
             }
         }
 
-        $dailyQueries = $compatible
-            ? $this->translateTimeQueriesToDayBoundaries($queries)
-            : $this->buildStaleRollupPurgeQueries($queries, $safeAttributes);
+        $dailyNarrowing = $compatible
+            ? $this->translateTimeQueriesToDayBoundaries($narrowingQueries)
+            : $this->buildStaleRollupPurgeQueries($narrowingQueries, $safeAttributes);
 
-        if (! empty($queries) && empty($dailyQueries)) {
+        // A non-empty caller filter that leaves no daily-expressible narrowing
+        // predicate must not fall through to a tenant-only (or unbounded) wipe.
+        if (! empty($narrowingQueries) && empty($dailyNarrowing)) {
             return;
         }
+
+        $dailyQueries = array_merge($dailyNarrowing, $tenantQueries);
 
         $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());
 

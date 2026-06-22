@@ -21,24 +21,7 @@ abstract class ClickHouseTestCase extends TestCase
      */
     protected function makeAdapter(string $namespace, ?string $tenant = '1'): ClickHouseAdapter
     {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace($namespace);
-        $adapter->setSharedTables(true);
-        if ($tenant !== null) {
-            $adapter->setTenant($tenant);
-        }
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $adapter->setDatabase($database);
-        }
-
-        return $adapter;
+        return ScopedClickHouse::fromEnv($namespace, true, $tenant);
     }
 
     /**
@@ -46,10 +29,11 @@ abstract class ClickHouseTestCase extends TestCase
      */
     protected function databaseName(ClickHouseAdapter $adapter): string
     {
-        $reflection = new ReflectionClass($adapter);
+        $reflection = new ReflectionClass(ClickHouseAdapter::class);
         $prop = $reflection->getProperty('database');
         $prop->setAccessible(true);
         $value = $prop->getValue($adapter);
+
         return is_string($value) ? $value : '';
     }
 
@@ -57,14 +41,15 @@ abstract class ClickHouseTestCase extends TestCase
      * Invoke a private accessor on the adapter that returns a table name
      * (e.g. getEventsTableName, getDimRollupTableName).
      *
-     * @param array<int, mixed> $args
+     * @param  array<int, mixed>  $args
      */
     protected function resolveTableName(ClickHouseAdapter $adapter, string $accessor, array $args = []): string
     {
-        $reflection = new ReflectionClass($adapter);
+        $reflection = new ReflectionClass(ClickHouseAdapter::class);
         $method = $reflection->getMethod($accessor);
         $method->setAccessible(true);
         $raw = $method->invokeArgs($adapter, $args);
+
         return is_string($raw) ? $raw : '';
     }
 
@@ -73,14 +58,15 @@ abstract class ClickHouseTestCase extends TestCase
      * API does internally; needed in tests for setup / cleanup statements
      * that don't fit the find / sum / purge contracts.
      *
-     * @param array<string, mixed> $params
+     * @param  array<string, mixed>  $params
      */
     protected function queryRaw(ClickHouseAdapter $adapter, string $sql, array $params = []): string
     {
-        $reflection = new ReflectionClass($adapter);
+        $reflection = new ReflectionClass(ClickHouseAdapter::class);
         $method = $reflection->getMethod('query');
         $method->setAccessible(true);
         $raw = $method->invoke($adapter, $sql, $params);
+
         return is_string($raw) ? $raw : '';
     }
 }
