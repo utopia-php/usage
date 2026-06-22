@@ -21,7 +21,7 @@ abstract class ClickHouseTestCase extends TestCase
      */
     protected function makeAdapter(string $namespace, ?string $tenant = '1'): ClickHouseAdapter
     {
-        return ScopedClickHouse::fromEnv($namespace, true, $tenant);
+        return ScopedClickHouse::fromEnv($namespace, $tenant);
     }
 
     /**

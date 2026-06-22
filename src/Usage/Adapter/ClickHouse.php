@@ -92,8 +92,6 @@ class ClickHouse extends SQL
 
     private Client $client;
 
-    protected bool $sharedTables = false;
-
     protected string $namespace = '';
 
     /** @var bool Whether to log queries for debugging */
@@ -160,8 +158,7 @@ class ClickHouse extends SQL
         string $password = '',
         int $port = self::DEFAULT_PORT,
         bool $secure = false,
-        string $namespace = '',
-        bool $sharedTables = false
+        string $namespace = ''
     ) {
         $this->validateHost($host);
         $this->validatePort($port);
@@ -175,13 +172,85 @@ class ClickHouse extends SQL
         $this->password = $password;
         $this->secure = $secure;
         $this->namespace = $namespace;
-        $this->sharedTables = $sharedTables;
 
         // Initialize the HTTP client for connection reuse
         $this->client = new Client;
         $this->client->addHeader('X-ClickHouse-User', $this->username);
         $this->client->addHeader('X-ClickHouse-Key', $this->password);
         $this->client->setTimeout(30_000); // 30 seconds
+    }
+
+    /*
+     * Multi-tenancy seams. The base adapter is single-tenant: these all
+     * no-op. The SharedTables subclass overrides them to add the tenant
+     * column, key it into the physical order, scope reads/purges, and stamp
+     * the per-row tenant on writes — keeping all tenant SQL in one place.
+     */
+
+    /**
+     * Extra column definitions appended to every table (events, gauges, daily).
+     *
+     * @return array<int, string>
+     */
+    protected function tenantColumnDefs(): array
+    {
+        return [];
+    }
+
+    /**
+     * Leading ORDER BY / projection / GROUP BY key columns.
+     *
+     * @return array<int, string>
+     */
+    protected function keyPrefix(): array
+    {
+        return [];
+    }
+
+    /**
+     * Attribute names that are queryable beyond the schema attributes
+     * (e.g. the tenant column in shared-tables mode).
+     *
+     * @return array<int, string>
+     */
+    protected function extraQueryableColumns(): array
+    {
+        return [];
+    }
+
+    /**
+     * Attributes that scope a query but never narrow it — excluded from the
+     * daily-purge compatibility / no-op decision.
+     *
+     * @return array<int, string>
+     */
+    protected function scopeOnlyAttributes(): array
+    {
+        return [];
+    }
+
+    /**
+     * Inject any implicit scope (e.g. the active tenant) into a read/purge
+     * query set. The base adapter has no implicit scope.
+     *
+     * @param  array<Query>  $queries
+     * @return array<Query>
+     */
+    protected function scopeQueries(array $queries): array
+    {
+        return $queries;
+    }
+
+    /**
+     * Stamp adapter-managed columns (e.g. tenant) onto a row before insert.
+     *
+     * @param  array<string, mixed>  $row
+     * @param  array<string, mixed>  $metricData
+     * @return array<string, mixed>
+     */
+    protected function decorateRow(array $row, array $metricData): array
+    {
+        return $row;
     }
 
     /**
@@ -1090,12 +1159,8 @@ class ClickHouse extends SQL
     {
         $escapedTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($baseTable);
 
-        $selectParts = ['metric', 'time'];
-        $groupParts = ['metric', 'time'];
-        if ($this->sharedTables) {
-            $selectParts[] = 'tenant';
-            $groupParts[] = 'tenant';
-        }
+        $selectParts = array_merge(['metric', 'time'], $this->keyPrefix());
+        $groupParts = array_merge(['metric', 'time'], $this->keyPrefix());
         foreach ($dims as $dim) {
             $selectParts[] = $this->escapeIdentifier($dim);
             $groupParts[] = $this->escapeIdentifier($dim);
@@ -1136,10 +1201,7 @@ class ClickHouse extends SQL
             }
         }
 
-        // Add tenant column only if tables are shared across tenants
-        if ($this->sharedTables) {
-            $columns[] = 'tenant Nullable(String)';
-        }
+        $columns = array_merge($columns, $this->tenantColumnDefs());
 
         $indexDefs = [];
         foreach ($indexes as $index) {
@@ -1160,11 +1222,11 @@ class ClickHouse extends SQL
         $indexDefsStr = ! empty($indexDefs) ? ",\n                ".implode(",\n                ", $indexDefs) : '';
 
         // Primary key matches the most common filter pattern:
-        // tenant (multi-tenant isolation) → metric (per-metric series) →
+        // [tenant (multi-tenant isolation) →] metric (per-metric series) →
         // time (range scans). id is the tiebreaker for stable physical
         // ordering. This shape lets ClickHouse skip whole granules on
         // metric+time predicates instead of doing a full-table scan.
-        $orderByExpr = $this->sharedTables ? '(tenant, metric, time, id)' : '(metric, time, id)';
+        $orderByExpr = '('.implode(', ', array_merge($this->keyPrefix(), ['metric', 'time', 'id'])).')';
 
         $createTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDatabaseAndTable} (
@@ -1203,15 +1265,14 @@ class ClickHouse extends SQL
             'teamInternalId Nullable(String)',
         ];
 
-        if ($this->sharedTables) {
-            $columns[] = 'tenant Nullable(String)';
-        }
+        $columns = array_merge($columns, $this->tenantColumnDefs());
 
         $columnDefs = implode(",\n                ", $columns);
 
-        $dailyOrderBy = $this->sharedTables
-            ? '(tenant, metric, time, resource, resourceId, resourceInternalId, teamId, teamInternalId)'
-            : '(metric, time, resource, resourceId, resourceInternalId, teamId, teamInternalId)';
+        $dailyOrderBy = '('.implode(', ', array_merge(
+            $this->keyPrefix(),
+            ['metric', 'time', 'resource', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId']
+        )).')';
 
         $createDailyTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDailyTable} (
@@ -1243,15 +1304,11 @@ class ClickHouse extends SQL
 
         $dimensions = 'resource, resourceId, resourceInternalId, teamId, teamInternalId';
 
-        if ($this->sharedTables) {
-            $innerSelect = "metric, tenant, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
-            $innerGroupBy = "metric, tenant, {$dimensions}, d";
-            $outerSelect = "metric, value, d as time, tenant, {$dimensions}";
-        } else {
-            $innerSelect = "metric, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
-            $innerGroupBy = "metric, {$dimensions}, d";
-            $outerSelect = "metric, value, d as time, {$dimensions}";
-        }
+        $tenantCol = $this->keyPrefix() === [] ? '' : implode(', ', $this->keyPrefix()).', ';
+
+        $innerSelect = "metric, {$tenantCol}{$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
+        $innerGroupBy = "metric, {$tenantCol}{$dimensions}, d";
+        $outerSelect = "metric, value, d as time, {$tenantCol}{$dimensions}";
 
         $createDailyMvSql = "
             CREATE MATERIALIZED VIEW IF NOT EXISTS {$escapedDailyMv}
@@ -1280,7 +1337,7 @@ class ClickHouse extends SQL
             return true;
         }
 
-        if ($attributeName === 'tenant' && $this->sharedTables) {
+        if (in_array($attributeName, $this->extraQueryableColumns(), true)) {
             return true;
         }
 
@@ -1340,7 +1397,7 @@ class ClickHouse extends SQL
             return true;
         }
 
-        if ($attributeName === 'tenant' && $this->sharedTables) {
+        if (in_array($attributeName, $this->extraQueryableColumns(), true)) {
             return true;
         }
 
@@ -1348,7 +1405,7 @@ class ClickHouse extends SQL
             return true;
         }
 
-        $allowed = implode(', ', self::DAILY_COLUMNS).($this->sharedTables ? ', tenant' : '');
+        $allowed = implode(', ', array_merge(self::DAILY_COLUMNS, $this->extraQueryableColumns()));
         throw new Exception(
             "Invalid attribute '{$attributeName}' for daily table. "
             ."Allowed: {$allowed}."
@@ -1576,8 +1633,6 @@ class ClickHouse extends SQL
                 /** @var array<string, mixed> $tags */
                 $tags = $metricData['tags'] ?? [];
 
-                $tenant = $this->sharedTables ? $this->resolveTenantFromMetric($metricData) : null;
-
                 $columns = Metric::extractColumns($tags, $type);
 
                 $row = array_merge([
@@ -1587,9 +1642,7 @@ class ClickHouse extends SQL
                     'time' => $this->formatDateTime(null),
                 ], $columns);
 
-                if ($this->sharedTables) {
-                    $row['tenant'] = $tenant;
-                }
+                $row = $this->decorateRow($row, $metricData);
 
                 $encoded = json_encode($row);
                 if ($encoded === false) {
@@ -1605,49 +1658,6 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Resolve tenant for a single metric entry.
-     *
-     * @param  array<string, mixed>  $metricData
-     */
-    private function resolveTenantFromMetric(array $metricData): ?string
-    {
-        $tenant = $metricData['$tenant'] ?? null;
-
-        if ($tenant === null) {
-            return null;
-        }
-
-        if (is_string($tenant)) {
-            return $tenant;
-        }
-
-        if (is_int($tenant) || is_float($tenant)) {
-            return (string) $tenant;
-        }
-
-        return null;
-    }
-
-    /**
-     * Fold an explicit tenant into the query list as a normal equality filter.
-     *
-     * In shared-tables mode this is how reads and purges scope to a single
-     * tenant — there is no adapter-level tenant state. A null tenant (or
-     * non-shared tables) leaves the queries untouched.
-     *
-     * @param  array<Query>  $queries
-     * @return array<Query>
-     */
-    private function withTenant(array $queries, ?string $tenant): array
-    {
-        if ($tenant !== null && $this->sharedTables) {
-            $queries[] = Query::equal('tenant', [$tenant]);
-        }
-
-        return $queries;
-    }
-
-    /**
      * Find metrics using Query objects.
      * When $type is null, queries both tables with UNION ALL.
      *
@@ -1657,10 +1667,10 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    public function find(array $queries = [], ?string $type = null, ?string $tenant = null): array
+    public function find(array $queries = [], ?string $type = null): array
     {
         $this->setOperationContext('find()');
-        $queries = $this->withTenant($queries, $tenant);
+        $queries = $this->scopeQueries($queries);
 
         if ($type !== null) {
             return $this->findFromTable($queries, $type);
@@ -1718,7 +1728,7 @@ class ClickHouse extends SQL
             if ($attribute === '' || $attribute === 'id') {
                 continue;
             }
-            if ($attribute === 'tenant' && $this->sharedTables) {
+            if (in_array($attribute, $this->extraQueryableColumns(), true)) {
                 continue;
             }
             $matched = false;
@@ -1999,10 +2009,10 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    public function count(array $queries = [], ?string $type = null, ?int $max = null, ?string $tenant = null): int
+    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
     {
         $this->setOperationContext('count()');
-        $queries = $this->withTenant($queries, $tenant);
+        $queries = $this->scopeQueries($queries);
 
         if ($type !== null) {
             return $this->countFromTable($queries, $type, $max);
@@ -2086,10 +2096,10 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT, ?string $tenant = null): int
+    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
     {
         $this->setOperationContext('sum()');
-        $queries = $this->withTenant($queries, $tenant);
+        $queries = $this->scopeQueries($queries);
 
         if ($type === Usage::TYPE_EVENT && $attribute === 'value') {
             return $this->routedSum($queries, 'sum');
@@ -2270,7 +2280,7 @@ class ClickHouse extends SQL
         }
 
         foreach ($plan['filterColumns'] as $column) {
-            if (! in_array($column, self::DAILY_COLUMNS, true) && $column !== 'tenant') {
+            if (! in_array($column, self::DAILY_COLUMNS, true) && ! in_array($column, $this->extraQueryableColumns(), true)) {
                 return 'raw';
             }
         }
@@ -2826,10 +2836,10 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    public function findDaily(array $queries = [], ?string $tenant = null): array
+    public function findDaily(array $queries = []): array
     {
         $this->setOperationContext('findDaily()');
-        $queries = $this->withTenant($queries, $tenant);
+        $queries = $this->scopeQueries($queries);
 
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
 
@@ -2842,7 +2852,7 @@ class ClickHouse extends SQL
         $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
-        $groupByColumns = $this->sharedTables ? ['tenant'] : [];
+        $groupByColumns = $this->keyPrefix();
         $groupByColumns[] = 'metric';
         $groupByColumns[] = 'time';
         foreach (['resource', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'] as $dim) {
@@ -2875,10 +2885,10 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    public function sumDaily(array $queries = [], string $attribute = 'value', ?string $tenant = null): int
+    public function sumDaily(array $queries = [], string $attribute = 'value'): int
     {
         $this->setOperationContext('sumDaily()');
-        $queries = $this->withTenant($queries, $tenant);
+        $queries = $this->scopeQueries($queries);
 
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
         $this->validateDailyAttributeName($attribute);
@@ -2910,13 +2920,13 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    public function sumDailyBatch(array $metrics, array $queries = [], ?string $tenant = null): array
+    public function sumDailyBatch(array $metrics, array $queries = []): array
     {
         if (empty($metrics)) {
             return [];
         }
 
-        $queries = $this->withTenant($queries, $tenant);
+        $queries = $this->scopeQueries($queries);
 
         $this->setOperationContext('sumDailyBatch()');
 
@@ -2989,13 +2999,13 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null, ?string $tenant = null): array
+    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
     {
         if (empty($metrics)) {
             return [];
         }
 
-        $queries = $this->withTenant($queries, $tenant);
+        $queries = $this->scopeQueries($queries);
 
         if (! isset(self::INTERVAL_FUNCTIONS[$interval])) {
             throw new \InvalidArgumentException("Invalid interval '{$interval}'. Allowed: ".implode(', ', array_keys(self::INTERVAL_FUNCTIONS)));
@@ -3203,10 +3213,10 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    public function getTotal(string $metric, array $queries = [], ?string $type = null, ?string $tenant = null): int
+    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
     {
         $this->setOperationContext('getTotal()');
-        $queries = $this->withTenant($queries, $tenant);
+        $queries = $this->scopeQueries($queries);
 
         if ($type === Usage::TYPE_EVENT) {
             return $this->getTotalFromEvents($metric, $queries);
@@ -3298,13 +3308,13 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null, ?string $tenant = null): array
+    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
     {
         if (empty($metrics)) {
             return [];
         }
 
-        $queries = $this->withTenant($queries, $tenant);
+        $queries = $this->scopeQueries($queries);
 
         $this->setOperationContext('getTotalBatch()');
 
@@ -4005,8 +4015,8 @@ class ClickHouse extends SQL
             }
         }
 
-        if ($this->sharedTables) {
-            $columns[] = $this->escapeIdentifier('tenant');
+        foreach ($this->extraQueryableColumns() as $col) {
+            $columns[] = $this->escapeIdentifier($col);
         }
 
         return implode(', ', $columns);
@@ -4028,10 +4038,10 @@ class ClickHouse extends SQL
      *
      * @throws Exception
      */
-    public function purge(array $queries = [], ?string $type = null, ?string $tenant = null): bool
+    public function purge(array $queries = [], ?string $type = null): bool
     {
         $this->setOperationContext('purge()');
-        $queries = $this->withTenant($queries, $tenant);
+        $queries = $this->scopeQueries($queries);
 
         $typesToPurge = [];
         if ($type === Usage::TYPE_EVENT || $type === null) {
@@ -4129,7 +4139,7 @@ class ClickHouse extends SQL
         $tenantQueries = [];
         $narrowingQueries = [];
         foreach ($queries as $query) {
-            if ($query->getAttribute() === 'tenant') {
+            if (in_array($query->getAttribute(), $this->scopeOnlyAttributes(), true)) {
                 $tenantQueries[] = $query;
             } else {
                 $narrowingQueries[] = $query;

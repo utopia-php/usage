@@ -64,6 +64,33 @@ class Usage
     }
 
     /**
+     * Run a callback with reads/purges scoped to a single tenant.
+     *
+     * Requires a multi-tenant adapter (one exposing withTenant(), e.g.
+     * SharedTables); on a single-tenant adapter the callback simply receives
+     * the unscoped instance. The callback is handed a scoped clone, so the
+     * scope cannot leak past the closure or across coroutines.
+     *
+     * @template T
+     *
+     * @param  callable(self): T  $callback
+     * @return T
+     */
+    public function withTenant(?string $tenant, callable $callback): mixed
+    {
+        if (! method_exists($this->adapter, 'withTenant')) {
+            return $callback($this);
+        }
+
+        return $this->adapter->withTenant($tenant, function (Adapter $scopedAdapter) use ($callback) {
+            $scoped = clone $this;
+            $scoped->adapter = $scopedAdapter;
+
+            return $callback($scoped);
+        });
+    }
+
+    /**
      * Check adapter health and connection status.
      *
      * @return array<string, mixed> Health check result with 'healthy' bool and additional adapter-specific information
@@ -114,9 +141,9 @@ class Usage
      *
      * @throws \Exception
      */
-    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null, ?string $tenant = null): array
+    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
     {
-        return $this->adapter->getTimeSeries($metrics, $interval, $startDate, $endDate, $queries, $zeroFill, $type, $tenant);
+        return $this->adapter->getTimeSeries($metrics, $interval, $startDate, $endDate, $queries, $zeroFill, $type);
     }
 
     /**
@@ -128,9 +155,9 @@ class Usage
      *
      * @throws \Exception
      */
-    public function getTotal(string $metric, array $queries = [], ?string $type = null, ?string $tenant = null): int
+    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
     {
-        return $this->adapter->getTotal($metric, $queries, $type, $tenant);
+        return $this->adapter->getTotal($metric, $queries, $type);
     }
 
     /**
@@ -143,9 +170,9 @@ class Usage
      *
      * @throws \Exception
      */
-    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null, ?string $tenant = null): array
+    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
     {
-        return $this->adapter->getTotalBatch($metrics, $queries, $type, $tenant);
+        return $this->adapter->getTotalBatch($metrics, $queries, $type);
     }
 
     /**
@@ -157,9 +184,9 @@ class Usage
      *
      * @throws \Exception
      */
-    public function purge(array $queries = [], ?string $type = null, ?string $tenant = null): bool
+    public function purge(array $queries = [], ?string $type = null): bool
     {
-        return $this->adapter->purge($queries, $type, $tenant);
+        return $this->adapter->purge($queries, $type);
     }
 
     /**
@@ -171,9 +198,9 @@ class Usage
      *
      * @throws \Exception
      */
-    public function find(array $queries = [], ?string $type = null, ?string $tenant = null): array
+    public function find(array $queries = [], ?string $type = null): array
     {
-        return $this->adapter->find($queries, $type, $tenant);
+        return $this->adapter->find($queries, $type);
     }
 
     /**
@@ -189,9 +216,9 @@ class Usage
      *
      * @throws \Exception
      */
-    public function count(array $queries = [], ?string $type = null, ?int $max = null, ?string $tenant = null): int
+    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
     {
-        return $this->adapter->count($queries, $type, $max, $tenant);
+        return $this->adapter->count($queries, $type, $max);
     }
 
     /**
@@ -208,13 +235,13 @@ class Usage
      *
      * @throws \Exception
      */
-    public function sum(array $queries = [], string $attribute = 'value', string $type = self::TYPE_EVENT, ?string $tenant = null): int
+    public function sum(array $queries = [], string $attribute = 'value', string $type = self::TYPE_EVENT): int
     {
         if ($type !== self::TYPE_EVENT && $type !== self::TYPE_GAUGE) {
             throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: ".self::TYPE_EVENT.', '.self::TYPE_GAUGE);
         }
 
-        return $this->adapter->sum($queries, $attribute, $type, $tenant);
+        return $this->adapter->sum($queries, $attribute, $type);
     }
 
     /**
@@ -230,9 +257,9 @@ class Usage
      *
      * @throws \Exception
      */
-    public function findDaily(array $queries = [], ?string $tenant = null): array
+    public function findDaily(array $queries = []): array
     {
-        return $this->adapter->findDaily($queries, $tenant);
+        return $this->adapter->findDaily($queries);
     }
 
     /**
@@ -249,9 +276,9 @@ class Usage
      *
      * @throws \Exception
      */
-    public function sumDaily(array $queries = [], string $attribute = 'value', ?string $tenant = null): int
+    public function sumDaily(array $queries = [], string $attribute = 'value'): int
     {
-        return $this->adapter->sumDaily($queries, $attribute, $tenant);
+        return $this->adapter->sumDaily($queries, $attribute);
     }
 
     /**
@@ -266,9 +293,9 @@ class Usage
      *
      * @throws \Exception
      */
-    public function sumDailyBatch(array $metrics, array $queries = [], ?string $tenant = null): array
+    public function sumDailyBatch(array $metrics, array $queries = []): array
     {
-        return $this->adapter->sumDailyBatch($metrics, $queries, $tenant);
+        return $this->adapter->sumDailyBatch($metrics, $queries);
     }
 
     /**
@@ -298,8 +325,8 @@ class Usage
      * @param  int  $value  Value
      * @param  string  $type  Metric type: 'event' or 'gauge'
      * @param  array<string,mixed>  $tags  Optional tags
-     * @param  string|null  $tenant  Per-row tenant (shared-tables mode); when null
-     *                               the adapter's own tenant is used at write time
+     * @param  string|null  $tenant  Per-row tenant (shared-tables mode); ignored
+     *                               by single-tenant adapters
      */
     public function collect(string $metric, int $value, string $type, array $tags = [], ?string $tenant = null): self
     {
@@ -324,8 +351,7 @@ class Usage
             'type' => $type,
             'tags' => $tags,
         ];
-        // Only stamp the tenant when explicitly provided; otherwise the adapter
-        // falls back to its own tenant (set via setTenant) for backwards compat.
+        // Only stamp the tenant when explicitly provided.
         if ($tenant !== null) {
             $entry['$tenant'] = $tenant;
         }

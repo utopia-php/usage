@@ -50,7 +50,7 @@ abstract class BenchmarkBase extends TestCase
 
     protected function setUp(): void
     {
-        $this->adapter = ScopedClickHouse::fromEnv($this->namespace, true, $this->tenant);
+        $this->adapter = ScopedClickHouse::fromEnv($this->namespace, $this->tenant);
 
         $this->usage = new Usage($this->adapter);
         $this->usage->setup();

@@ -47,10 +47,9 @@ abstract class Adapter
      * @param  array<\Utopia\Query\Query>  $queries  Additional query filters
      * @param  bool  $zeroFill  Whether to fill gaps with zero values
      * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
-     * @param  string|null  $tenant  Tenant to scope the query to (shared-tables mode)
      * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
      */
-    abstract public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null, ?string $tenant = null): array;
+    abstract public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array;
 
     /**
      * Get total value for a single metric.
@@ -62,7 +61,7 @@ abstract class Adapter
      * @param  array<\Utopia\Query\Query>  $queries  Additional query filters
      * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      */
-    abstract public function getTotal(string $metric, array $queries = [], ?string $type = null, ?string $tenant = null): int;
+    abstract public function getTotal(string $metric, array $queries = [], ?string $type = null): int;
 
     /**
      * Get totals for multiple metrics in a single query.
@@ -74,7 +73,7 @@ abstract class Adapter
      * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      * @return array<string, int>
      */
-    abstract public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null, ?string $tenant = null): array;
+    abstract public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array;
 
     /**
      * Purge usage metrics matching the given queries.
@@ -83,7 +82,7 @@ abstract class Adapter
      * @param  array<\Utopia\Query\Query>  $queries
      * @param  string|null  $type  Metric type: 'event', 'gauge', or null (purge both)
      */
-    abstract public function purge(array $queries = [], ?string $type = null, ?string $tenant = null): bool;
+    abstract public function purge(array $queries = [], ?string $type = null): bool;
 
     /**
      * Find metrics using Query objects.
@@ -92,7 +91,7 @@ abstract class Adapter
      * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      * @return array<Metric>
      */
-    abstract public function find(array $queries = [], ?string $type = null, ?string $tenant = null): array;
+    abstract public function find(array $queries = [], ?string $type = null): array;
 
     /**
      * Count metrics using Query objects.
@@ -106,7 +105,7 @@ abstract class Adapter
      * @param  string|null  $type  Metric type: 'event', 'gauge', or null (count both)
      * @param  int|null  $max  Optional upper bound for the count (inclusive)
      */
-    abstract public function count(array $queries = [], ?string $type = null, ?int $max = null, ?string $tenant = null): int;
+    abstract public function count(array $queries = [], ?string $type = null, ?int $max = null): int;
 
     /**
      * Sum metric values using Query objects.
@@ -118,7 +117,7 @@ abstract class Adapter
      * @param  string  $attribute  Attribute to sum (default: 'value')
      * @param  string  $type  Metric type: 'event' or 'gauge'
      */
-    abstract public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT, ?string $tenant = null): int;
+    abstract public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int;
 
     /**
      * Find event metrics from the pre-aggregated daily table.
@@ -131,7 +130,7 @@ abstract class Adapter
      * @param  array<\Utopia\Query\Query>  $queries  Filters (metric, time range, resource, etc.)
      * @return array<Metric>
      */
-    abstract public function findDaily(array $queries = [], ?string $tenant = null): array;
+    abstract public function findDaily(array $queries = []): array;
 
     /**
      * Sum event metric values from the pre-aggregated daily table.
@@ -142,7 +141,7 @@ abstract class Adapter
      * @param  array<\Utopia\Query\Query>  $queries
      * @param  string  $attribute  Attribute to sum (default: 'value')
      */
-    abstract public function sumDaily(array $queries = [], string $attribute = 'value', ?string $tenant = null): int;
+    abstract public function sumDaily(array $queries = [], string $attribute = 'value'): int;
 
     /**
      * Sum multiple event metrics from the pre-aggregated daily table in one query.
@@ -154,7 +153,7 @@ abstract class Adapter
      * @param  array<\Utopia\Query\Query>  $queries  Additional filters (e.g. date range)
      * @return array<string, int> Metric name => sum value
      */
-    abstract public function sumDailyBatch(array $metrics, array $queries = [], ?string $tenant = null): array;
+    abstract public function sumDailyBatch(array $metrics, array $queries = []): array;
 
     /**
      * Enable parity sampling for routed reads. At rate=0 the sampler is

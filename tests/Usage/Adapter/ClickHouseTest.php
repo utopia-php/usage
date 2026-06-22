@@ -6,6 +6,7 @@ use PHPUnit\Framework\TestCase;
 use Utopia\Query\Query;
 use Utopia\Tests\Usage\UsageBase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
+use Utopia\Usage\Adapter\SharedTables;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 
@@ -41,7 +42,7 @@ class ClickHouseTest extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure, 'utopia_usage_shared', true);
+        $adapter = new SharedTables($host, $username, $password, $port, $secure, 'utopia_usage_shared');
 
         if ($database = getenv('CLICKHOUSE_DATABASE')) {
             $adapter->setDatabase($database);
@@ -49,7 +50,6 @@ class ClickHouseTest extends TestCase
 
         $usage = new Usage($adapter);
         $usage->setup();
-        $usage->purge(tenant: '2');
 
         $metrics = [
             [
@@ -60,17 +60,54 @@ class ClickHouseTest extends TestCase
             ],
         ];
 
-        $this->assertTrue($usage->addBatch($metrics, Usage::TYPE_EVENT));
+        // Read scope is per-tenant via withTenant(); the write carries its
+        // tenant per-row, so it lands under tenant '2' regardless of scope.
+        $usage->withTenant('2', function (Usage $scoped) use ($usage, $metrics) {
+            $scoped->purge();
+            $this->assertTrue($usage->addBatch($metrics, Usage::TYPE_EVENT));
 
-        // Read scoped to the metric's tenant to verify the row was stored under the per-row override
-        $results = $usage->find([
-            \Utopia\Query\Query::equal('metric', ['tenant-override']),
-        ], Usage::TYPE_EVENT, tenant: '2');
+            $results = $scoped->find([
+                \Utopia\Query\Query::equal('metric', ['tenant-override']),
+            ], Usage::TYPE_EVENT);
 
-        $this->assertCount(1, $results);
-        $this->assertEquals('2', $results[0]->getTenant());
+            $this->assertCount(1, $results);
+            $this->assertEquals('2', $results[0]->getTenant());
 
-        $usage->purge(tenant: '2');
+            $scoped->purge();
+        });
+    }
+
+    public function testWithTenantIsolatesReads(): void
+    {
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
+
+        $adapter = new SharedTables($host, $username, $password, $port, $secure, 'utopia_usage_isolation');
+        if ($database = getenv('CLICKHOUSE_DATABASE')) {
+            $adapter->setDatabase($database);
+        }
+
+        $usage = new Usage($adapter);
+        $usage->setup();
+
+        // One buffer, two tenants, one flush — the per-row tenant decides
+        // where each row lands.
+        $usage->addBatch([
+            ['metric' => 'iso', 'value' => 10, '$tenant' => 'a', 'tags' => []],
+            ['metric' => 'iso', 'value' => 99, '$tenant' => 'b', 'tags' => []],
+        ], Usage::TYPE_EVENT);
+
+        $a = $usage->withTenant('a', fn (Usage $u) => $u->getTotal('iso', [], Usage::TYPE_EVENT));
+        $b = $usage->withTenant('b', fn (Usage $u) => $u->getTotal('iso', [], Usage::TYPE_EVENT));
+
+        $this->assertSame(10, $a);
+        $this->assertSame(99, $b);
+
+        $usage->withTenant('a', fn (Usage $u) => $u->purge());
+        $usage->withTenant('b', fn (Usage $u) => $u->purge());
     }
 
     /**

@@ -176,11 +176,8 @@ class Database extends SQL
      * @param  array<Query>  $queries
      * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
      */
-    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null, ?string $tenant = null): array
+    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
     {
-        if ($tenant !== null) {
-            $this->setTenant($tenant);
-        }
         // Stub: Database adapter time series not yet implemented
         $output = [];
         foreach ($metrics as $metric) {
@@ -197,11 +194,8 @@ class Database extends SQL
      *
      * @param  array<Query>  $queries
      */
-    public function getTotal(string $metric, array $queries = [], ?string $type = null, ?string $tenant = null): int
+    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
     {
-        if ($tenant !== null) {
-            $this->setTenant($tenant);
-        }
         $allQueries = array_merge($queries, [
             Query::equal('metric', [$metric]),
         ]);
@@ -285,11 +279,8 @@ class Database extends SQL
      * @param  array<Query>  $queries
      * @return array<string, int>
      */
-    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null, ?string $tenant = null): array
+    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
     {
-        if ($tenant !== null) {
-            $this->setTenant($tenant);
-        }
         if (empty($metrics)) {
             return [];
         }
@@ -311,11 +302,8 @@ class Database extends SQL
      * @param  array<Query>  $queries
      * @param  string  $type  'event' or 'gauge'
      */
-    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT, ?string $tenant = null): int
+    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
     {
-        if ($tenant !== null) {
-            $this->setTenant($tenant);
-        }
         /** @var array<Metric> $results */
         $results = $this->find($queries, $type);
 
@@ -333,9 +321,9 @@ class Database extends SQL
      * @param  array<Query>  $queries
      * @return array<Metric>
      */
-    public function findDaily(array $queries = [], ?string $tenant = null): array
+    public function findDaily(array $queries = []): array
     {
-        return $this->find($queries, Usage::TYPE_EVENT, $tenant);
+        return $this->find($queries, Usage::TYPE_EVENT);
     }
 
     /**
@@ -344,12 +332,12 @@ class Database extends SQL
      * @param  array<\Utopia\Query\Query>  $queries
      * @return array<string, int>
      */
-    public function sumDailyBatch(array $metrics, array $queries = [], ?string $tenant = null): array
+    public function sumDailyBatch(array $metrics, array $queries = []): array
     {
         $totals = \array_fill_keys($metrics, 0);
         foreach ($metrics as $metric) {
             $metricQueries = array_merge($queries, [Query::equal('metric', [$metric])]);
-            $totals[$metric] = $this->sumDaily($metricQueries, 'value', $tenant);
+            $totals[$metric] = $this->sumDaily($metricQueries, 'value');
         }
 
         return $totals;
@@ -360,9 +348,9 @@ class Database extends SQL
      *
      * @param  array<Query>  $queries
      */
-    public function sumDaily(array $queries = [], string $attribute = 'value', ?string $tenant = null): int
+    public function sumDaily(array $queries = [], string $attribute = 'value'): int
     {
-        return $this->sum($queries, $attribute, Usage::TYPE_EVENT, $tenant);
+        return $this->sum($queries, $attribute, Usage::TYPE_EVENT);
     }
 
     /**
@@ -527,11 +515,8 @@ class Database extends SQL
     /**
      * @param  array<Query>  $queries
      */
-    public function purge(array $queries = [], ?string $type = null, ?string $tenant = null): bool
+    public function purge(array $queries = [], ?string $type = null): bool
     {
-        if ($tenant !== null) {
-            $this->setTenant($tenant);
-        }
         $queries = $this->withTypeFilter($queries, $type);
 
         $this->db->getAuthorization()->skip(function () use ($queries) {
@@ -563,11 +548,8 @@ class Database extends SQL
      * @param  array<Query>  $queries
      * @return array<Metric>
      */
-    public function find(array $queries = [], ?string $type = null, ?string $tenant = null): array
+    public function find(array $queries = [], ?string $type = null): array
     {
-        if ($tenant !== null) {
-            $this->setTenant($tenant);
-        }
         $queries = $this->withTypeFilter($queries, $type);
 
         /** @var array<Document> $result */
@@ -593,11 +575,8 @@ class Database extends SQL
      * @param  array<Query>  $queries
      * @param  int|null  $max  Optional upper bound (inclusive) for the count
      */
-    public function count(array $queries = [], ?string $type = null, ?int $max = null, ?string $tenant = null): int
+    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
     {
-        if ($tenant !== null) {
-            $this->setTenant($tenant);
-        }
         $queries = $this->withTypeFilter($queries, $type);
 
         /** @var int $count */
