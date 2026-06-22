@@ -108,6 +108,7 @@ class Metric extends ArrayObject
     public function getId(): string
     {
         $id = $this->getAttribute('$id', '');
+
         return is_string($id) ? $id : '';
     }
 
@@ -122,6 +123,7 @@ class Metric extends ArrayObject
     public function getMetric(): string
     {
         $metric = $this->getAttribute('metric', '');
+
         return is_string($metric) ? $metric : '';
     }
 
@@ -143,6 +145,7 @@ class Metric extends ArrayObject
         if (is_int($value) || is_float($value)) {
             return $value;
         }
+
         return $default;
     }
 
@@ -163,6 +166,7 @@ class Metric extends ArrayObject
     public function getType(): string
     {
         $type = $this->getAttribute('type', 'event');
+
         return is_string($type) ? $type : 'event';
     }
 
@@ -178,6 +182,7 @@ class Metric extends ArrayObject
     public function getTime(): ?string
     {
         $time = $this->getAttribute('time', null);
+
         return is_string($time) ? $time : null;
     }
 
@@ -189,6 +194,7 @@ class Metric extends ArrayObject
     public function getPath(): ?string
     {
         $path = $this->getAttribute('path', null);
+
         return is_string($path) ? $path : null;
     }
 
@@ -200,6 +206,7 @@ class Metric extends ArrayObject
     public function getMethod(): ?string
     {
         $method = $this->getAttribute('method', null);
+
         return is_string($method) ? $method : null;
     }
 
@@ -211,6 +218,7 @@ class Metric extends ArrayObject
     public function getStatus(): ?string
     {
         $status = $this->getAttribute('status', null);
+
         return is_string($status) ? $status : null;
     }
 
@@ -222,6 +230,7 @@ class Metric extends ArrayObject
     public function getResource(): ?string
     {
         $resource = $this->getAttribute('resource', null);
+
         return is_string($resource) ? $resource : null;
     }
 
@@ -233,6 +242,7 @@ class Metric extends ArrayObject
     public function getResourceId(): ?string
     {
         $resourceId = $this->getAttribute('resourceId', null);
+
         return is_string($resourceId) ? $resourceId : null;
     }
 
@@ -244,28 +254,27 @@ class Metric extends ArrayObject
     public function getCountry(): ?string
     {
         $country = $this->getAttribute('country', null);
+
         return is_string($country) ? $country : null;
     }
 
     /**
      * Get service (event metrics only).
-     *
-     * @return string|null
      */
     public function getService(): ?string
     {
         $v = $this->getAttribute('service', null);
+
         return is_string($v) ? $v : null;
     }
 
     /**
      * Get internal resource id (event/gauge metrics).
-     *
-     * @return string|null
      */
     public function getResourceInternalId(): ?string
     {
         $v = $this->getAttribute('resourceInternalId', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -275,6 +284,7 @@ class Metric extends ArrayObject
     public function getTeamId(): ?string
     {
         $v = $this->getAttribute('teamId', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -284,6 +294,7 @@ class Metric extends ArrayObject
     public function getTeamInternalId(): ?string
     {
         $v = $this->getAttribute('teamInternalId', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -293,6 +304,7 @@ class Metric extends ArrayObject
     public function getRegion(): ?string
     {
         $v = $this->getAttribute('region', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -302,6 +314,7 @@ class Metric extends ArrayObject
     public function getHostname(): ?string
     {
         $v = $this->getAttribute('hostname', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -311,6 +324,7 @@ class Metric extends ArrayObject
     public function getOsCode(): ?string
     {
         $v = $this->getAttribute('osCode', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -320,6 +334,7 @@ class Metric extends ArrayObject
     public function getOsName(): ?string
     {
         $v = $this->getAttribute('osName', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -329,6 +344,7 @@ class Metric extends ArrayObject
     public function getOsVersion(): ?string
     {
         $v = $this->getAttribute('osVersion', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -338,6 +354,7 @@ class Metric extends ArrayObject
     public function getClientType(): ?string
     {
         $v = $this->getAttribute('clientType', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -347,6 +364,7 @@ class Metric extends ArrayObject
     public function getClientCode(): ?string
     {
         $v = $this->getAttribute('clientCode', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -356,6 +374,7 @@ class Metric extends ArrayObject
     public function getClientName(): ?string
     {
         $v = $this->getAttribute('clientName', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -365,6 +384,7 @@ class Metric extends ArrayObject
     public function getClientVersion(): ?string
     {
         $v = $this->getAttribute('clientVersion', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -374,6 +394,7 @@ class Metric extends ArrayObject
     public function getClientEngine(): ?string
     {
         $v = $this->getAttribute('clientEngine', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -383,6 +404,7 @@ class Metric extends ArrayObject
     public function getClientEngineVersion(): ?string
     {
         $v = $this->getAttribute('clientEngineVersion', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -392,6 +414,7 @@ class Metric extends ArrayObject
     public function getDeviceName(): ?string
     {
         $v = $this->getAttribute('deviceName', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -401,6 +424,7 @@ class Metric extends ArrayObject
     public function getDeviceBrand(): ?string
     {
         $v = $this->getAttribute('deviceBrand', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -410,6 +434,7 @@ class Metric extends ArrayObject
     public function getDeviceModel(): ?string
     {
         $v = $this->getAttribute('deviceModel', null);
+
         return is_string($v) ? $v : null;
     }
 
@@ -724,7 +749,7 @@ class Metric extends ArrayObject
         return array_map(
             static function (string $col) use ($setIndexed): array {
                 $entry = [
-                    '$id' => 'index-' . $col,
+                    '$id' => 'index-'.$col,
                     'type' => 'key',
                     'attributes' => [$col],
                     'indexType' => in_array($col, $setIndexed, true) ? 'set(0)' : 'bloom_filter',
@@ -732,6 +757,7 @@ class Metric extends ArrayObject
                 if ($col === 'path') {
                     $entry['lengths'] = [255];
                 }
+
                 return $entry;
             },
             $indexed,
@@ -751,7 +777,7 @@ class Metric extends ArrayObject
 
         return array_map(
             static fn (string $col): array => [
-                '$id' => 'index-' . $col,
+                '$id' => 'index-'.$col,
                 'type' => 'key',
                 'attributes' => [$col],
                 'indexType' => in_array($col, $setIndexed, true) ? 'set(0)' : 'bloom_filter',
@@ -785,6 +811,7 @@ class Metric extends ArrayObject
      * @param  array<string, mixed>  $tags
      * @param  string  $type  'event' or 'gauge'
      * @return array<string, string|null>
+     *
      * @throws \Exception When an unknown column key is present in $tags.
      */
     public static function extractColumns(array $tags, string $type): array
@@ -808,7 +835,7 @@ class Metric extends ArrayObject
             $columns[$col] = $val;
         }
 
-        if (!empty($tags)) {
+        if (! empty($tags)) {
             $unknown = array_key_first($tags);
             throw new \Exception("Unknown column '{$unknown}' for {$type}");
         }
@@ -828,6 +855,7 @@ class Metric extends ArrayObject
      *
      * @param  array<string, mixed>  $data  The metric data to validate
      * @param  string  $type  The metric type ('event' or 'gauge') to validate against
+     *
      * @throws \Exception If validation fails
      */
     public static function validate(array $data, string $type = 'event'): void
@@ -843,12 +871,12 @@ class Metric extends ArrayObject
             $size = $attribute['size'] ?? 0;
 
             // Check if required attribute is present
-            if ($required && !isset($data[$attrId])) {
+            if ($required && ! isset($data[$attrId])) {
                 throw new \Exception("Required attribute '{$attrId}' is missing");
             }
 
             // Skip validation if not present and not required
-            if (!isset($data[$attrId])) {
+            if (! isset($data[$attrId])) {
                 continue;
             }
 
@@ -871,8 +899,8 @@ class Metric extends ArrayObject
      */
     private static function validateStringAttribute(string $attrId, mixed $value, int $size): void
     {
-        if (!is_string($value)) {
-            throw new \Exception("Attribute '{$attrId}' must be a string, got " . gettype($value));
+        if (! is_string($value)) {
+            throw new \Exception("Attribute '{$attrId}' must be a string, got ".gettype($value));
         }
 
         if ($size > 0 && strlen($value) > $size) {
@@ -887,8 +915,8 @@ class Metric extends ArrayObject
      */
     private static function validateIntegerAttribute(string $attrId, mixed $value): void
     {
-        if (!is_int($value)) {
-            throw new \Exception("Attribute '{$attrId}' must be an integer, got " . gettype($value));
+        if (! is_int($value)) {
+            throw new \Exception("Attribute '{$attrId}' must be an integer, got ".gettype($value));
         }
     }
 
@@ -903,8 +931,8 @@ class Metric extends ArrayObject
             return; // Valid DateTime object
         }
 
-        if (!is_string($value)) {
-            throw new \Exception("Attribute '{$attrId}' must be a DateTime object or string, got " . gettype($value));
+        if (! is_string($value)) {
+            throw new \Exception("Attribute '{$attrId}' must be a DateTime object or string, got ".gettype($value));
         }
 
         try {

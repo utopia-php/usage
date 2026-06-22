@@ -6,6 +6,7 @@ use PHPUnit\Framework\TestCase;
 use Utopia\Query\Query;
 use Utopia\Tests\Usage\UsageBase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
+use Utopia\Usage\Adapter\SharedTables;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 
@@ -22,9 +23,7 @@ class ClickHouseTest extends TestCase
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage');
-        $adapter->setTenant('1');
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure, 'utopia_usage');
 
         // Optional customization via env vars
         if ($database = getenv('CLICKHOUSE_DATABASE')) {
@@ -43,10 +42,7 @@ class ClickHouseTest extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage_shared');
-        $adapter->setSharedTables(true);
-        $adapter->setTenant('1');
+        $adapter = new SharedTables($host, $username, $password, $port, $secure, 'utopia_usage_shared');
 
         if ($database = getenv('CLICKHOUSE_DATABASE')) {
             $adapter->setDatabase($database);
@@ -54,7 +50,6 @@ class ClickHouseTest extends TestCase
 
         $usage = new Usage($adapter);
         $usage->setup();
-        $usage->purge();
 
         $metrics = [
             [
@@ -65,19 +60,54 @@ class ClickHouseTest extends TestCase
             ],
         ];
 
-        $this->assertTrue($usage->addBatch($metrics, Usage::TYPE_EVENT));
+        // Read scope is per-tenant via withTenant(); the write carries its
+        // tenant per-row, so it lands under tenant '2' regardless of scope.
+        $usage->withTenant('2', function (Usage $scoped) use ($usage, $metrics) {
+            $scoped->purge();
+            $this->assertTrue($usage->addBatch($metrics, Usage::TYPE_EVENT));
 
-        // Switch adapter scope to the metric tenant to verify the row was stored under the override
-        $adapter->setTenant('2');
+            $results = $scoped->find([
+                \Utopia\Query\Query::equal('metric', ['tenant-override']),
+            ], Usage::TYPE_EVENT);
 
-        $results = $usage->find([
-            \Utopia\Query\Query::equal('metric', ['tenant-override']),
+            $this->assertCount(1, $results);
+            $this->assertEquals('2', $results[0]->getTenant());
+
+            $scoped->purge();
+        });
+    }
+
+    public function testWithTenantIsolatesReads(): void
+    {
+        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
+        $username = getenv('CLICKHOUSE_USER') ?: 'default';
+        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
+        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
+        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
+
+        $adapter = new SharedTables($host, $username, $password, $port, $secure, 'utopia_usage_isolation');
+        if ($database = getenv('CLICKHOUSE_DATABASE')) {
+            $adapter->setDatabase($database);
+        }
+
+        $usage = new Usage($adapter);
+        $usage->setup();
+
+        // One buffer, two tenants, one flush — the per-row tenant decides
+        // where each row lands.
+        $usage->addBatch([
+            ['metric' => 'iso', 'value' => 10, '$tenant' => 'a', 'tags' => []],
+            ['metric' => 'iso', 'value' => 99, '$tenant' => 'b', 'tags' => []],
         ], Usage::TYPE_EVENT);
 
-        $this->assertCount(1, $results);
-        $this->assertEquals('2', $results[0]->getTenant());
+        $a = $usage->withTenant('a', fn (Usage $u) => $u->getTotal('iso', [], Usage::TYPE_EVENT));
+        $b = $usage->withTenant('b', fn (Usage $u) => $u->getTotal('iso', [], Usage::TYPE_EVENT));
 
-        $usage->purge();
+        $this->assertSame(10, $a);
+        $this->assertSame(99, $b);
+
+        $usage->withTenant('a', fn (Usage $u) => $u->purge());
+        $usage->withTenant('b', fn (Usage $u) => $u->purge());
     }
 
     /**
@@ -834,9 +864,7 @@ class ClickHouseTest extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage_compression_test');
-        $adapter->setTenant('1');
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure, 'utopia_usage_compression_test');
 
         if ($database = getenv('CLICKHOUSE_DATABASE')) {
             $adapter->setDatabase($database);
@@ -890,9 +918,7 @@ class ClickHouseTest extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage_pooling_test');
-        $adapter->setTenant('1');
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure, 'utopia_usage_pooling_test');
 
         if ($database = getenv('CLICKHOUSE_DATABASE')) {
             $adapter->setDatabase($database);
@@ -1021,9 +1047,7 @@ class ClickHouseTest extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage_retry_test');
-        $adapter->setTenant('1');
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure, 'utopia_usage_retry_test');
         $adapter->setMaxRetries(2);
         $adapter->setRetryDelay(50);
 
@@ -1055,10 +1079,8 @@ class ClickHouseTest extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage_error_test');
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure, 'utopia_usage_error_test');
         $adapter->setDatabase('nonexistent_db_for_testing_errors_12345');
-        $adapter->setTenant('1');
         $adapter->setMaxRetries(0); // Disable retries for faster test
 
         $usage = new Usage($adapter);
@@ -1089,9 +1111,7 @@ class ClickHouseTest extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage_async');
-        $adapter->setTenant('1');
+        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure, 'utopia_usage_async');
 
         if ($database = getenv('CLICKHOUSE_DATABASE')) {
             $adapter->setDatabase($database);

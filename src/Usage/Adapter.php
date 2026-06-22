@@ -60,7 +60,6 @@ abstract class Adapter
      * @param  string  $metric  Metric name
      * @param  array<\Utopia\Query\Query>  $queries  Additional query filters
      * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
-     * @return int
      */
     abstract public function getTotal(string $metric, array $queries = [], ?string $type = null): int;
 
@@ -80,16 +79,16 @@ abstract class Adapter
      * Purge usage metrics matching the given queries.
      * When no queries are provided, all metrics are deleted.
      *
-     * @param array<\Utopia\Query\Query> $queries
-     * @param string|null $type Metric type: 'event', 'gauge', or null (purge both)
+     * @param  array<\Utopia\Query\Query>  $queries
+     * @param  string|null  $type  Metric type: 'event', 'gauge', or null (purge both)
      */
     abstract public function purge(array $queries = [], ?string $type = null): bool;
 
     /**
      * Find metrics using Query objects.
      *
-     * @param array<\Utopia\Query\Query> $queries
-     * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
+     * @param  array<\Utopia\Query\Query>  $queries
+     * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      * @return array<Metric>
      */
     abstract public function find(array $queries = [], ?string $type = null): array;
@@ -102,10 +101,9 @@ abstract class Adapter
      * This keeps large counts cheap for endpoints that only need a capped
      * total. When $max is null the count is unbounded.
      *
-     * @param array<\Utopia\Query\Query> $queries
-     * @param string|null $type Metric type: 'event', 'gauge', or null (count both)
-     * @param int|null $max Optional upper bound for the count (inclusive)
-     * @return int
+     * @param  array<\Utopia\Query\Query>  $queries
+     * @param  string|null  $type  Metric type: 'event', 'gauge', or null (count both)
+     * @param  int|null  $max  Optional upper bound for the count (inclusive)
      */
     abstract public function count(array $queries = [], ?string $type = null, ?int $max = null): int;
 
@@ -115,10 +113,9 @@ abstract class Adapter
      * Events-only by default because summing gauges is semantically meaningless
      * (adding point-in-time snapshots doesn't produce a useful total).
      *
-     * @param array<\Utopia\Query\Query> $queries
-     * @param string $attribute Attribute to sum (default: 'value')
-     * @param string $type Metric type: 'event' or 'gauge'
-     * @return int
+     * @param  array<\Utopia\Query\Query>  $queries
+     * @param  string  $attribute  Attribute to sum (default: 'value')
+     * @param  string  $type  Metric type: 'event' or 'gauge'
      */
     abstract public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int;
 
@@ -130,7 +127,7 @@ abstract class Adapter
      * Note: Daily MV only stores event metrics. This method always queries
      * the daily events table — gauges are never pre-aggregated.
      *
-     * @param array<\Utopia\Query\Query> $queries  Filters (metric, time range, resource, etc.)
+     * @param  array<\Utopia\Query\Query>  $queries  Filters (metric, time range, resource, etc.)
      * @return array<Metric>
      */
     abstract public function findDaily(array $queries = []): array;
@@ -141,9 +138,8 @@ abstract class Adapter
      * Note: Daily MV only stores event metrics. This method always queries
      * the daily events table — gauges are never pre-aggregated.
      *
-     * @param array<\Utopia\Query\Query> $queries
-     * @param string $attribute Attribute to sum (default: 'value')
-     * @return int
+     * @param  array<\Utopia\Query\Query>  $queries
+     * @param  string  $attribute  Attribute to sum (default: 'value')
      */
     abstract public function sumDaily(array $queries = [], string $attribute = 'value'): int;
 
@@ -153,8 +149,8 @@ abstract class Adapter
      * Note: Daily MV only stores event metrics. This method always queries
      * the daily events table — gauges are never pre-aggregated.
      *
-     * @param array<string> $metrics List of metric names
-     * @param array<\Utopia\Query\Query> $queries Additional filters (e.g. date range)
+     * @param  array<string>  $metrics  List of metric names
+     * @param  array<\Utopia\Query\Query>  $queries  Additional filters (e.g. date range)
      * @return array<string, int> Metric name => sum value
      */
     abstract public function sumDailyBatch(array $metrics, array $queries = []): array;

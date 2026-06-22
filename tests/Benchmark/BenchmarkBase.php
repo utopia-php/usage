@@ -6,6 +6,7 @@ use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use RuntimeException;
 use Throwable;
+use Utopia\Tests\Usage\Adapter\ScopedClickHouse;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 use Utopia\Usage\Usage;
 
@@ -49,20 +50,7 @@ abstract class BenchmarkBase extends TestCase
 
     protected function setUp(): void
     {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $this->adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $this->adapter->setNamespace($this->namespace);
-        $this->adapter->setSharedTables(true);
-        $this->adapter->setTenant($this->tenant);
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $this->adapter->setDatabase($database);
-        }
+        $this->adapter = ScopedClickHouse::fromEnv($this->namespace, $this->tenant);
 
         $this->usage = new Usage($this->adapter);
         $this->usage->setup();
@@ -89,7 +77,7 @@ abstract class BenchmarkBase extends TestCase
     {
         $metric ??= $this->metric;
 
-        $reflection = new ReflectionClass($this->adapter);
+        $reflection = new ReflectionClass(ClickHouseAdapter::class);
 
         $getEvents = $reflection->getMethod('getEventsTableName');
         $getEvents->setAccessible(true);
@@ -123,7 +111,7 @@ abstract class BenchmarkBase extends TestCase
      */
     protected function seedGaugeRows(int $rows, string $metric = 'storage'): void
     {
-        $reflection = new ReflectionClass($this->adapter);
+        $reflection = new ReflectionClass(ClickHouseAdapter::class);
 
         $getGauges = $reflection->getMethod('getGaugesTableName');
         $getGauges->setAccessible(true);
@@ -157,7 +145,7 @@ abstract class BenchmarkBase extends TestCase
      */
     protected function runRawSql(string $sql): void
     {
-        $reflection = new ReflectionClass($this->adapter);
+        $reflection = new ReflectionClass(ClickHouseAdapter::class);
         $query = $reflection->getMethod('query');
         $query->setAccessible(true);
         $query->invoke($this->adapter, $sql, []);
@@ -247,7 +235,7 @@ abstract class BenchmarkBase extends TestCase
             . "FORMAT JSON";
 
         try {
-            $reflection = new ReflectionClass($this->adapter);
+            $reflection = new ReflectionClass(ClickHouseAdapter::class);
             $query = $reflection->getMethod('query');
             $query->setAccessible(true);
             $raw = $query->invoke($this->adapter, $sql, []);
@@ -286,7 +274,7 @@ abstract class BenchmarkBase extends TestCase
             . "ORDER BY event_time DESC LIMIT 1 FORMAT JSON";
 
         try {
-            $reflection = new ReflectionClass($this->adapter);
+            $reflection = new ReflectionClass(ClickHouseAdapter::class);
             $query = $reflection->getMethod('query');
             $query->setAccessible(true);
             $raw = $query->invoke($this->adapter, $sql, []);
