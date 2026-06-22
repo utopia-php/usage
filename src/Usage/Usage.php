@@ -15,9 +15,11 @@ namespace Utopia\Usage;
 class Usage
 {
     public const TYPE_EVENT = 'event';
+
     public const TYPE_GAUGE = 'gauge';
 
     private const DEFAULT_FLUSH_THRESHOLD = 10_000;
+
     private const DEFAULT_FLUSH_INTERVAL = 20;
 
     private Adapter $adapter;
@@ -87,10 +89,10 @@ class Usage
      * Callers must explicitly pass the metric type so event and gauge
      * writes are never confused at the call site.
      *
-     * @param array<array{metric: string, value: int, tags?: array<string,mixed>}> $metrics
-     * @param string $type Metric type: 'event' or 'gauge'
-     * @param int $batchSize Maximum number of metrics per INSERT statement
-     * @return bool
+     * @param  array<array{metric: string, value: int, tags?: array<string,mixed>}>  $metrics
+     * @param  string  $type  Metric type: 'event' or 'gauge'
+     * @param  int  $batchSize  Maximum number of metrics per INSERT statement
+     *
      * @throws \Exception
      */
     public function addBatch(array $metrics, string $type, int $batchSize = 1000): bool
@@ -101,73 +103,77 @@ class Usage
     /**
      * Get time series data for metrics.
      *
-     * @param array<string> $metrics List of metric names
-     * @param string $interval '1h' or '1d'
-     * @param string $startDate Start datetime
-     * @param string $endDate End datetime
-     * @param array<\Utopia\Query\Query> $queries Additional filters
-     * @param bool $zeroFill Whether to fill gaps with zero values
-     * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
+     * @param  array<string>  $metrics  List of metric names
+     * @param  string  $interval  '1h' or '1d'
+     * @param  string  $startDate  Start datetime
+     * @param  string  $endDate  End datetime
+     * @param  array<\Utopia\Query\Query>  $queries  Additional filters
+     * @param  bool  $zeroFill  Whether to fill gaps with zero values
+     * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
+     *
      * @throws \Exception
      */
-    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
+    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null, ?string $tenant = null): array
     {
-        return $this->adapter->getTimeSeries($metrics, $interval, $startDate, $endDate, $queries, $zeroFill, $type);
+        return $this->adapter->getTimeSeries($metrics, $interval, $startDate, $endDate, $queries, $zeroFill, $type, $tenant);
     }
 
     /**
      * Get total value for a single metric.
      *
-     * @param string $metric Metric name
-     * @param array<\Utopia\Query\Query> $queries Additional filters
-     * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
-     * @return int
+     * @param  string  $metric  Metric name
+     * @param  array<\Utopia\Query\Query>  $queries  Additional filters
+     * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
+     *
      * @throws \Exception
      */
-    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
+    public function getTotal(string $metric, array $queries = [], ?string $type = null, ?string $tenant = null): int
     {
-        return $this->adapter->getTotal($metric, $queries, $type);
+        return $this->adapter->getTotal($metric, $queries, $type, $tenant);
     }
 
     /**
      * Get totals for multiple metrics in a single query.
      *
-     * @param array<string> $metrics List of metric names
-     * @param array<\Utopia\Query\Query> $queries Additional filters
-     * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
+     * @param  array<string>  $metrics  List of metric names
+     * @param  array<\Utopia\Query\Query>  $queries  Additional filters
+     * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      * @return array<string, int>
+     *
      * @throws \Exception
      */
-    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
+    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null, ?string $tenant = null): array
     {
-        return $this->adapter->getTotalBatch($metrics, $queries, $type);
+        return $this->adapter->getTotalBatch($metrics, $queries, $type, $tenant);
     }
 
     /**
      * Purge usage metrics matching the given queries.
      * When no queries are provided, all metrics are deleted.
      *
-     * @param array<\Utopia\Query\Query> $queries
-     * @param string|null $type Metric type: 'event', 'gauge', or null (purge both)
+     * @param  array<\Utopia\Query\Query>  $queries
+     * @param  string|null  $type  Metric type: 'event', 'gauge', or null (purge both)
+     *
      * @throws \Exception
      */
-    public function purge(array $queries = [], ?string $type = null): bool
+    public function purge(array $queries = [], ?string $type = null, ?string $tenant = null): bool
     {
-        return $this->adapter->purge($queries, $type);
+        return $this->adapter->purge($queries, $type, $tenant);
     }
 
     /**
      * Find metrics using Query objects.
      *
-     * @param array<\Utopia\Query\Query> $queries
-     * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
+     * @param  array<\Utopia\Query\Query>  $queries
+     * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      * @return array<Metric>
+     *
      * @throws \Exception
      */
-    public function find(array $queries = [], ?string $type = null): array
+    public function find(array $queries = [], ?string $type = null, ?string $tenant = null): array
     {
-        return $this->adapter->find($queries, $type);
+        return $this->adapter->find($queries, $type, $tenant);
     }
 
     /**
@@ -177,15 +183,15 @@ class Usage
      * Callers that only need a capped total (e.g. to render "5000+") should
      * pass $max so the adapter can short-circuit the count for large tables.
      *
-     * @param array<\Utopia\Query\Query> $queries
-     * @param string|null $type Metric type: 'event', 'gauge', or null (count both)
-     * @param int|null $max Optional upper bound for the count (inclusive)
-     * @return int
+     * @param  array<\Utopia\Query\Query>  $queries
+     * @param  string|null  $type  Metric type: 'event', 'gauge', or null (count both)
+     * @param  int|null  $max  Optional upper bound for the count (inclusive)
+     *
      * @throws \Exception
      */
-    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
+    public function count(array $queries = [], ?string $type = null, ?int $max = null, ?string $tenant = null): int
     {
-        return $this->adapter->count($queries, $type, $max);
+        return $this->adapter->count($queries, $type, $max, $tenant);
     }
 
     /**
@@ -196,19 +202,19 @@ class Usage
      * than producing a useful total. Callers that truly want a gauge sum
      * must opt in explicitly.
      *
-     * @param array<\Utopia\Query\Query> $queries
-     * @param string $attribute Attribute to sum (default: 'value')
-     * @param string $type Metric type: 'event' or 'gauge'
-     * @return int
+     * @param  array<\Utopia\Query\Query>  $queries
+     * @param  string  $attribute  Attribute to sum (default: 'value')
+     * @param  string  $type  Metric type: 'event' or 'gauge'
+     *
      * @throws \Exception
      */
-    public function sum(array $queries = [], string $attribute = 'value', string $type = self::TYPE_EVENT): int
+    public function sum(array $queries = [], string $attribute = 'value', string $type = self::TYPE_EVENT, ?string $tenant = null): int
     {
         if ($type !== self::TYPE_EVENT && $type !== self::TYPE_GAUGE) {
-            throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: " . self::TYPE_EVENT . ', ' . self::TYPE_GAUGE);
+            throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: ".self::TYPE_EVENT.', '.self::TYPE_GAUGE);
         }
 
-        return $this->adapter->sum($queries, $attribute, $type);
+        return $this->adapter->sum($queries, $attribute, $type, $tenant);
     }
 
     /**
@@ -219,13 +225,14 @@ class Usage
      * Note: Daily MV only stores event metrics. This method always queries
      * the daily events table — gauges are never pre-aggregated.
      *
-     * @param array<\Utopia\Query\Query> $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      * @return array<Metric>
+     *
      * @throws \Exception
      */
-    public function findDaily(array $queries = []): array
+    public function findDaily(array $queries = [], ?string $tenant = null): array
     {
-        return $this->adapter->findDaily($queries);
+        return $this->adapter->findDaily($queries, $tenant);
     }
 
     /**
@@ -237,14 +244,14 @@ class Usage
      * Note: Daily MV only stores event metrics. This method always queries
      * the daily events table — gauges are never pre-aggregated.
      *
-     * @param array<\Utopia\Query\Query> $queries
-     * @param string $attribute Attribute to sum (default: 'value')
-     * @return int
+     * @param  array<\Utopia\Query\Query>  $queries
+     * @param  string  $attribute  Attribute to sum (default: 'value')
+     *
      * @throws \Exception
      */
-    public function sumDaily(array $queries = [], string $attribute = 'value'): int
+    public function sumDaily(array $queries = [], string $attribute = 'value', ?string $tenant = null): int
     {
-        return $this->adapter->sumDaily($queries, $attribute);
+        return $this->adapter->sumDaily($queries, $attribute, $tenant);
     }
 
     /**
@@ -253,71 +260,15 @@ class Usage
      * Note: Daily MV only stores event metrics. This method always queries
      * the daily events table — gauges are never pre-aggregated.
      *
-     * @param array<string> $metrics List of metric names
-     * @param array<\Utopia\Query\Query> $queries Additional filters (e.g. date range)
+     * @param  array<string>  $metrics  List of metric names
+     * @param  array<\Utopia\Query\Query>  $queries  Additional filters (e.g. date range)
      * @return array<string, int> Metric name => sum value
+     *
      * @throws \Exception
      */
-    public function sumDailyBatch(array $metrics, array $queries = []): array
+    public function sumDailyBatch(array $metrics, array $queries = [], ?string $tenant = null): array
     {
-        return $this->adapter->sumDailyBatch($metrics, $queries);
-    }
-
-    /**
-     * Set the namespace prefix for table names.
-     *
-     * Flushes the buffer first so any pending metrics are written under the
-     * previous namespace — buffered entries don't carry adapter context.
-     *
-     * @param string $namespace
-     * @return $this
-     * @throws \Exception
-     */
-    public function setNamespace(string $namespace): self
-    {
-        $this->flush();
-        if (method_exists($this->adapter, 'setNamespace')) {
-            $this->adapter->setNamespace($namespace);
-        }
-        return $this;
-    }
-
-    /**
-     * Set the tenant ID for multi-tenant support.
-     *
-     * Flushes the buffer first so any pending metrics are written under the
-     * previous tenant — buffered entries don't carry adapter context.
-     *
-     * @param string|null $tenant
-     * @return $this
-     * @throws \Exception
-     */
-    public function setTenant(?string $tenant): self
-    {
-        $this->flush();
-        if (method_exists($this->adapter, 'setTenant')) {
-            $this->adapter->setTenant($tenant);
-        }
-        return $this;
-    }
-
-    /**
-     * Enable or disable shared tables mode (multi-tenant with tenant column).
-     *
-     * Flushes the buffer first so any pending metrics are written under the
-     * previous mode — buffered entries don't carry adapter context.
-     *
-     * @param bool $sharedTables
-     * @return $this
-     * @throws \Exception
-     */
-    public function setSharedTables(bool $sharedTables): self
-    {
-        $this->flush();
-        if (method_exists($this->adapter, 'setSharedTables')) {
-            $this->adapter->setSharedTables($sharedTables);
-        }
-        return $this;
+        return $this->adapter->sumDailyBatch($metrics, $queries, $tenant);
     }
 
     /**
@@ -327,11 +278,12 @@ class Usage
      * entry when totals diverge by more than 1%. Pass 1.0 for every-read
      * sampling (CI use) or small values (0.01) for production canaries.
      *
-     * @param float $rate 0.0 (off) … 1.0 (every read)
+     * @param  float  $rate  0.0 (off) … 1.0 (every read)
      */
     public function setDualReadSampleRate(float $rate): self
     {
         $this->adapter->setDualReadSampleRate($rate);
+
         return $this;
     }
 
@@ -342,13 +294,14 @@ class Usage
      * For gauge type: last-write-wins semantics.
      * No period fan-out — raw timestamps are used.
      *
-     * @param string $metric Metric name
-     * @param int $value Value
-     * @param string $type Metric type: 'event' or 'gauge'
-     * @param array<string,mixed> $tags Optional tags
-     * @return self
+     * @param  string  $metric  Metric name
+     * @param  int  $value  Value
+     * @param  string  $type  Metric type: 'event' or 'gauge'
+     * @param  array<string,mixed>  $tags  Optional tags
+     * @param  string|null  $tenant  Per-row tenant (shared-tables mode); when null
+     *                               the adapter's own tenant is used at write time
      */
-    public function collect(string $metric, int $value, string $type, array $tags = []): self
+    public function collect(string $metric, int $value, string $type, array $tags = [], ?string $tenant = null): self
     {
         if (empty($metric)) {
             throw new \InvalidArgumentException('Metric name cannot be empty');
@@ -357,32 +310,32 @@ class Usage
             throw new \InvalidArgumentException('Value cannot be negative');
         }
         if ($type !== self::TYPE_EVENT && $type !== self::TYPE_GAUGE) {
-            throw new \InvalidArgumentException("Invalid metric type '{$type}'. Allowed: " . self::TYPE_EVENT . ', ' . self::TYPE_GAUGE);
+            throw new \InvalidArgumentException("Invalid metric type '{$type}'. Allowed: ".self::TYPE_EVENT.', '.self::TYPE_GAUGE);
         }
 
-        $tagsHash = !empty($tags) ? md5(json_encode($tags, JSON_THROW_ON_ERROR)) : '';
-        $key = $metric . ':' . $type . ':' . $tagsHash;
+        $tagsHash = ! empty($tags) ? md5(json_encode($tags, JSON_THROW_ON_ERROR)) : '';
+        // Tenant is part of the identity so a single buffer can hold many
+        // tenants at once — callers no longer flush between tenant switches.
+        $key = $metric.':'.$type.':'.$tagsHash.':'.($tenant ?? '');
 
-        if ($type === self::TYPE_EVENT) {
-            // Additive: sum values for the same metric + tags combination
-            if (isset($this->buffer[$key])) {
-                $this->buffer[$key]['value'] += $value;
-            } else {
-                $this->buffer[$key] = [
-                    'metric' => $metric,
-                    'value' => $value,
-                    'type' => $type,
-                    'tags' => $tags,
-                ];
-            }
+        $entry = [
+            'metric' => $metric,
+            'value' => $value,
+            'type' => $type,
+            'tags' => $tags,
+        ];
+        // Only stamp the tenant when explicitly provided; otherwise the adapter
+        // falls back to its own tenant (set via setTenant) for backwards compat.
+        if ($tenant !== null) {
+            $entry['$tenant'] = $tenant;
+        }
+
+        if ($type === self::TYPE_EVENT && isset($this->buffer[$key])) {
+            // Additive: sum values for the same metric + tags + tenant combination
+            $this->buffer[$key]['value'] += $value;
         } else {
-            // Gauge: last-write-wins
-            $this->buffer[$key] = [
-                'metric' => $metric,
-                'value' => $value,
-                'type' => $type,
-                'tags' => $tags,
-            ];
+            // Event (first sighting) or gauge (last-write-wins)
+            $this->buffer[$key] = $entry;
         }
 
         $this->bufferCount++;
@@ -403,12 +356,14 @@ class Usage
      * propagate so the caller can observe the failure.
      *
      * @return bool True if all batches succeeded (or buffer was empty)
+     *
      * @throws \Exception
      */
     public function flush(): bool
     {
         if (empty($this->buffer)) {
             $this->lastFlushTime = microtime(true);
+
             return true;
         }
 
@@ -432,7 +387,7 @@ class Usage
         $overallResult = true;
 
         // Flush events — clear buffer entries only on success.
-        if (!empty($events)) {
+        if (! empty($events)) {
             if ($this->adapter->addBatch($events, self::TYPE_EVENT)) {
                 foreach ($eventKeys as $key) {
                     unset($this->buffer[$key]);
@@ -443,7 +398,7 @@ class Usage
         }
 
         // Flush gauges — clear buffer entries only on success.
-        if (!empty($gauges)) {
+        if (! empty($gauges)) {
             if ($this->adapter->addBatch($gauges, self::TYPE_GAUGE)) {
                 foreach ($gaugeKeys as $key) {
                     unset($this->buffer[$key]);
@@ -465,8 +420,6 @@ class Usage
      * Returns true if either:
      * - The number of collect() calls meets the flush threshold
      * - The time since last flush exceeds the flush interval
-     *
-     * @return bool
      */
     public function shouldFlush(): bool
     {
@@ -484,8 +437,6 @@ class Usage
 
     /**
      * Get the number of collect() calls since the last flush.
-     *
-     * @return int
      */
     public function getBufferCount(): int
     {
@@ -494,8 +445,6 @@ class Usage
 
     /**
      * Get the number of unique metric entries in the buffer.
-     *
-     * @return int
      */
     public function getBufferSize(): int
     {
@@ -505,8 +454,7 @@ class Usage
     /**
      * Set the flush threshold (number of collect() calls before flush is recommended).
      *
-     * @param int $threshold Must be >= 1
-     * @return self
+     * @param  int  $threshold  Must be >= 1
      */
     public function setFlushThreshold(int $threshold): self
     {
@@ -514,14 +462,14 @@ class Usage
             throw new \InvalidArgumentException('Flush threshold must be at least 1');
         }
         $this->flushThreshold = $threshold;
+
         return $this;
     }
 
     /**
      * Set the flush interval in seconds.
      *
-     * @param int $seconds Must be >= 1
-     * @return self
+     * @param  int  $seconds  Must be >= 1
      */
     public function setFlushInterval(int $seconds): self
     {
@@ -529,13 +477,12 @@ class Usage
             throw new \InvalidArgumentException('Flush interval must be at least 1 second');
         }
         $this->flushInterval = $seconds;
+
         return $this;
     }
 
     /**
      * Get the flush threshold.
-     *
-     * @return int
      */
     public function getFlushThreshold(): int
     {
@@ -544,8 +491,6 @@ class Usage
 
     /**
      * Get the flush interval in seconds.
-     *
-     * @return int
      */
     public function getFlushInterval(): int
     {

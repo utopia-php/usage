@@ -30,6 +30,7 @@ use Utopia\Query\Query;
 class UsageQuery extends Query
 {
     public const TYPE_GROUP_BY_INTERVAL = 'groupByInterval';
+
     public const TYPE_GROUP_BY = 'groupBy';
 
     /**
@@ -64,15 +65,14 @@ class UsageQuery extends Query
      * When passed to `find()`, this switches the adapter to return time-bucketed
      * aggregated results instead of raw rows.
      *
-     * @param string $attribute The time attribute to bucket (usually 'time')
-     * @param string $interval The bucket size: '1m', '5m', '15m', '1h', '1d', '1w', '1M'
-     * @return self
+     * @param  string  $attribute  The time attribute to bucket (usually 'time')
+     * @param  string  $interval  The bucket size: '1m', '5m', '15m', '1h', '1d', '1w', '1M'
      */
     public static function groupByInterval(string $attribute, string $interval): self
     {
-        if (!isset(self::VALID_INTERVALS[$interval])) {
+        if (! isset(self::VALID_INTERVALS[$interval])) {
             throw new \InvalidArgumentException(
-                "Invalid interval '{$interval}'. Allowed: " . implode(', ', array_keys(self::VALID_INTERVALS))
+                "Invalid interval '{$interval}'. Allowed: ".implode(', ', array_keys(self::VALID_INTERVALS))
             );
         }
 
@@ -81,9 +81,6 @@ class UsageQuery extends Query
 
     /**
      * Check if a query is a groupByInterval query.
-     *
-     * @param Query $query
-     * @return bool
      */
     public static function isGroupByInterval(Query $query): bool
     {
@@ -96,7 +93,7 @@ class UsageQuery extends Query
      * Queries parsed via `Query::parse()` are base `Query` objects rather than
      * `UsageQuery` instances, so we match on the method string alone.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      * @return Query|null The groupByInterval query, or null if not present
      */
     public static function extractGroupByInterval(array $queries): ?Query
@@ -115,13 +112,13 @@ class UsageQuery extends Query
      *
      * Returns the remaining queries that should be processed normally.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      * @return array<Query>
      */
     public static function removeGroupByInterval(array $queries): array
     {
         return array_values(array_filter($queries, function (Query $query) {
-            return !self::isGroupByInterval($query);
+            return ! self::isGroupByInterval($query);
         }));
     }
 
@@ -132,8 +129,7 @@ class UsageQuery extends Query
      * supplied via `groupByInterval`. Multiple `groupBy` queries may be
      * combined to bucket by several dimensions at once (e.g. service x status).
      *
-     * @param string $attribute The dimension column to bucket on (service, path, status, ...).
-     * @return self
+     * @param  string  $attribute  The dimension column to bucket on (service, path, status, ...).
      */
     public static function groupBy(string $attribute): self
     {
@@ -142,9 +138,6 @@ class UsageQuery extends Query
 
     /**
      * Check if a query is a groupBy query.
-     *
-     * @param Query $query
-     * @return bool
      */
     public static function isGroupBy(Query $query): bool
     {
@@ -158,7 +151,7 @@ class UsageQuery extends Query
      * this returns every match rather than the single-instance form used by
      * groupByInterval.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      * @return array<Query>
      */
     public static function extractGroupBy(array $queries): array
@@ -171,13 +164,13 @@ class UsageQuery extends Query
     /**
      * Remove all groupBy queries from an array of queries.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      * @return array<Query>
      */
     public static function removeGroupBy(array $queries): array
     {
         return array_values(array_filter($queries, function (Query $query) {
-            return !self::isGroupBy($query);
+            return ! self::isGroupBy($query);
         }));
     }
 }

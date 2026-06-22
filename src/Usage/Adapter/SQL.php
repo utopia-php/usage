@@ -2,9 +2,9 @@
 
 namespace Utopia\Usage\Adapter;
 
+use Utopia\Database\Document;
 use Utopia\Usage\Adapter;
 use Utopia\Usage\Metric;
-use Utopia\Database\Document;
 
 /**
  * Base SQL Adapter for Usage
@@ -18,8 +18,6 @@ abstract class SQL extends Adapter
 
     /**
      * Get the collection/table name for usage metrics.
-     *
-     * @return string
      */
     public function getCollectionName(): string
     {
@@ -49,7 +47,7 @@ abstract class SQL extends Adapter
     /**
      * Get attribute definitions for a specific type.
      *
-     * @param string $type 'event' or 'gauge'
+     * @param  string  $type  'event' or 'gauge'
      * @return array<int, array<string, mixed>>
      */
     public function getAttributes(string $type = 'event'): array
@@ -60,7 +58,7 @@ abstract class SQL extends Adapter
     /**
      * Get attribute documents for a specific type.
      *
-     * @param string $type 'event' or 'gauge'
+     * @param  string  $type  'event' or 'gauge'
      * @return array<Document>
      */
     public function getAttributeDocuments(string $type = 'event'): array
@@ -91,7 +89,7 @@ abstract class SQL extends Adapter
     /**
      * Get index definitions for a specific type.
      *
-     * @param string $type 'event' or 'gauge'
+     * @param  string  $type  'event' or 'gauge'
      * @return array<int, array<string, mixed>>
      */
     public function getIndexes(string $type = 'event'): array
@@ -102,7 +100,7 @@ abstract class SQL extends Adapter
     /**
      * Get index documents for a specific type.
      *
-     * @param string $type 'event' or 'gauge'
+     * @param  string  $type  'event' or 'gauge'
      * @return array<Document>
      */
     public function getIndexDocuments(string $type = 'event'): array
@@ -113,8 +111,7 @@ abstract class SQL extends Adapter
     /**
      * Get a single attribute by ID from a specific schema.
      *
-     * @param string $id
-     * @param string $type 'event' or 'gauge'
+     * @param  string  $type  'event' or 'gauge'
      * @return array<string, mixed>|null
      */
     protected function getAttribute(string $id, string $type = 'event')
@@ -132,8 +129,8 @@ abstract class SQL extends Adapter
      * Get SQL column definition for a given attribute ID.
      * This method is database-specific and must be implemented by each concrete adapter.
      *
-     * @param string $id Attribute identifier
-     * @param string $type 'event' or 'gauge'
+     * @param  string  $id  Attribute identifier
+     * @param  string  $type  'event' or 'gauge'
      * @return string Database-specific column definition
      */
     abstract protected function getColumnDefinition(string $id, string $type = 'event'): string;
@@ -142,7 +139,7 @@ abstract class SQL extends Adapter
      * Get all SQL column definitions for a specific type.
      * Uses the concrete adapter's implementation of getColumnDefinition.
      *
-     * @param string $type 'event' or 'gauge'
+     * @param  string  $type  'event' or 'gauge'
      * @return array<string>
      */
     protected function getAllColumnDefinitions(string $type = 'event'): array

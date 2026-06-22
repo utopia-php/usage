@@ -92,8 +92,6 @@ class ClickHouse extends SQL
 
     private Client $client;
 
-    protected ?string $tenant = null;
-
     protected bool $sharedTables = false;
 
     protected string $namespace = '';
@@ -161,19 +159,26 @@ class ClickHouse extends SQL
         string $username = 'default',
         string $password = '',
         int $port = self::DEFAULT_PORT,
-        bool $secure = false
+        bool $secure = false,
+        string $namespace = '',
+        bool $sharedTables = false
     ) {
         $this->validateHost($host);
         $this->validatePort($port);
+        if ($namespace !== '') {
+            $this->validateIdentifier($namespace, 'Namespace');
+        }
 
         $this->host = $host;
         $this->port = $port;
         $this->username = $username;
         $this->password = $password;
         $this->secure = $secure;
+        $this->namespace = $namespace;
+        $this->sharedTables = $sharedTables;
 
         // Initialize the HTTP client for connection reuse
-        $this->client = new Client();
+        $this->client = new Client;
         $this->client->addHeader('X-ClickHouse-User', $this->username);
         $this->client->addHeader('X-ClickHouse-Key', $this->password);
         $this->client->setTimeout(30_000); // 30 seconds
@@ -182,8 +187,8 @@ class ClickHouse extends SQL
     /**
      * Set the HTTP request timeout in milliseconds.
      *
-     * @param int $milliseconds Timeout in milliseconds (min: 1000ms, max: 600000ms)
-     * @return self
+     * @param  int  $milliseconds  Timeout in milliseconds (min: 1000ms, max: 600000ms)
+     *
      * @throws Exception If timeout is out of valid range
      */
     public function setTimeout(int $milliseconds): self
@@ -195,50 +200,51 @@ class ClickHouse extends SQL
             throw new Exception('Timeout cannot exceed 600000 milliseconds (10 minutes)');
         }
         $this->client->setTimeout($milliseconds);
+
         return $this;
     }
 
     /**
      * Enable or disable query logging for debugging.
      *
-     * @param bool $enable Whether to enable query logging
-     * @return self
+     * @param  bool  $enable  Whether to enable query logging
      */
     public function enableQueryLogging(bool $enable = true): self
     {
         $this->enableQueryLogging = $enable;
+
         return $this;
     }
 
     /**
      * Enable or disable gzip compression for HTTP requests/responses.
      *
-     * @param bool $enable Whether to enable compression
-     * @return self
+     * @param  bool  $enable  Whether to enable compression
      */
     public function setCompression(bool $enable): self
     {
         $this->enableCompression = $enable;
+
         return $this;
     }
 
     /**
      * Enable or disable HTTP keep-alive for connection pooling.
      *
-     * @param bool $enable Whether to enable keep-alive (default: true)
-     * @return self
+     * @param  bool  $enable  Whether to enable keep-alive (default: true)
      */
     public function setKeepAlive(bool $enable): self
     {
         $this->enableKeepAlive = $enable;
+
         return $this;
     }
 
     /**
      * Set maximum number of retry attempts for failed requests.
      *
-     * @param int $maxRetries Maximum retry attempts (0-10, 0 = no retries)
-     * @return self
+     * @param  int  $maxRetries  Maximum retry attempts (0-10, 0 = no retries)
+     *
      * @throws Exception If maxRetries is out of valid range
      */
     public function setMaxRetries(int $maxRetries): self
@@ -247,6 +253,7 @@ class ClickHouse extends SQL
             throw new Exception('Max retries must be between 0 and 10');
         }
         $this->maxRetries = $maxRetries;
+
         return $this;
     }
 
@@ -254,8 +261,8 @@ class ClickHouse extends SQL
      * Set initial retry delay in milliseconds.
      * Delay doubles with each retry attempt (exponential backoff).
      *
-     * @param int $milliseconds Initial delay in milliseconds (10-5000ms)
-     * @return self
+     * @param  int  $milliseconds  Initial delay in milliseconds (10-5000ms)
+     *
      * @throws Exception If delay is out of valid range
      */
     public function setRetryDelay(int $milliseconds): self
@@ -264,20 +271,21 @@ class ClickHouse extends SQL
             throw new Exception('Retry delay must be between 10 and 5000 milliseconds');
         }
         $this->retryDelay = $milliseconds;
+
         return $this;
     }
 
     /**
      * Enable or disable ClickHouse async inserts (server-side batching).
      *
-     * @param bool $enable Whether to enable async inserts
-     * @param bool $waitForConfirmation Whether to wait for server-side flush before returning
-     * @return self
+     * @param  bool  $enable  Whether to enable async inserts
+     * @param  bool  $waitForConfirmation  Whether to wait for server-side flush before returning
      */
     public function setAsyncInserts(bool $enable, bool $waitForConfirmation = true): self
     {
         $this->asyncInserts = $enable;
         $this->asyncInsertWait = $waitForConfirmation;
+
         return $this;
     }
 
@@ -290,6 +298,7 @@ class ClickHouse extends SQL
     public function setNextQueryId(?string $queryId): self
     {
         $this->nextQueryId = $queryId;
+
         return $this;
     }
 
@@ -308,6 +317,7 @@ class ClickHouse extends SQL
     public function clearRouteLog(): self
     {
         $this->routeLog = [];
+
         return $this;
     }
 
@@ -316,7 +326,7 @@ class ClickHouse extends SQL
      * routed reads also execute against the raw events table and log a
      * `warning` route entry if the totals diverge by >1%.
      *
-     * @param float $rate 0.0 (off) … 1.0 (every read)
+     * @param  float  $rate  0.0 (off) … 1.0 (every read)
      */
     public function setDualReadSampleRate(float $rate): self
     {
@@ -327,6 +337,7 @@ class ClickHouse extends SQL
             $rate = 1.0;
         }
         $this->dualReadSampleRate = $rate;
+
         return $this;
     }
 
@@ -361,12 +372,11 @@ class ClickHouse extends SQL
 
     /**
      * Clear the query execution log.
-     *
-     * @return self
      */
     public function clearQueryLog(): self
     {
         $this->queryLog = [];
+
         return $this;
     }
 
@@ -401,8 +411,9 @@ class ClickHouse extends SQL
             $response = $this->query('SELECT 1 as ping FORMAT JSON');
             $json = json_decode($response, true);
 
-            if (!is_array($json) || !isset($json['data'][0]['ping'])) {
+            if (! is_array($json) || ! isset($json['data'][0]['ping'])) {
                 $result['error'] = 'Invalid response format';
+
                 return $result;
             }
 
@@ -426,6 +437,7 @@ class ClickHouse extends SQL
         } catch (Exception $e) {
             $result['error'] = $e->getMessage();
             $result['response_time'] = round(microtime(true) - $startTime, 3);
+
             return $result;
         }
     }
@@ -433,13 +445,12 @@ class ClickHouse extends SQL
     /**
      * Validate host parameter.
      *
-     * @param string $host
      * @throws Exception
      */
     private function validateHost(string $host): void
     {
-        $validator = new Hostname();
-        if (!$validator->isValid($host)) {
+        $validator = new Hostname;
+        if (! $validator->isValid($host)) {
             throw new Exception('ClickHouse host is not a valid hostname or IP address');
         }
     }
@@ -447,7 +458,6 @@ class ClickHouse extends SQL
     /**
      * Validate port parameter.
      *
-     * @param int $port
      * @throws Exception
      */
     private function validatePort(int $port): void
@@ -460,8 +470,8 @@ class ClickHouse extends SQL
     /**
      * Validate identifier (database, table, namespace).
      *
-     * @param string $identifier
-     * @param string $type Name of the identifier type for error messages
+     * @param  string  $type  Name of the identifier type for error messages
+     *
      * @throws Exception
      */
     private function validateIdentifier(string $identifier, string $type = 'Identifier'): void
@@ -474,7 +484,7 @@ class ClickHouse extends SQL
             throw new Exception("{$type} cannot exceed 255 characters");
         }
 
-        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $identifier)) {
+        if (! preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $identifier)) {
             throw new Exception("{$type} must start with a letter or underscore and contain only alphanumeric characters and underscores");
         }
 
@@ -486,42 +496,22 @@ class ClickHouse extends SQL
 
     /**
      * Escape an identifier for safe use in SQL.
-     *
-     * @param string $identifier
-     * @return string
      */
     private function escapeIdentifier(string $identifier): string
     {
-        return '`' . str_replace('`', '``', $identifier) . '`';
-    }
-
-    /**
-     * Set the namespace for multi-project support.
-     *
-     * @param string $namespace
-     * @return self
-     * @throws Exception
-     */
-    public function setNamespace(string $namespace): self
-    {
-        if (!empty($namespace)) {
-            $this->validateIdentifier($namespace, 'Namespace');
-        }
-        $this->namespace = $namespace;
-        return $this;
+        return '`'.str_replace('`', '``', $identifier).'`';
     }
 
     /**
      * Set the database name for subsequent operations.
      *
-     * @param string $database
-     * @return self
      * @throws Exception
      */
     public function setDatabase(string $database): self
     {
         $this->validateIdentifier($database, 'Database');
         $this->database = $database;
+
         return $this;
     }
 
@@ -531,108 +521,46 @@ class ClickHouse extends SQL
     public function setSecure(bool $secure): self
     {
         $this->secure = $secure;
+
         return $this;
-    }
-
-    /**
-     * Get the namespace.
-     *
-     * @return string
-     */
-    public function getNamespace(): string
-    {
-        return $this->namespace;
-    }
-
-    /**
-     * Set the tenant ID for multi-tenant support.
-     *
-     * @param string|null $tenant
-     * @return self
-     */
-    public function setTenant(?string $tenant): self
-    {
-        $this->tenant = $tenant;
-        return $this;
-    }
-
-    /**
-     * Get the tenant ID.
-     *
-     * @return string|null
-     */
-    public function getTenant(): ?string
-    {
-        return $this->tenant;
-    }
-
-    /**
-     * Set whether tables are shared across tenants.
-     *
-     * @param bool $sharedTables
-     * @return self
-     */
-    public function setSharedTables(bool $sharedTables): self
-    {
-        $this->sharedTables = $sharedTables;
-        return $this;
-    }
-
-    /**
-     * Get whether tables are shared across tenants.
-     *
-     * @return bool
-     */
-    public function isSharedTables(): bool
-    {
-        return $this->sharedTables;
     }
 
     /**
      * Get the base table name with namespace prefix.
-     *
-     * @return string
      */
     private function getTableName(): string
     {
-        return !empty($this->namespace) ? $this->namespace . '_' . $this->table : $this->table;
+        return ! empty($this->namespace) ? $this->namespace.'_'.$this->table : $this->table;
     }
 
     /**
      * Get the events table name.
-     *
-     * @return string
      */
     private function getEventsTableName(): string
     {
-        return $this->getTableName() . '_events';
+        return $this->getTableName().'_events';
     }
 
     /**
      * Get the gauges table name.
-     *
-     * @return string
      */
     private function getGaugesTableName(): string
     {
-        return $this->getTableName() . '_gauges';
+        return $this->getTableName().'_gauges';
     }
 
     /**
      * Get the events daily table name.
-     *
-     * @return string
      */
     private function getEventsDailyTableName(): string
     {
-        return $this->getTableName() . '_events_daily';
+        return $this->getTableName().'_events_daily';
     }
 
     /**
      * Get the appropriate table name for a given type.
      *
-     * @param string $type 'event' or 'gauge'
-     * @return string
+     * @param  string  $type  'event' or 'gauge'
      */
     private function getTableForType(string $type): string
     {
@@ -642,27 +570,27 @@ class ClickHouse extends SQL
     /**
      * Build a fully qualified table reference with database and escaping.
      *
-     * @param string $tableName The table name (with namespace already applied)
+     * @param  string  $tableName  The table name (with namespace already applied)
      * @return string Fully qualified table reference
      */
     private function buildTableReference(string $tableName): string
     {
-        return $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        return $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($tableName);
     }
 
     /**
      * Log a query execution for debugging purposes.
      *
-     * @param string $sql SQL query executed
-     * @param array<string, mixed> $params Query parameters
-     * @param float $duration Execution duration in seconds
-     * @param bool $success Whether the query succeeded
-     * @param string|null $error Error message if query failed
-     * @param int $retryAttempt Current retry attempt number
+     * @param  string  $sql  SQL query executed
+     * @param  array<string, mixed>  $params  Query parameters
+     * @param  float  $duration  Execution duration in seconds
+     * @param  bool  $success  Whether the query succeeded
+     * @param  string|null  $error  Error message if query failed
+     * @param  int  $retryAttempt  Current retry attempt number
      */
     private function logQuery(string $sql, array $params, float $duration, bool $success, ?string $error = null, int $retryAttempt = 0): void
     {
-        if (!$this->enableQueryLogging) {
+        if (! $this->enableQueryLogging) {
             return;
         }
 
@@ -688,8 +616,8 @@ class ClickHouse extends SQL
     /**
      * Determine if an error is retryable.
      *
-     * @param int|null $httpCode HTTP status code if available
-     * @param string $errorMessage Error message
+     * @param  int|null  $httpCode  HTTP status code if available
+     * @param  string  $errorMessage  Error message
      * @return bool True if the error is retryable
      */
     private function isRetryableError(?int $httpCode, string $errorMessage): bool
@@ -720,9 +648,6 @@ class ClickHouse extends SQL
 
     /**
      * Set the current operation context for better error messages.
-     *
-     * @param string|null $context
-     * @return void
      */
     private function setOperationContext(?string $context): void
     {
@@ -733,10 +658,12 @@ class ClickHouse extends SQL
      * Execute an operation with automatic retry logic and exponential backoff.
      *
      * @template T
-     * @param callable(int): T $operation
-     * @param callable(Exception, int|null): bool $shouldRetry
-     * @param callable(Exception, int): Exception $buildException
+     *
+     * @param  callable(int): T  $operation
+     * @param  callable(Exception, int|null): bool  $shouldRetry
+     * @param  callable(Exception, int): Exception  $buildException
      * @return T
+     *
      * @throws Exception
      */
     private function executeWithRetry(callable $operation, callable $shouldRetry, callable $buildException): mixed
@@ -754,6 +681,7 @@ class ClickHouse extends SQL
                     $attempt++;
                     $delay = $this->retryDelay * (2 ** ($attempt - 1));
                     usleep($delay * 1000);
+
                     continue;
                 }
 
@@ -769,11 +697,6 @@ class ClickHouse extends SQL
 
     /**
      * Build a contextual error message.
-     *
-     * @param string $baseMessage
-     * @param string|null $table
-     * @param string|null $sql
-     * @return string
      */
     private function buildErrorMessage(string $baseMessage, ?string $table = null, ?string $sql = null): string
     {
@@ -788,21 +711,21 @@ class ClickHouse extends SQL
         }
 
         if ($sql !== null) {
-            $truncatedSql = strlen($sql) > 200 ? substr($sql, 0, 200) . '...' : $sql;
+            $truncatedSql = strlen($sql) > 200 ? substr($sql, 0, 200).'...' : $sql;
             $truncatedSql = preg_replace('/\s+/', ' ', $truncatedSql);
             $parts[] = "Query: {$truncatedSql}";
         }
 
-        $context = !empty($parts) ? ' [' . implode(', ', $parts) . ']' : '';
-        return $baseMessage . $context;
+        $context = ! empty($parts) ? ' ['.implode(', ', $parts).']' : '';
+
+        return $baseMessage.$context;
     }
 
     /**
      * Execute a ClickHouse query via HTTP interface.
      *
-     * @param string $sql
-     * @param array<string, mixed> $params
-     * @return string
+     * @param  array<string, mixed>  $params
+     *
      * @throws Exception
      */
     private function query(string $sql, array $params = []): string
@@ -816,7 +739,7 @@ class ClickHouse extends SQL
                 $scheme = $this->secure ? 'https' : 'http';
                 $url = "{$scheme}://{$this->host}:{$this->port}/";
                 if ($queryId !== null) {
-                    $url .= '?' . http_build_query(['query_id' => $queryId]);
+                    $url .= '?'.http_build_query(['query_id' => $queryId]);
                 }
 
                 $this->client->addHeader('X-ClickHouse-Database', $this->database);
@@ -837,7 +760,7 @@ class ClickHouse extends SQL
 
                 $body = ['query' => $sql];
                 foreach ($params as $key => $value) {
-                    $body['param_' . $key] = $this->formatParamValue($value);
+                    $body['param_'.$key] = $this->formatParamValue($value);
                 }
 
                 $response = $this->client->fetch(
@@ -855,13 +778,14 @@ class ClickHouse extends SQL
                     $errorMsg = $this->buildErrorMessage($baseError, null, $sql);
                     $this->logQuery($sql, $params, $duration, false, $errorMsg, $attempt);
 
-                    throw new Exception($errorMsg . '|HTTP_CODE:' . $httpCode);
+                    throw new Exception($errorMsg.'|HTTP_CODE:'.$httpCode);
                 }
 
                 $body = $response->getBody();
                 $result = is_string($body) ? $body : '';
                 $duration = microtime(true) - $startTime;
                 $this->logQuery($sql, $params, $duration, true, null, $attempt);
+
                 return $result;
             },
             function (Exception $e, ?int $httpCode): bool {
@@ -869,6 +793,7 @@ class ClickHouse extends SQL
                 if (preg_match('/\|HTTP_CODE:(\d+)$/', $e->getMessage(), $matches)) {
                     $exceptionHttpCode = (int) $matches[1];
                 }
+
                 return $this->isRetryableError($exceptionHttpCode, $e->getMessage());
             },
             function (Exception $e, int $attempt) use ($sql): Exception {
@@ -879,8 +804,9 @@ class ClickHouse extends SQL
                     return new Exception($cleanMessage, 0, $e);
                 }
 
-                $baseError = "ClickHouse query execution failed after " . ($attempt + 1) . " attempt(s): {$cleanMessage}";
+                $baseError = 'ClickHouse query execution failed after '.($attempt + 1)." attempt(s): {$cleanMessage}";
                 $errorMsg = $this->buildErrorMessage($baseError, null, $sql);
+
                 return new Exception($errorMsg, 0, $e);
             }
         );
@@ -889,8 +815,9 @@ class ClickHouse extends SQL
     /**
      * Execute a ClickHouse INSERT using JSONEachRow format.
      *
-     * @param string $table Table name
-     * @param array<string> $data Array of JSON strings (one per row)
+     * @param  string  $table  Table name
+     * @param  array<string>  $data  Array of JSON strings (one per row)
+     *
      * @throws Exception
      */
     private function insert(string $table, array $data): void
@@ -910,7 +837,7 @@ class ClickHouse extends SQL
                     $queryParams['async_insert'] = '1';
                     $queryParams['wait_for_async_insert'] = $this->asyncInsertWait ? '1' : '0';
                 }
-                $url = "{$scheme}://{$this->host}:{$this->port}/?" . http_build_query($queryParams);
+                $url = "{$scheme}://{$this->host}:{$this->port}/?".http_build_query($queryParams);
 
                 $this->client->addHeader('X-ClickHouse-Database', $this->database);
                 $this->client->addHeader('Content-Type', 'application/x-ndjson');
@@ -952,7 +879,7 @@ class ClickHouse extends SQL
                         $errorMsg = $this->buildErrorMessage($baseError, $table, "INSERT INTO {$table} ({$rowCount} rows)");
                         $this->logQuery($sql, $params, $duration, false, $errorMsg, $attempt);
 
-                        throw new Exception($errorMsg . '|HTTP_CODE:' . $httpCode);
+                        throw new Exception($errorMsg.'|HTTP_CODE:'.$httpCode);
                     }
 
                     $duration = microtime(true) - $startTime;
@@ -979,8 +906,9 @@ class ClickHouse extends SQL
                 }
 
                 $rowCount = count($data);
-                $baseError = "ClickHouse insert execution failed after " . ($attempt + 1) . " attempt(s): {$cleanMessage}";
+                $baseError = 'ClickHouse insert execution failed after '.($attempt + 1)." attempt(s): {$cleanMessage}";
                 $errorMsg = $this->buildErrorMessage($baseError, $table, "INSERT INTO {$table} ({$rowCount} rows)");
+
                 return new Exception($errorMsg, 0, $e);
             }
         );
@@ -988,9 +916,6 @@ class ClickHouse extends SQL
 
     /**
      * Format a parameter value for safe transmission to ClickHouse.
-     *
-     * @param mixed $value
-     * @return string
      */
     private function formatParamValue(mixed $value): string
     {
@@ -1008,6 +933,7 @@ class ClickHouse extends SQL
 
         if (is_array($value)) {
             $encoded = json_encode($value);
+
             return is_string($encoded) ? $encoded : '';
         }
 
@@ -1125,7 +1051,7 @@ class ClickHouse extends SQL
      */
     private function setLightweightMutationProjectionMode(string $baseTable): void
     {
-        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($baseTable);
+        $escapedTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($baseTable);
         $sql = "ALTER TABLE {$escapedTable} MODIFY SETTING lightweight_mutation_projection_mode = 'rebuild'";
         $this->query($sql);
     }
@@ -1140,11 +1066,11 @@ class ClickHouse extends SQL
     private function ensureGaugeDimColumns(): void
     {
         $gaugesTable = $this->escapeIdentifier($this->database)
-            . '.' . $this->escapeIdentifier($this->getGaugesTableName());
+            .'.'.$this->escapeIdentifier($this->getGaugesTableName());
 
         $sql = "ALTER TABLE {$gaugesTable} "
-            . 'ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String)), '
-            . 'ADD COLUMN IF NOT EXISTS resource LowCardinality(Nullable(String))';
+            .'ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String)), '
+            .'ADD COLUMN IF NOT EXISTS resource LowCardinality(Nullable(String))';
 
         $this->query($sql);
     }
@@ -1158,11 +1084,11 @@ class ClickHouse extends SQL
      * kept in the projection (not `toStartOfDay`) so `WHERE time BETWEEN`
      * filters can match the projection without query rewriting.
      *
-     * @param array<int, string> $dims
+     * @param  array<int, string>  $dims
      */
     private function addProjection(string $baseTable, string $name, array $dims, string $aggregateExpr): void
     {
-        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($baseTable);
+        $escapedTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($baseTable);
 
         $selectParts = ['metric', 'time'];
         $groupParts = ['metric', 'time'];
@@ -1180,9 +1106,9 @@ class ClickHouse extends SQL
         $groupSql = implode(', ', $groupParts);
 
         $sql = "ALTER TABLE {$escapedTable} ADD PROJECTION IF NOT EXISTS {$name} ("
-            . "SELECT {$selectSql} "
-            . "GROUP BY {$groupSql}"
-            . ")";
+            ."SELECT {$selectSql} "
+            ."GROUP BY {$groupSql}"
+            .')';
 
         $this->query($sql);
     }
@@ -1190,21 +1116,21 @@ class ClickHouse extends SQL
     /**
      * Create a MergeTree table for the given type.
      *
-     * @param string $tableName
-     * @param string $type 'event' or 'gauge'
-     * @param array<int, array<string, mixed>> $indexes
+     * @param  string  $type  'event' or 'gauge'
+     * @param  array<int, array<string, mixed>>  $indexes
+     *
      * @throws Exception
      */
     private function createTable(string $tableName, string $type, array $indexes): void
     {
-        $columns = ['id String ' . $this->getColumnCodec('id')];
+        $columns = ['id String '.$this->getColumnCodec('id')];
 
         foreach ($this->getAttributes($type) as $attribute) {
             /** @var string $id */
             $id = $attribute['$id'];
 
             if ($id === 'time') {
-                $columns[] = "time DateTime64(3, 'UTC') " . $this->getColumnCodec('time');
+                $columns[] = "time DateTime64(3, 'UTC') ".$this->getColumnCodec('time');
             } else {
                 $columns[] = $this->getColumnDefinition($id, $type);
             }
@@ -1228,10 +1154,10 @@ class ClickHouse extends SQL
             $indexDefs[] = "INDEX {$escapedIndexName} ({$attributeList}) TYPE {$indexType} GRANULARITY 1";
         }
 
-        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+        $escapedDatabaseAndTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($tableName);
 
         $columnDefs = implode(",\n                ", $columns);
-        $indexDefsStr = !empty($indexDefs) ? ",\n                " . implode(",\n                ", $indexDefs) : '';
+        $indexDefsStr = ! empty($indexDefs) ? ",\n                ".implode(",\n                ", $indexDefs) : '';
 
         // Primary key matches the most common filter pattern:
         // tenant (multi-tenant isolation) → metric (per-metric series) →
@@ -1264,7 +1190,7 @@ class ClickHouse extends SQL
     private function createDailyTable(): void
     {
         $dailyTableName = $this->getEventsDailyTableName();
-        $escapedDailyTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyTableName);
+        $escapedDailyTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($dailyTableName);
 
         $columns = [
             'metric String',
@@ -1309,22 +1235,22 @@ class ClickHouse extends SQL
     {
         $eventsTable = $this->getEventsTableName();
         $dailyTableName = $this->getEventsDailyTableName();
-        $dailyMvName = $this->getTableName() . '_events_daily_mv';
+        $dailyMvName = $this->getTableName().'_events_daily_mv';
 
-        $escapedEventsTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($eventsTable);
-        $escapedDailyTable  = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyTableName);
-        $escapedDailyMv     = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyMvName);
+        $escapedEventsTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($eventsTable);
+        $escapedDailyTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($dailyTableName);
+        $escapedDailyMv = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($dailyMvName);
 
         $dimensions = 'resource, resourceId, resourceInternalId, teamId, teamInternalId';
 
         if ($this->sharedTables) {
-            $innerSelect  = "metric, tenant, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
+            $innerSelect = "metric, tenant, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
             $innerGroupBy = "metric, tenant, {$dimensions}, d";
-            $outerSelect  = "metric, value, d as time, tenant, {$dimensions}";
+            $outerSelect = "metric, value, d as time, tenant, {$dimensions}";
         } else {
-            $innerSelect  = "metric, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
+            $innerSelect = "metric, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
             $innerGroupBy = "metric, {$dimensions}, d";
-            $outerSelect  = "metric, value, d as time, {$dimensions}";
+            $outerSelect = "metric, value, d as time, {$dimensions}";
         }
 
         $createDailyMvSql = "
@@ -1344,9 +1270,8 @@ class ClickHouse extends SQL
     /**
      * Validate that an attribute name exists in the schema for a given type.
      *
-     * @param string $attributeName
-     * @param string $type 'event' or 'gauge'
-     * @return bool
+     * @param  string  $type  'event' or 'gauge'
+     *
      * @throws Exception
      */
     private function validateAttributeName(string $attributeName, string $type = 'event'): bool
@@ -1391,7 +1316,7 @@ class ClickHouse extends SQL
             return true;
         }
 
-        throw new Exception("Invalid groupBy attribute '{$attribute}' for {$type}. Allowed: " . implode(', ', $allowed));
+        throw new Exception("Invalid groupBy attribute '{$attribute}' for {$type}. Allowed: ".implode(', ', $allowed));
     }
 
     /**
@@ -1423,24 +1348,24 @@ class ClickHouse extends SQL
             return true;
         }
 
-        $allowed = implode(', ', self::DAILY_COLUMNS) . ($this->sharedTables ? ', tenant' : '');
+        $allowed = implode(', ', self::DAILY_COLUMNS).($this->sharedTables ? ', tenant' : '');
         throw new Exception(
             "Invalid attribute '{$attributeName}' for daily table. "
-            . "Allowed: {$allowed}."
+            ."Allowed: {$allowed}."
         );
     }
 
     /**
      * Format datetime for ClickHouse compatibility.
      *
-     * @param DateTime|string|null $dateTime
-     * @return string
+     * @param  DateTime|string|null  $dateTime
+     *
      * @throws Exception
      */
     private function formatDateTime($dateTime): string
     {
         if ($dateTime === null) {
-            return (new DateTime())->format('Y-m-d H:i:s.v');
+            return (new DateTime)->format('Y-m-d H:i:s.v');
         }
 
         if ($dateTime instanceof DateTime) {
@@ -1450,6 +1375,7 @@ class ClickHouse extends SQL
         if (is_string($dateTime)) {
             try {
                 $dt = new DateTime($dateTime);
+
                 return $dt->format('Y-m-d H:i:s.v');
             } catch (Exception $e) {
                 throw new Exception("Invalid datetime string: {$dateTime}");
@@ -1457,21 +1383,22 @@ class ClickHouse extends SQL
         }
 
         /** @phpstan-ignore-next-line */
-        throw new Exception("Invalid datetime value type: " . gettype($dateTime));
+        throw new Exception('Invalid datetime value type: '.gettype($dateTime));
     }
 
     /**
      * Get ClickHouse type for an attribute.
      *
-     * @param string $id Attribute identifier
-     * @param string $type 'event' or 'gauge'
+     * @param  string  $id  Attribute identifier
+     * @param  string  $type  'event' or 'gauge'
      * @return string ClickHouse type
+     *
      * @throws Exception
      */
     private function getColumnType(string $id, string $type = 'event'): string
     {
         $attribute = $this->getAttribute($id, $type);
-        if (!$attribute) {
+        if (! $attribute) {
             throw new Exception("Attribute {$id} not found in {$type} schema");
         }
 
@@ -1497,14 +1424,15 @@ class ClickHouse extends SQL
             default => 'String',
         };
 
-        return !$attribute['required'] ? 'Nullable(' . $baseType . ')' : $baseType;
+        return ! $attribute['required'] ? 'Nullable('.$baseType.')' : $baseType;
     }
 
     protected function getColumnDefinition(string $id, string $type = 'event'): string
     {
         $codec = $this->getColumnCodec($id);
-        $suffix = $codec !== '' ? ' ' . $codec : '';
-        return $this->escapeIdentifier($id) . ' ' . $this->getColumnType($id, $type) . $suffix;
+        $suffix = $codec !== '' ? ' '.$codec : '';
+
+        return $this->escapeIdentifier($id).' '.$this->getColumnType($id, $type).$suffix;
     }
 
     /**
@@ -1534,11 +1462,12 @@ class ClickHouse extends SQL
     /**
      * Validate metric data for batch operations.
      *
-     * @param string $metric Metric name
-     * @param int $value Metric value
-     * @param string $type Metric type ('event' or 'gauge')
-     * @param array<string,mixed> $tags Tags
-     * @param int|null $metricIndex Index for batch error messages
+     * @param  string  $metric  Metric name
+     * @param  int  $value  Metric value
+     * @param  string  $type  Metric type ('event' or 'gauge')
+     * @param  array<string,mixed>  $tags  Tags
+     * @param  int|null  $metricIndex  Index for batch error messages
+     *
      * @throws Exception
      */
     private function validateMetricData(string $metric, int $value, string $type, array $tags, ?int $metricIndex = null): void
@@ -1546,51 +1475,52 @@ class ClickHouse extends SQL
         $prefix = $metricIndex !== null ? "Metric #{$metricIndex}: " : '';
 
         if (empty($metric)) {
-            throw new Exception($prefix . 'Metric cannot be empty');
+            throw new Exception($prefix.'Metric cannot be empty');
         }
 
         if (strlen($metric) > 255) {
-            throw new Exception($prefix . 'Metric exceeds maximum size of 255 characters');
+            throw new Exception($prefix.'Metric exceeds maximum size of 255 characters');
         }
 
         if ($value < 0) {
-            throw new Exception($prefix . 'Value cannot be negative');
+            throw new Exception($prefix.'Value cannot be negative');
         }
 
         if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
-            throw new \InvalidArgumentException($prefix . "Invalid type '{$type}'. Allowed: " . Usage::TYPE_EVENT . ', ' . Usage::TYPE_GAUGE);
+            throw new \InvalidArgumentException($prefix."Invalid type '{$type}'. Allowed: ".Usage::TYPE_EVENT.', '.Usage::TYPE_GAUGE);
         }
 
-        if (!is_array($tags)) {
-            throw new Exception($prefix . 'Tags must be an array');
+        if (! is_array($tags)) {
+            throw new Exception($prefix.'Tags must be an array');
         }
     }
 
     /**
      * Validate all metrics in a batch before processing.
      *
-     * @param array<int,array<string,mixed>> $metrics
-     * @param string $type The target table type
+     * @param  array<int,array<string,mixed>>  $metrics
+     * @param  string  $type  The target table type
+     *
      * @throws Exception
      */
     private function validateMetricsBatch(array $metrics, string $type): void
     {
         foreach ($metrics as $index => $metricData) {
-            if (!isset($metricData['metric'])) {
+            if (! isset($metricData['metric'])) {
                 throw new Exception("Metric #{$index}: 'metric' is required");
             }
-            if (!isset($metricData['value'])) {
+            if (! isset($metricData['value'])) {
                 throw new Exception("Metric #{$index}: 'value' is required");
             }
 
             $metric = $metricData['metric'];
             $value = $metricData['value'];
 
-            if (!is_string($metric)) {
-                throw new Exception("Metric #{$index}: 'metric' must be a string, got " . gettype($metric));
+            if (! is_string($metric)) {
+                throw new Exception("Metric #{$index}: 'metric' must be a string, got ".gettype($metric));
             }
-            if (!is_int($value)) {
-                throw new Exception("Metric #{$index}: 'value' must be an integer, got " . gettype($value));
+            if (! is_int($value)) {
+                throw new Exception("Metric #{$index}: 'value' must be an integer, got ".gettype($value));
             }
 
             /** @var array<string, mixed> */
@@ -1600,8 +1530,8 @@ class ClickHouse extends SQL
             if (array_key_exists('$tenant', $metricData)) {
                 $tenantValue = $metricData['$tenant'];
 
-                if ($tenantValue !== null && !is_string($tenantValue)) {
-                    throw new Exception("Metric #{$index}: '\$tenant' must be a string or null, got " . gettype($tenantValue));
+                if ($tenantValue !== null && ! is_string($tenantValue)) {
+                    throw new Exception("Metric #{$index}: '\$tenant' must be a string or null, got ".gettype($tenantValue));
                 }
             }
         }
@@ -1617,6 +1547,7 @@ class ClickHouse extends SQL
      * @param  array<int,array<string,mixed>>  $metrics
      * @param  string  $type  Metric type: 'event' or 'gauge'
      * @param  int  $batchSize  Maximum number of metrics per INSERT statement
+     *
      * @throws Exception
      */
     public function addBatch(array $metrics, string $type, int $batchSize = self::INSERT_BATCH_SIZE): bool
@@ -1650,10 +1581,10 @@ class ClickHouse extends SQL
                 $columns = Metric::extractColumns($tags, $type);
 
                 $row = array_merge([
-                    'id'     => $this->generateId(),
+                    'id' => $this->generateId(),
                     'metric' => $metric,
-                    'value'  => $value,
-                    'time'   => $this->formatDateTime(null),
+                    'value' => $value,
+                    'time' => $this->formatDateTime(null),
                 ], $columns);
 
                 if ($this->sharedTables) {
@@ -1662,7 +1593,7 @@ class ClickHouse extends SQL
 
                 $encoded = json_encode($row);
                 if ($encoded === false) {
-                    throw new Exception("Failed to JSON encode metric row: " . json_last_error_msg());
+                    throw new Exception('Failed to JSON encode metric row: '.json_last_error_msg());
                 }
                 $rows[] = $encoded;
             }
@@ -1676,11 +1607,11 @@ class ClickHouse extends SQL
     /**
      * Resolve tenant for a single metric entry.
      *
-     * @param array<string, mixed> $metricData
+     * @param  array<string, mixed>  $metricData
      */
     private function resolveTenantFromMetric(array $metricData): ?string
     {
-        $tenant = array_key_exists('$tenant', $metricData) ? $metricData['$tenant'] : $this->tenant;
+        $tenant = $metricData['$tenant'] ?? null;
 
         if ($tenant === null) {
             return null;
@@ -1698,17 +1629,38 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Fold an explicit tenant into the query list as a normal equality filter.
+     *
+     * In shared-tables mode this is how reads and purges scope to a single
+     * tenant — there is no adapter-level tenant state. A null tenant (or
+     * non-shared tables) leaves the queries untouched.
+     *
+     * @param  array<Query>  $queries
+     * @return array<Query>
+     */
+    private function withTenant(array $queries, ?string $tenant): array
+    {
+        if ($tenant !== null && $this->sharedTables) {
+            $queries[] = Query::equal('tenant', [$tenant]);
+        }
+
+        return $queries;
+    }
+
+    /**
      * Find metrics using Query objects.
      * When $type is null, queries both tables with UNION ALL.
      *
-     * @param array<Query> $queries
-     * @param string|null $type 'event', 'gauge', or null (both)
+     * @param  array<Query>  $queries
+     * @param  string|null  $type  'event', 'gauge', or null (both)
      * @return array<Metric>
+     *
      * @throws Exception
      */
-    public function find(array $queries = [], ?string $type = null): array
+    public function find(array $queries = [], ?string $type = null, ?string $tenant = null): array
     {
         $this->setOperationContext('find()');
+        $queries = $this->withTenant($queries, $tenant);
 
         if ($type !== null) {
             return $this->findFromTable($queries, $type);
@@ -1724,7 +1676,7 @@ class ClickHouse extends SQL
             }
             if ($method === Query::TYPE_LIMIT) {
                 $values = $query->getValues();
-                if (!empty($values) && is_numeric($values[0])) {
+                if (! empty($values) && is_numeric($values[0])) {
                     $userLimit = (int) $values[0];
                 }
             }
@@ -1757,7 +1709,7 @@ class ClickHouse extends SQL
      * so a query with event-only attributes (path/method/status/etc.) silently
      * skips the gauges table instead of throwing "Invalid attribute name".
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      */
     private function queriesMatchType(array $queries, string $type): bool
     {
@@ -1776,10 +1728,11 @@ class ClickHouse extends SQL
                     break;
                 }
             }
-            if (!$matched) {
+            if (! $matched) {
                 return false;
             }
         }
+
         return true;
     }
 
@@ -1791,9 +1744,10 @@ class ClickHouse extends SQL
      * - Gauges: SELECT metric, argMax(value, time) as value, toStartOfInterval(time, INTERVAL ...) as time
      * Results are grouped by metric and time bucket, ordered by time ASC.
      *
-     * @param array<Query> $queries
-     * @param string $type 'event' or 'gauge'
+     * @param  array<Query>  $queries
+     * @param  string  $type  'event' or 'gauge'
      * @return array<Metric>
+     *
      * @throws Exception
      */
     private function findFromTable(array $queries, string $type): array
@@ -1811,7 +1765,7 @@ class ClickHouse extends SQL
 
         // Route through the aggregated path whenever any aggregation
         // hint is present — time bucketing, dimension breakdown, or both.
-        if (isset($parsed['groupByInterval']) || !empty($parsed['groupBy'])) {
+        if (isset($parsed['groupByInterval']) || ! empty($parsed['groupBy'])) {
             return $this->findAggregatedFromTable($parsed, $fromTable, $type);
         }
 
@@ -1839,9 +1793,9 @@ class ClickHouse extends SQL
             // $orderAttributes is always non-empty here — resolveCursorOrder
             // appends an `id` tiebreaker when no order is specified.
             $orderSql = $this->buildOrderBySql($orderAttributes, flip: $cursorDirection === 'before');
-            $orderClause = ' ORDER BY ' . implode(', ', $orderSql);
-        } elseif (!empty($parsed['orderBy'])) {
-            $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
+            $orderClause = ' ORDER BY '.implode(', ', $orderSql);
+        } elseif (! empty($parsed['orderBy'])) {
+            $orderClause = ' ORDER BY '.implode(', ', $parsed['orderBy']);
         }
 
         $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
@@ -1872,10 +1826,11 @@ class ClickHouse extends SQL
      *          toStartOfInterval(time, INTERVAL 1 HOUR) as time
      *   FROM table WHERE ... GROUP BY metric, time ORDER BY time ASC
      *
-     * @param array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>} $parsed Parsed query data from parseQueries()
-     * @param string $fromTable Fully qualified table reference
-     * @param string $type 'event' or 'gauge'
+     * @param  array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>}  $parsed  Parsed query data from parseQueries()
+     * @param  string  $fromTable  Fully qualified table reference
+     * @param  string  $type  'event' or 'gauge'
      * @return array<Metric>
+     *
      * @throws Exception
      */
     private function findAggregatedFromTable(array $parsed, string $fromTable, string $type): array
@@ -1901,13 +1856,13 @@ class ClickHouse extends SQL
         $groupByDims = $parsed['groupBy'] ?? [];
         $dimSelect = '';
         $dimGroup = '';
-        if (!empty($groupByDims)) {
+        if (! empty($groupByDims)) {
             $escapedDims = array_map(
                 fn (string $dim): string => $this->escapeIdentifier($dim),
                 $groupByDims
             );
-            $dimSelect = ', ' . implode(', ', $escapedDims);
-            $dimGroup = ', ' . implode(', ', $escapedDims);
+            $dimSelect = ', '.implode(', ', $escapedDims);
+            $dimGroup = ', '.implode(', ', $escapedDims);
         }
 
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
@@ -1922,7 +1877,7 @@ class ClickHouse extends SQL
         // invalid (the column is no longer in the SELECT after GROUP BY).
         if ($hasInterval) {
             $orderClause = ' ORDER BY bucket ASC';
-            if (!empty($parsed['orderBy'])) {
+            if (! empty($parsed['orderBy'])) {
                 $rewrittenOrderBy = array_map(
                     fn (string $clause): string => preg_replace(
                         '/^`time`(\s+(?:ASC|DESC))?$/',
@@ -1931,11 +1886,11 @@ class ClickHouse extends SQL
                     ) ?? $clause,
                     $parsed['orderBy']
                 );
-                $orderClause = ' ORDER BY ' . implode(', ', $rewrittenOrderBy);
+                $orderClause = ' ORDER BY '.implode(', ', $rewrittenOrderBy);
             }
         } else {
             $orderClause = ' ORDER BY value DESC';
-            if (!empty($parsed['orderBy'])) {
+            if (! empty($parsed['orderBy'])) {
                 foreach ($parsed['orderBy'] as $clause) {
                     if (preg_match('/^`time`/', $clause)) {
                         throw new Exception(
@@ -1943,7 +1898,7 @@ class ClickHouse extends SQL
                         );
                     }
                 }
-                $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
+                $orderClause = ' ORDER BY '.implode(', ', $parsed['orderBy']);
             }
         }
 
@@ -1967,8 +1922,8 @@ class ClickHouse extends SQL
      *
      * Maps the 'bucket' column back to 'time' for consistent Metric objects.
      *
-     * @param string $result Raw JSON response from ClickHouse
-     * @param string $type 'event' or 'gauge'
+     * @param  string  $result  Raw JSON response from ClickHouse
+     * @param  string  $type  'event' or 'gauge'
      * @return array<Metric>
      */
     private function parseAggregatedResults(string $result, string $type = 'event'): array
@@ -1979,7 +1934,7 @@ class ClickHouse extends SQL
 
         $json = json_decode($result, true);
 
-        if (!is_array($json) || !isset($json['data']) || !is_array($json['data'])) {
+        if (! is_array($json) || ! isset($json['data']) || ! is_array($json['data'])) {
             return [];
         }
 
@@ -1987,7 +1942,7 @@ class ClickHouse extends SQL
         $metrics = [];
 
         foreach ($rows as $row) {
-            if (!is_array($row)) {
+            if (! is_array($row)) {
                 continue;
             }
 
@@ -1998,7 +1953,7 @@ class ClickHouse extends SQL
                     // Map 'bucket' back to 'time' for consistent Metric objects
                     $parsedTime = (string) $value;
                     if (strpos($parsedTime, 'T') === false) {
-                        $parsedTime = str_replace(' ', 'T', $parsedTime) . '+00:00';
+                        $parsedTime = str_replace(' ', 'T', $parsedTime).'+00:00';
                     }
                     $document['time'] = $parsedTime;
                 } elseif ($key === 'value') {
@@ -2038,15 +1993,16 @@ class ClickHouse extends SQL
      * a `LIMIT {max}` inside a subquery — ClickHouse stops scanning once
      * that many rows have been matched, keeping large counts cheap.
      *
-     * @param array<Query> $queries
-     * @param string|null $type 'event', 'gauge', or null (both)
-     * @param int|null $max Optional upper bound (inclusive) for the count
-     * @return int
+     * @param  array<Query>  $queries
+     * @param  string|null  $type  'event', 'gauge', or null (both)
+     * @param  int|null  $max  Optional upper bound (inclusive) for the count
+     *
      * @throws Exception
      */
-    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
+    public function count(array $queries = [], ?string $type = null, ?int $max = null, ?string $tenant = null): int
     {
         $this->setOperationContext('count()');
+        $queries = $this->withTenant($queries, $tenant);
 
         if ($type !== null) {
             return $this->countFromTable($queries, $type, $max);
@@ -2075,10 +2031,9 @@ class ClickHouse extends SQL
     /**
      * Count metrics from a specific table.
      *
-     * @param array<Query> $queries
-     * @param string $type
-     * @param int|null $max Optional upper bound (inclusive) for the count
-     * @return int
+     * @param  array<Query>  $queries
+     * @param  int|null  $max  Optional upper bound (inclusive) for the count
+     *
      * @throws Exception
      */
     private function countFromTable(array $queries, string $type, ?int $max = null): int
@@ -2113,7 +2068,7 @@ class ClickHouse extends SQL
         $result = $this->query($sql, $params);
         $json = json_decode($result, true);
 
-        if (!is_array($json) || !isset($json['data'][0]['total'])) {
+        if (! is_array($json) || ! isset($json['data'][0]['total'])) {
             return 0;
         }
 
@@ -2125,15 +2080,16 @@ class ClickHouse extends SQL
      *
      * Events-only by default — summing gauges is semantically meaningless.
      *
-     * @param array<Query> $queries
-     * @param string $attribute Attribute to sum (default: 'value')
-     * @param string $type 'event' or 'gauge'
-     * @return int
+     * @param  array<Query>  $queries
+     * @param  string  $attribute  Attribute to sum (default: 'value')
+     * @param  string  $type  'event' or 'gauge'
+     *
      * @throws Exception
      */
-    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
+    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT, ?string $tenant = null): int
     {
         $this->setOperationContext('sum()');
+        $queries = $this->withTenant($queries, $tenant);
 
         if ($type === Usage::TYPE_EVENT && $attribute === 'value') {
             return $this->routedSum($queries, 'sum');
@@ -2147,7 +2103,7 @@ class ClickHouse extends SQL
      * MV+raw, or raw) for a `SELECT sum(value)` over the events table and
      * record the decision in the route log under `$operation`.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      */
     private function routedSum(array $queries, string $operation): int
     {
@@ -2158,11 +2114,13 @@ class ClickHouse extends SQL
         if ($route === 'daily') {
             $total = $this->sumDaily($this->translateInclusiveMidnightForDaily($queries), 'value');
             $this->maybeDualRead($queries, $route, $plan, $total);
+
             return $total;
         }
         if ($route === 'hybrid') {
             $total = $this->sumHybridDailyAndRaw($queries, $plan);
             $this->maybeDualRead($queries, $route, $plan, $total);
+
             return $total;
         }
 
@@ -2172,7 +2130,7 @@ class ClickHouse extends SQL
     /**
      * Snapshot of the parsed query shape relevant for routing.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      * @return array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns: array<int, string>, hasCursor: bool}
      */
     private function extractRoutingPlan(array $queries): array
@@ -2192,14 +2150,16 @@ class ClickHouse extends SQL
             $values = $query->getValues();
 
             if ($method === UsageQuery::TYPE_GROUP_BY) {
-                if (!in_array($attribute, $dimensions, true)) {
+                if (! in_array($attribute, $dimensions, true)) {
                     $dimensions[] = $attribute;
                 }
+
                 continue;
             }
             if ($method === UsageQuery::TYPE_GROUP_BY_INTERVAL) {
                 $intervalValue = $values[0] ?? null;
                 $interval = is_string($intervalValue) ? $intervalValue : null;
+
                 continue;
             }
             if ($method === Query::TYPE_CURSOR_AFTER || $method === Query::TYPE_CURSOR_BEFORE) {
@@ -2207,12 +2167,14 @@ class ClickHouse extends SQL
                 if ($rawCursor !== null) {
                     $hasCursor = true;
                 }
+
                 continue;
             }
             if ($method === Query::TYPE_ORDER_ASC || $method === Query::TYPE_ORDER_DESC) {
-                if ($attribute !== '' && !in_array($attribute, $orderColumns, true)) {
+                if ($attribute !== '' && ! in_array($attribute, $orderColumns, true)) {
                     $orderColumns[] = $attribute;
                 }
+
                 continue;
             }
             if (in_array($method, [Query::TYPE_LIMIT, Query::TYPE_OFFSET], true)) {
@@ -2223,7 +2185,7 @@ class ClickHouse extends SQL
                 continue;
             }
 
-            if (!in_array($attribute, $filterColumns, true)) {
+            if (! in_array($attribute, $filterColumns, true)) {
                 $filterColumns[] = $attribute;
             }
 
@@ -2271,7 +2233,7 @@ class ClickHouse extends SQL
      * table and the ClickHouse optimizer transparently picks the
      * matching projection.
      *
-     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
+     * @param  array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool}  $plan
      */
     private function selectAggregateSource(array $plan): string
     {
@@ -2283,7 +2245,7 @@ class ClickHouse extends SQL
             return 'raw';
         }
 
-        if (!empty($plan['hasCursor'])) {
+        if (! empty($plan['hasCursor'])) {
             return 'raw';
         }
 
@@ -2291,7 +2253,7 @@ class ClickHouse extends SQL
             return 'raw';
         }
 
-        if (!empty($plan['dimensions'])) {
+        if (! empty($plan['dimensions'])) {
             return 'raw';
         }
 
@@ -2308,12 +2270,12 @@ class ClickHouse extends SQL
         }
 
         foreach ($plan['filterColumns'] as $column) {
-            if (!in_array($column, self::DAILY_COLUMNS, true) && $column !== 'tenant') {
+            if (! in_array($column, self::DAILY_COLUMNS, true) && $column !== 'tenant') {
                 return 'raw';
             }
         }
 
-        if (!$this->isDayAligned($startDt)) {
+        if (! $this->isDayAligned($startDt)) {
             return 'raw';
         }
 
@@ -2321,7 +2283,7 @@ class ClickHouse extends SQL
             return 'hybrid';
         }
 
-        if (!$this->isDayAligned($endDt)) {
+        if (! $this->isDayAligned($endDt)) {
             return 'raw';
         }
 
@@ -2336,6 +2298,7 @@ class ClickHouse extends SQL
         if ($dt === null) {
             return true;
         }
+
         return $dt->format('H:i:s.u') === '00:00:00.000000';
     }
 
@@ -2360,7 +2323,7 @@ class ClickHouse extends SQL
      * silently overwrites with whichever value lands last (often a string in
      * a slot the SQL expects to be a DateTime).
      *
-     * @param array{filters: array<int, string>, params: array<string, mixed>} $parsed
+     * @param  array{filters: array<int, string>, params: array<string, mixed>}  $parsed
      * @return array{filters: array<int, string>, params: array<string, mixed>}
      */
     private function prefixParsedParams(array $parsed, string $prefix): array
@@ -2368,13 +2331,14 @@ class ClickHouse extends SQL
         $renamedParams = [];
         $renamedFilters = $parsed['filters'];
         foreach ($parsed['params'] as $key => $value) {
-            $newKey = $prefix . $key;
+            $newKey = $prefix.$key;
             $renamedParams[$newKey] = $value;
-            $pattern = '/\{' . preg_quote($key, '/') . '(:[^}]+)\}/';
+            $pattern = '/\{'.preg_quote($key, '/').'(:[^}]+)\}/';
             foreach ($renamedFilters as $i => $filter) {
-                $renamedFilters[$i] = preg_replace($pattern, '{' . $newKey . '$1}', $filter) ?? $filter;
+                $renamedFilters[$i] = preg_replace($pattern, '{'.$newKey.'$1}', $filter) ?? $filter;
             }
         }
+
         return ['filters' => $renamedFilters, 'params' => $renamedParams];
     }
 
@@ -2385,15 +2349,16 @@ class ClickHouse extends SQL
      * (LESSER_EQUAL and BETWEEN upper) to exclusive `<` for the daily
      * branch. Other bounds pass through untouched.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      * @return array<Query>
      */
     private function translateInclusiveMidnightForDaily(array $queries): array
     {
         $result = [];
         foreach ($queries as $q) {
-            if (!($q instanceof Query) || $q->getAttribute() !== 'time') {
+            if (! ($q instanceof Query) || $q->getAttribute() !== 'time') {
                 $result[] = $q;
+
                 continue;
             }
             $method = $q->getMethod();
@@ -2403,6 +2368,7 @@ class ClickHouse extends SQL
                 $upper = $this->stringifyTime($values[0] ?? null);
                 if ($upper !== null && $this->isMidnightString($upper)) {
                     $result[] = new Query(Query::TYPE_LESSER, 'time', [$upper]);
+
                     continue;
                 }
             }
@@ -2415,12 +2381,14 @@ class ClickHouse extends SQL
                         $result[] = new Query(Query::TYPE_GREATER_EQUAL, 'time', [$lower]);
                     }
                     $result[] = new Query(Query::TYPE_LESSER, 'time', [$upper]);
+
                     continue;
                 }
             }
 
             $result[] = $q;
         }
+
         return $result;
     }
 
@@ -2429,6 +2397,7 @@ class ClickHouse extends SQL
         if ($value instanceof DateTime) {
             return $value->format('Y-m-d H:i:s');
         }
+
         return is_string($value) ? $value : null;
     }
 
@@ -2450,6 +2419,7 @@ class ClickHouse extends SQL
         } catch (Exception $e) {
             return $current;
         }
+
         return $cand > $cur ? $candidate : $current;
     }
 
@@ -2470,6 +2440,7 @@ class ClickHouse extends SQL
         } catch (Exception $e) {
             return $current;
         }
+
         return $cand < $cur ? $candidate : $current;
     }
 
@@ -2478,7 +2449,7 @@ class ClickHouse extends SQL
      * the hybrid helpers so the daily branch can substitute a day-floored
      * lower bound while the raw branch keeps the caller's original literal.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      * @return array{nonTime: array<Query>, time: array<Query>}
      */
     private function splitTimeQueries(array $queries): array
@@ -2520,6 +2491,7 @@ class ClickHouse extends SQL
             return null;
         }
         $dt->setTime(0, 0, 0);
+
         return $dt->format('Y-m-d H:i:s.v');
     }
 
@@ -2531,7 +2503,7 @@ class ClickHouse extends SQL
      * upper bounds floor to the same day's midnight (skipping a partial
      * end day). Other queries pass through unchanged.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      * @return array<Query>
      */
     private function translateTimeQueriesToDayBoundaries(array $queries): array
@@ -2540,6 +2512,7 @@ class ClickHouse extends SQL
         foreach ($queries as $query) {
             if ($query->getAttribute() !== 'time') {
                 $output[] = $query;
+
                 continue;
             }
 
@@ -2550,9 +2523,11 @@ class ClickHouse extends SQL
                 $ceiled = $this->ceilLowerToFullyCoveredDayStart($this->stringifyTime($values[0] ?? null));
                 if ($ceiled === null) {
                     $output[] = $query;
+
                     continue;
                 }
                 $output[] = Query::greaterThanEqual('time', $ceiled);
+
                 continue;
             }
 
@@ -2560,9 +2535,11 @@ class ClickHouse extends SQL
                 $floored = $this->floorToStartOfDay($this->stringifyTime($values[0] ?? null));
                 if ($floored === null) {
                     $output[] = $query;
+
                     continue;
                 }
                 $output[] = Query::lessThan('time', $floored);
+
                 continue;
             }
 
@@ -2575,6 +2552,7 @@ class ClickHouse extends SQL
                 if ($upper !== null) {
                     $output[] = Query::lessThan('time', $upper);
                 }
+
                 continue;
             }
 
@@ -2604,6 +2582,7 @@ class ClickHouse extends SQL
             $dt->setTime(0, 0, 0, 0);
             $dt->modify('+1 day');
         }
+
         return $dt->format('Y-m-d H:i:s.v');
     }
 
@@ -2613,9 +2592,9 @@ class ClickHouse extends SQL
      * a mid-day start still picks up that day's rollup row; upper bounds
      * pass through unchanged.
      *
-     * @param array<int, string> $existing Pre-built non-time filter fragments.
-     * @param array<int, Query> $timeQueries
-     * @param array<string, mixed> $params Mutated with the new bind values.
+     * @param  array<int, string>  $existing  Pre-built non-time filter fragments.
+     * @param  array<int, Query>  $timeQueries
+     * @param  array<string, mixed>  $params  Mutated with the new bind values.
      * @return array<int, string>
      */
     private function buildDailyTimeFilters(array $existing, array $timeQueries, array &$params): array
@@ -2631,9 +2610,10 @@ class ClickHouse extends SQL
                 if ($floored === null) {
                     continue;
                 }
-                $name = 'daily_time_lower_' . $counter++;
+                $name = 'daily_time_lower_'.$counter++;
                 $params[$name] = $floored;
-                $filters[] = '`time` >= {' . $name . ':DateTime64(3, \'UTC\')}';
+                $filters[] = '`time` >= {'.$name.':DateTime64(3, \'UTC\')}';
+
                 continue;
             }
 
@@ -2642,11 +2622,12 @@ class ClickHouse extends SQL
                 if ($upper === null) {
                     continue;
                 }
-                $name = 'daily_time_upper_' . $counter++;
+                $name = 'daily_time_upper_'.$counter++;
                 $params[$name] = $upper;
                 $inclusiveOnMidnight = $method === Query::TYPE_LESSER_EQUAL && $this->isMidnightString($upper);
                 $op = ($method === Query::TYPE_LESSER || $inclusiveOnMidnight) ? '<' : '<=';
-                $filters[] = '`time` ' . $op . ' {' . $name . ':DateTime64(3, \'UTC\')}';
+                $filters[] = '`time` '.$op.' {'.$name.':DateTime64(3, \'UTC\')}';
+
                 continue;
             }
 
@@ -2654,16 +2635,17 @@ class ClickHouse extends SQL
                 $lower = $this->floorToStartOfDay($this->stringifyTime($values[0] ?? null));
                 $upper = $this->stringifyTime($values[1] ?? null);
                 if ($lower !== null) {
-                    $name = 'daily_time_lower_' . $counter++;
+                    $name = 'daily_time_lower_'.$counter++;
                     $params[$name] = $lower;
-                    $filters[] = '`time` >= {' . $name . ':DateTime64(3, \'UTC\')}';
+                    $filters[] = '`time` >= {'.$name.':DateTime64(3, \'UTC\')}';
                 }
                 if ($upper !== null) {
-                    $name = 'daily_time_upper_' . $counter++;
+                    $name = 'daily_time_upper_'.$counter++;
                     $params[$name] = $upper;
                     $op = $this->isMidnightString($upper) ? '<' : '<=';
-                    $filters[] = '`time` ' . $op . ' {' . $name . ':DateTime64(3, \'UTC\')}';
+                    $filters[] = '`time` '.$op.' {'.$name.':DateTime64(3, \'UTC\')}';
                 }
+
                 continue;
             }
         }
@@ -2672,7 +2654,7 @@ class ClickHouse extends SQL
     }
 
     /**
-     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
+     * @param  array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool}  $plan
      */
     private function recordRoute(string $operation, array $plan, string $route): void
     {
@@ -2688,7 +2670,7 @@ class ClickHouse extends SQL
     }
 
     /**
-     * @param array{operation: string, metric: ?string, route: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string} $entry
+     * @param  array{operation: string, metric: ?string, route: string, start: ?string, end: ?string, dimensions: array<int, string>, interval: ?string}  $entry
      */
     private function appendRouteLogEntry(array $entry): void
     {
@@ -2709,9 +2691,8 @@ class ClickHouse extends SQL
      * as the parent insert and cannot drift, so the sampler skips grouped
      * (projection-routed) reads.
      *
-     * @param array<Query> $queries
-     * @param string $route
-     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
+     * @param  array<Query>  $queries
+     * @param  array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool}  $plan
      */
     private function maybeDualRead(array $queries, string $route, array $plan, int $rolledTotal): void
     {
@@ -2738,7 +2719,7 @@ class ClickHouse extends SQL
             $this->appendRouteLogEntry([
                 'operation' => 'dual_read_warning',
                 'metric' => $plan['metric'],
-                'route' => $route . ':delta=' . round($delta, 4),
+                'route' => $route.':delta='.round($delta, 4),
                 'start' => $plan['start'],
                 'end' => $plan['end'],
                 'dimensions' => $plan['dimensions'],
@@ -2752,8 +2733,8 @@ class ClickHouse extends SQL
      * partial from the raw events table, combined via outer SUM over
      * UNION ALL.
      *
-     * @param array<Query> $queries
-     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
+     * @param  array<Query>  $queries
+     * @param  array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string}  $plan
      */
     private function sumHybridDailyAndRaw(array $queries, array $plan): int
     {
@@ -2793,7 +2774,7 @@ class ClickHouse extends SQL
         $result = $this->query($sql, $rawWhere['params']);
         $json = json_decode($result, true);
 
-        if (!is_array($json) || !isset($json['data'][0]['total'])) {
+        if (! is_array($json) || ! isset($json['data'][0]['total'])) {
             return 0;
         }
 
@@ -2803,10 +2784,8 @@ class ClickHouse extends SQL
     /**
      * Sum metric values from a specific table.
      *
-     * @param array<Query> $queries
-     * @param string $attribute
-     * @param string $type
-     * @return int
+     * @param  array<Query>  $queries
+     *
      * @throws Exception
      */
     private function sumFromTable(array $queries, string $attribute, string $type): int
@@ -2832,7 +2811,7 @@ class ClickHouse extends SQL
 
         $json = json_decode($result, true);
 
-        if (!is_array($json) || !isset($json['data'][0]['total'])) {
+        if (! is_array($json) || ! isset($json['data'][0]['total'])) {
             return 0;
         }
 
@@ -2842,19 +2821,21 @@ class ClickHouse extends SQL
     /**
      * Find event metrics from the pre-aggregated daily table.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      * @return array<Metric>
+     *
      * @throws Exception
      */
-    public function findDaily(array $queries = []): array
+    public function findDaily(array $queries = [], ?string $tenant = null): array
     {
         $this->setOperationContext('findDaily()');
+        $queries = $this->withTenant($queries, $tenant);
 
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
 
         foreach ($queries as $query) {
             $attr = $query->getAttribute();
-            if (!empty($attr)) {
+            if (! empty($attr)) {
                 $this->validateDailyAttributeName($attr);
             }
         }
@@ -2877,7 +2858,7 @@ class ClickHouse extends SQL
         $selectColumns = implode(', ', $selectExpressions);
         $groupBySql = implode(', ', array_map(fn ($c) => $this->escapeIdentifier($c), $groupByColumns));
 
-        $orderClause = !empty($parsed['orderBy']) ? ' ORDER BY ' . implode(', ', $parsed['orderBy']) : '';
+        $orderClause = ! empty($parsed['orderBy']) ? ' ORDER BY '.implode(', ', $parsed['orderBy']) : '';
         $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
         $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
 
@@ -2889,14 +2870,15 @@ class ClickHouse extends SQL
     /**
      * Sum event metric values from the pre-aggregated daily table.
      *
-     * @param array<Query> $queries
-     * @param string $attribute Attribute to sum (default: 'value')
-     * @return int
+     * @param  array<Query>  $queries
+     * @param  string  $attribute  Attribute to sum (default: 'value')
+     *
      * @throws Exception
      */
-    public function sumDaily(array $queries = [], string $attribute = 'value'): int
+    public function sumDaily(array $queries = [], string $attribute = 'value', ?string $tenant = null): int
     {
         $this->setOperationContext('sumDaily()');
+        $queries = $this->withTenant($queries, $tenant);
 
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
         $this->validateDailyAttributeName($attribute);
@@ -2904,7 +2886,7 @@ class ClickHouse extends SQL
 
         foreach ($queries as $query) {
             $attr = $query->getAttribute();
-            if (!empty($attr)) {
+            if (! empty($attr)) {
                 $this->validateDailyAttributeName($attr);
             }
         }
@@ -2922,22 +2904,25 @@ class ClickHouse extends SQL
     /**
      * Sum multiple event metrics from the pre-aggregated daily table in one query.
      *
-     * @param array<string> $metrics
-     * @param array<Query> $queries
+     * @param  array<string>  $metrics
+     * @param  array<Query>  $queries
      * @return array<string, int>
+     *
      * @throws Exception
      */
-    public function sumDailyBatch(array $metrics, array $queries = []): array
+    public function sumDailyBatch(array $metrics, array $queries = [], ?string $tenant = null): array
     {
         if (empty($metrics)) {
             return [];
         }
 
+        $queries = $this->withTenant($queries, $tenant);
+
         $this->setOperationContext('sumDailyBatch()');
 
         foreach ($queries as $query) {
             $attr = $query->getAttribute();
-            if (!empty($attr)) {
+            if (! empty($attr)) {
                 $this->validateDailyAttributeName($attr);
             }
         }
@@ -2950,7 +2935,7 @@ class ClickHouse extends SQL
         $metricParams = [];
         $metricPlaceholders = [];
         foreach ($metrics as $i => $metric) {
-            $paramName = 'metric_' . $i;
+            $paramName = 'metric_'.$i;
             $metricParams[$paramName] = $metric;
             $metricPlaceholders[] = "{{$paramName}:String}";
         }
@@ -2963,10 +2948,10 @@ class ClickHouse extends SQL
         $whereClause = $whereData['clause'];
         $params = $whereData['params'];
 
-        $metricFilter = $this->escapeIdentifier('metric') . " IN ({$metricInClause})";
-        $whereClause = !empty($whereClause)
-            ? $whereClause . ' AND ' . $metricFilter
-            : ' WHERE ' . $metricFilter;
+        $metricFilter = $this->escapeIdentifier('metric')." IN ({$metricInClause})";
+        $whereClause = ! empty($whereClause)
+            ? $whereClause.' AND '.$metricFilter
+            : ' WHERE '.$metricFilter;
 
         $sql = "
             SELECT metric, SUM(value) as total
@@ -2998,22 +2983,22 @@ class ClickHouse extends SQL
      *
      * @param  array<string>  $metrics
      * @param  string  $interval  '1h' or '1d'
-     * @param  string  $startDate
-     * @param  string  $endDate
      * @param  array<Query>  $queries
-     * @param  bool  $zeroFill
      * @param  string|null  $type  'event', 'gauge', or null (both)
      * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
+     *
      * @throws Exception
      */
-    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
+    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null, ?string $tenant = null): array
     {
         if (empty($metrics)) {
             return [];
         }
 
-        if (!isset(self::INTERVAL_FUNCTIONS[$interval])) {
-            throw new \InvalidArgumentException("Invalid interval '{$interval}'. Allowed: " . implode(', ', array_keys(self::INTERVAL_FUNCTIONS)));
+        $queries = $this->withTenant($queries, $tenant);
+
+        if (! isset(self::INTERVAL_FUNCTIONS[$interval])) {
+            throw new \InvalidArgumentException("Invalid interval '{$interval}'. Allowed: ".implode(', ', array_keys(self::INTERVAL_FUNCTIONS)));
         }
 
         $this->setOperationContext('getTimeSeries()');
@@ -3036,7 +3021,7 @@ class ClickHouse extends SQL
             // Skip a table when its schema can't satisfy every filter attribute
             // (e.g. `path` on a gauge query); avoids "Invalid attribute name"
             // when the caller leaves $type null and only one side is applicable.
-            if (!$this->queriesMatchType($queries, $queryType)) {
+            if (! $this->queriesMatchType($queries, $queryType)) {
                 continue;
             }
 
@@ -3044,7 +3029,7 @@ class ClickHouse extends SQL
 
             // Merge results
             foreach ($typeResult as $metricName => $metricData) {
-                if (!isset($output[$metricName])) {
+                if (! isset($output[$metricName])) {
                     continue;
                 }
 
@@ -3076,12 +3061,9 @@ class ClickHouse extends SQL
      * Get time series data from a specific table.
      *
      * @param  array<string>  $metrics
-     * @param  string  $interval
-     * @param  string  $startDate
-     * @param  string  $endDate
      * @param  array<Query>  $queries
-     * @param  string  $type
      * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
+     *
      * @throws Exception
      */
     private function getTimeSeriesFromTable(array $metrics, string $interval, string $startDate, string $endDate, array $queries, string $type): array
@@ -3094,7 +3076,7 @@ class ClickHouse extends SQL
         $metricParams = [];
         $metricPlaceholders = [];
         foreach ($metrics as $i => $metric) {
-            $paramName = 'metric_' . $i;
+            $paramName = 'metric_'.$i;
             $metricParams[$paramName] = $metric;
             $metricPlaceholders[] = "{{$paramName}:String}";
         }
@@ -3109,16 +3091,9 @@ class ClickHouse extends SQL
         $params['start_date'] = $this->formatDateTime($startDate);
         $params['end_date'] = $this->formatDateTime($endDate);
 
-        // Build tenant filter
-        $tenantFilter = '';
-        if ($this->sharedTables && $this->tenant !== null) {
-            $tenantFilter = ' AND tenant = {tenant:Nullable(String)}';
-            $params['tenant'] = $this->tenant;
-        }
-
         $additionalWhere = '';
-        if (!empty($additionalFilters)) {
-            $additionalWhere = ' AND ' . implode(' AND ', $additionalFilters);
+        if (! empty($additionalFilters)) {
+            $additionalWhere = ' AND '.implode(' AND ', $additionalFilters);
         }
 
         $valueExpr = $type === Usage::TYPE_EVENT
@@ -3133,7 +3108,7 @@ class ClickHouse extends SQL
             FROM {$fromTable}
             WHERE metric IN ({$metricInClause})
                 AND time BETWEEN {start_date:DateTime64(3, 'UTC')} AND {end_date:DateTime64(3, 'UTC')}
-                {$tenantFilter}{$additionalWhere}
+                {$additionalWhere}
             GROUP BY metric, bucket
             ORDER BY bucket ASC
             FORMAT JSON
@@ -3154,14 +3129,14 @@ class ClickHouse extends SQL
                 $bucketTime = (string) ($row['bucket'] ?? '');
                 $value = (float) ($row['agg_value'] ?? 0);
 
-                if (!isset($output[$metricName])) {
+                if (! isset($output[$metricName])) {
                     continue;
                 }
 
                 // Format bucket time
                 $formattedDate = $bucketTime;
                 if (strpos($bucketTime, 'T') === false) {
-                    $formattedDate = str_replace(' ', 'T', $bucketTime) . '+00:00';
+                    $formattedDate = str_replace(' ', 'T', $bucketTime).'+00:00';
                 }
 
                 $output[$metricName]['total'] += $value;
@@ -3178,10 +3153,10 @@ class ClickHouse extends SQL
     /**
      * Fill gaps in time series data with zero-value entries.
      *
-     * @param array<array{value: float, date: string}> $data Existing data points
-     * @param string $interval '1h' or '1d'
-     * @param string $startDate Start datetime
-     * @param string $endDate End datetime
+     * @param  array<array{value: float, date: string}>  $data  Existing data points
+     * @param  string  $interval  '1h' or '1d'
+     * @param  string  $startDate  Start datetime
+     * @param  string  $endDate  End datetime
      * @return array<array{value: float, date: string}>
      */
     private function zeroFillTimeSeries(array $data, string $interval, string $startDate, string $endDate): array
@@ -3223,15 +3198,15 @@ class ClickHouse extends SQL
      * Returns sum for event metrics, latest value for gauge metrics.
      * When $type is null, queries both tables.
      *
-     * @param  string  $metric
      * @param  array<Query>  $queries
      * @param  string|null  $type  'event', 'gauge', or null (both)
-     * @return int
+     *
      * @throws Exception
      */
-    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
+    public function getTotal(string $metric, array $queries = [], ?string $type = null, ?string $tenant = null): int
     {
         $this->setOperationContext('getTotal()');
+        $queries = $this->withTenant($queries, $tenant);
 
         if ($type === Usage::TYPE_EVENT) {
             return $this->getTotalFromEvents($metric, $queries);
@@ -3248,7 +3223,7 @@ class ClickHouse extends SQL
         if ($eventTotal > 0 && $gaugeTotal > 0) {
             throw new Exception(
                 "Metric '{$metric}' exists in both event and gauge tables. "
-                . "Specify \$type explicitly to avoid ambiguous aggregation."
+                .'Specify $type explicitly to avoid ambiguous aggregation.'
             );
         }
 
@@ -3259,14 +3234,14 @@ class ClickHouse extends SQL
      * Get total from events table (SUM). Routes through routedSum() so
      * closed-day windows hit the daily MV.
      *
-     * @param string $metric
-     * @param array<Query> $queries
-     * @return int
+     * @param  array<Query>  $queries
+     *
      * @throws Exception
      */
     private function getTotalFromEvents(string $metric, array $queries): int
     {
         $queries[] = Query::equal('metric', [$metric]);
+
         return $this->routedSum($queries, 'getTotal');
     }
 
@@ -3274,9 +3249,8 @@ class ClickHouse extends SQL
      * Get total from gauges table (argMax). Records a route decision so
      * ops dashboards see gauge getTotal calls alongside the rest.
      *
-     * @param string $metric
-     * @param array<Query> $queries
-     * @return int
+     * @param  array<Query>  $queries
+     *
      * @throws Exception
      */
     private function getTotalFromGauges(string $metric, array $queries): int
@@ -3301,7 +3275,7 @@ class ClickHouse extends SQL
         $result = $this->query($sql, $whereData['params']);
         $json = json_decode($result, true);
 
-        if (!is_array($json) || !isset($json['data'][0]['total'])) {
+        if (! is_array($json) || ! isset($json['data'][0]['total'])) {
             return 0;
         }
 
@@ -3321,13 +3295,16 @@ class ClickHouse extends SQL
      * @param  array<Query>  $queries
      * @param  string|null  $type  'event', 'gauge', or null (both)
      * @return array<string, int>
+     *
      * @throws Exception
      */
-    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
+    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null, ?string $tenant = null): array
     {
         if (empty($metrics)) {
             return [];
         }
+
+        $queries = $this->withTenant($queries, $tenant);
 
         $this->setOperationContext('getTotalBatch()');
 
@@ -3353,7 +3330,7 @@ class ClickHouse extends SQL
             $metricParams = [];
             $metricPlaceholders = [];
             foreach ($metrics as $i => $metric) {
-                $paramName = 'metric_' . $i;
+                $paramName = 'metric_'.$i;
                 $metricParams[$paramName] = $metric;
                 $metricPlaceholders[] = "{{$paramName}:String}";
             }
@@ -3366,10 +3343,10 @@ class ClickHouse extends SQL
             $whereClause = $whereData['clause'];
             $params = $whereData['params'];
 
-            $metricFilter = $this->escapeIdentifier('metric') . " IN ({$metricInClause})";
-            $whereClause = !empty($whereClause)
-                ? $whereClause . ' AND ' . $metricFilter
-                : ' WHERE ' . $metricFilter;
+            $metricFilter = $this->escapeIdentifier('metric')." IN ({$metricInClause})";
+            $whereClause = ! empty($whereClause)
+                ? $whereClause.' AND '.$metricFilter
+                : ' WHERE '.$metricFilter;
 
             $valueExpr = $queryType === Usage::TYPE_EVENT
                 ? 'SUM(value) as agg_val'
@@ -3391,7 +3368,7 @@ class ClickHouse extends SQL
                 foreach ($json['data'] as $row) {
                     $metricName = $row['metric'] ?? '';
 
-                    if (!isset($totals[$metricName])) {
+                    if (! isset($totals[$metricName])) {
                         continue;
                     }
 
@@ -3405,7 +3382,7 @@ class ClickHouse extends SQL
                         && $contributingType[$metricName] !== $queryType) {
                         throw new Exception(
                             "Metric '{$metricName}' exists in both event and gauge tables. "
-                            . "Specify \$type explicitly to avoid ambiguous aggregation."
+                            .'Specify $type explicitly to avoid ambiguous aggregation.'
                         );
                     }
 
@@ -3419,31 +3396,23 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Build WHERE clause from filters with optional tenant filtering.
+     * Build WHERE clause from filters.
      *
-     * @param array<string> $filters
-     * @param array<string, mixed> $params
-     * @param bool $includeTenant
+     * Tenant scoping, when needed, is expressed as a normal query filter by
+     * the caller (see the $tenant argument on the public read methods), so it
+     * arrives here already folded into $filters.
+     *
+     * @param  array<string>  $filters
+     * @param  array<string, mixed>  $params
      * @return array{clause: string, params: array<string, mixed>}
      */
-    private function buildWhereClause(array $filters, array $params = [], bool $includeTenant = true): array
+    private function buildWhereClause(array $filters, array $params = []): array
     {
-        $conditions = $filters;
-        $whereParams = $params;
-
-        if ($includeTenant) {
-            $tenantFilter = $this->getTenantFilter();
-            if ($tenantFilter) {
-                $conditions[] = $tenantFilter;
-                $whereParams['tenant'] = $this->tenant;
-            }
-        }
-
-        $clause = !empty($conditions) ? ' WHERE ' . implode(' AND ', $conditions) : '';
+        $clause = ! empty($filters) ? ' WHERE '.implode(' AND ', $filters) : '';
 
         return [
             'clause' => $clause,
-            'params' => $whereParams
+            'params' => $params,
         ];
     }
 
@@ -3456,7 +3425,6 @@ class ClickHouse extends SQL
      * silently produce incorrect filter results or page boundaries. Add a
      * branch here when introducing a new typed column.
      *
-     * @param string $attribute
      * @return string ClickHouse parameter type (e.g. 'String', 'DateTime64(3, \'UTC\')', 'Int64')
      */
     private function getParamType(string $attribute): string
@@ -3475,9 +3443,8 @@ class ClickHouse extends SQL
      * else through formatParamValue(). Centralising this dispatch keeps
      * parseQueries and buildCursorWhere consistent across libraries.
      *
-     * @param string $chType ClickHouse parameter type as returned by getParamType()
-     * @param mixed $value
-     * @return string
+     * @param  string  $chType  ClickHouse parameter type as returned by getParamType()
+     *
      * @throws Exception
      */
     private function formatTypedValue(string $chType, mixed $value): string
@@ -3486,6 +3453,7 @@ class ClickHouse extends SQL
             if ($value === null) {
                 throw new Exception('DateTime parameter value cannot be null');
             }
+
             /** @var DateTime|string $value */
             return $this->formatDateTime($value);
         }
@@ -3501,8 +3469,8 @@ class ClickHouse extends SQL
      * the underlying column is `id` — this remaps `$id` → `id` so cursor
      * pagination can match the SQL column.
      *
-     * @param mixed $rawCursor
      * @return array<string, mixed>
+     *
      * @throws Exception
      */
     private function normalizeCursorRow(mixed $rawCursor): array
@@ -3516,11 +3484,11 @@ class ClickHouse extends SQL
         } else {
             throw new Exception(
                 'Invalid cursor value: expected ArrayObject (Metric) or associative array, got '
-                . get_debug_type($rawCursor)
+                .get_debug_type($rawCursor)
             );
         }
 
-        if (!array_key_exists('id', $row) && array_key_exists('$id', $row)) {
+        if (! array_key_exists('id', $row) && array_key_exists('$id', $row)) {
             $row['id'] = $row['$id'];
             unset($row['$id']);
         }
@@ -3534,7 +3502,7 @@ class ClickHouse extends SQL
      * Auto-appends `id` as a tiebreaker when not already present so keyset
      * pagination is deterministic on non-unique columns (e.g. time).
      *
-     * @param array<int, array{attribute: string, direction: string}> $orderAttributes
+     * @param  array<int, array{attribute: string, direction: string}>  $orderAttributes
      * @return array<int, array{attribute: string, direction: string}>
      */
     private function resolveCursorOrder(array $orderAttributes): array
@@ -3546,7 +3514,7 @@ class ClickHouse extends SQL
         }
 
         $defaultDirection = 'ASC';
-        if (!empty($orderAttributes)) {
+        if (! empty($orderAttributes)) {
             $last = $orderAttributes[count($orderAttributes) - 1];
             $defaultDirection = $last['direction'];
         }
@@ -3567,11 +3535,12 @@ class ClickHouse extends SQL
      * actual ORDER BY at SQL build time so the page comes back from the right
      * side, then reversing the rows post-fetch).
      *
-     * @param array<int, array{attribute: string, direction: string}> $orderAttributes
-     * @param array<string, mixed> $cursor
-     * @param string $cursorDirection 'after' or 'before'
-     * @param array<string, mixed> $params Existing params (mutated by adding cursor binds)
+     * @param  array<int, array{attribute: string, direction: string}>  $orderAttributes
+     * @param  array<string, mixed>  $cursor
+     * @param  string  $cursorDirection  'after' or 'before'
+     * @param  array<string, mixed>  $params  Existing params (mutated by adding cursor binds)
      * @return array{clause: string, params: array<string, mixed>}
+     *
      * @throws Exception
      */
     private function buildCursorWhere(array $orderAttributes, array $cursor, string $cursorDirection, array $params): array
@@ -3583,7 +3552,7 @@ class ClickHouse extends SQL
             $attr = $entry['attribute'];
             $direction = $entry['direction'];
 
-            if (!array_key_exists($attr, $cursor)) {
+            if (! array_key_exists($attr, $cursor)) {
                 throw new Exception("Cursor is missing required attribute '{$attr}'");
             }
 
@@ -3597,7 +3566,7 @@ class ClickHouse extends SQL
             for ($j = 0; $j < $i; $j++) {
                 $prev = $orderAttributes[$j];
                 $prevAttr = $prev['attribute'];
-                if (!array_key_exists($prevAttr, $cursor)) {
+                if (! array_key_exists($prevAttr, $cursor)) {
                     throw new Exception("Cursor is missing required attribute '{$prevAttr}'");
                 }
                 $prevValue = $cursor[$prevAttr];
@@ -3624,11 +3593,11 @@ class ClickHouse extends SQL
             $conditions[] = "{$escaped} {$operator} {{$paramName}:{$chType}}";
             $params[$paramName] = $this->formatTypedValue($chType, $value);
 
-            $tuples[] = '(' . implode(' AND ', $conditions) . ')';
+            $tuples[] = '('.implode(' AND ', $conditions).')';
         }
 
         return [
-            'clause' => '(' . implode(' OR ', $tuples) . ')',
+            'clause' => '('.implode(' OR ', $tuples).')',
             'params' => $params,
         ];
     }
@@ -3639,8 +3608,8 @@ class ClickHouse extends SQL
      * Used when cursor direction is `before` — we run the query in reverse to
      * grab the previous-page rows, then `array_reverse` the result.
      *
-     * @param array<int, array{attribute: string, direction: string}> $orderAttributes
-     * @param bool $flip Whether to flip ASC↔DESC
+     * @param  array<int, array{attribute: string, direction: string}>  $orderAttributes
+     * @param  bool  $flip  Whether to flip ASC↔DESC
      * @return array<string>
      */
     private function buildOrderBySql(array $orderAttributes, bool $flip = false): array
@@ -3651,17 +3620,19 @@ class ClickHouse extends SQL
             if ($flip) {
                 $direction = $direction === 'DESC' ? 'ASC' : 'DESC';
             }
-            $sql[] = $this->escapeIdentifier($entry['attribute']) . ' ' . $direction;
+            $sql[] = $this->escapeIdentifier($entry['attribute']).' '.$direction;
         }
+
         return $sql;
     }
 
     /**
      * Parse Query objects into SQL clauses.
      *
-     * @param array<Query> $queries
-     * @param string $type 'event' or 'gauge' — used for attribute validation
+     * @param  array<Query>  $queries
+     * @param  string  $type  'event' or 'gauge' — used for attribute validation
      * @return array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, orderAttributes?: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, cursor?: array<string, mixed>, cursorDirection?: string}
+     *
      * @throws Exception
      */
     private function parseQueries(array $queries, string $type = 'event'): array
@@ -3689,7 +3660,7 @@ class ClickHouse extends SQL
             // otherwise turn `Query::contains('attr', [])` into a full-table
             // match instead of an empty result.
             if (\in_array($method, self::VALUE_REQUIRED_METHODS, true) && empty($values)) {
-                throw new Exception(\ucfirst($method) . ' queries require at least one value.');
+                throw new Exception(\ucfirst($method).' queries require at least one value.');
             }
 
             switch ($method) {
@@ -3701,13 +3672,13 @@ class ClickHouse extends SQL
                     if (count($values) > 1) {
                         $inParams = [];
                         foreach ($values as $value) {
-                            $paramName = 'param_' . $paramCounter++;
+                            $paramName = 'param_'.$paramCounter++;
                             $inParams[] = "{{$paramName}:{$chType}}";
                             $params[$paramName] = $this->formatTypedValue($chType, $value);
                         }
-                        $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
+                        $filters[] = "{$escapedAttr} IN (".implode(', ', $inParams).')';
                     } else {
-                        $paramName = 'param_' . $paramCounter++;
+                        $paramName = 'param_'.$paramCounter++;
                         $filters[] = "{$escapedAttr} = {{$paramName}:{$chType}}";
                         $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     }
@@ -3717,7 +3688,7 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
-                    $paramName = 'param_' . $paramCounter++;
+                    $paramName = 'param_'.$paramCounter++;
                     $filters[] = "{$escapedAttr} != {{$paramName}:{$chType}}";
                     $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
@@ -3726,7 +3697,7 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
-                    $paramName = 'param_' . $paramCounter++;
+                    $paramName = 'param_'.$paramCounter++;
                     $filters[] = "{$escapedAttr} < {{$paramName}:{$chType}}";
                     $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
@@ -3735,7 +3706,7 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
-                    $paramName = 'param_' . $paramCounter++;
+                    $paramName = 'param_'.$paramCounter++;
                     $filters[] = "{$escapedAttr} > {{$paramName}:{$chType}}";
                     $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
@@ -3744,8 +3715,8 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
-                    $paramName1 = 'param_' . $paramCounter++;
-                    $paramName2 = 'param_' . $paramCounter++;
+                    $paramName1 = 'param_'.$paramCounter++;
+                    $paramName2 = 'param_'.$paramCounter++;
                     $filters[] = "{$escapedAttr} BETWEEN {{$paramName1}:{$chType}} AND {{$paramName2}:{$chType}}";
                     $params[$paramName1] = $this->formatTypedValue($chType, $values[0] ?? null);
                     $params[$paramName2] = $this->formatTypedValue($chType, $values[1] ?? null);
@@ -3755,8 +3726,8 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
-                    $paramName1 = 'param_' . $paramCounter++;
-                    $paramName2 = 'param_' . $paramCounter++;
+                    $paramName1 = 'param_'.$paramCounter++;
+                    $paramName2 = 'param_'.$paramCounter++;
                     $filters[] = "{$escapedAttr} NOT BETWEEN {{$paramName1}:{$chType}} AND {{$paramName2}:{$chType}}";
                     $params[$paramName1] = $this->formatTypedValue($chType, $values[0] ?? null);
                     $params[$paramName2] = $this->formatTypedValue($chType, $values[1] ?? null);
@@ -3794,7 +3765,7 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
-                    $paramName = 'param_' . $paramCounter++;
+                    $paramName = 'param_'.$paramCounter++;
                     $filters[] = "{$escapedAttr} <= {{$paramName}:{$chType}}";
                     $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
@@ -3803,7 +3774,7 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $chType = $this->getParamType($attribute);
-                    $paramName = 'param_' . $paramCounter++;
+                    $paramName = 'param_'.$paramCounter++;
                     $filters[] = "{$escapedAttr} >= {{$paramName}:{$chType}}";
                     $params[$paramName] = $this->formatTypedValue($chType, $values[0] ?? null);
                     break;
@@ -3814,12 +3785,12 @@ class ClickHouse extends SQL
                     $chType = $this->getParamType($attribute);
                     $inParams = [];
                     foreach ($values as $value) {
-                        $paramName = 'param_' . $paramCounter++;
+                        $paramName = 'param_'.$paramCounter++;
                         $inParams[] = "{{$paramName}:{$chType}}";
                         $params[$paramName] = $this->formatTypedValue($chType, $value);
                     }
-                    if (!empty($inParams)) {
-                        $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
+                    if (! empty($inParams)) {
+                        $filters[] = "{$escapedAttr} IN (".implode(', ', $inParams).')';
                     }
                     break;
 
@@ -3829,12 +3800,12 @@ class ClickHouse extends SQL
                     $chType = $this->getParamType($attribute);
                     $inParams = [];
                     foreach ($values as $value) {
-                        $paramName = 'param_' . $paramCounter++;
+                        $paramName = 'param_'.$paramCounter++;
                         $inParams[] = "{{$paramName}:{$chType}}";
                         $params[$paramName] = $this->formatTypedValue($chType, $value);
                     }
-                    if (!empty($inParams)) {
-                        $filters[] = "{$escapedAttr} NOT IN (" . implode(', ', $inParams) . ")";
+                    if (! empty($inParams)) {
+                        $filters[] = "{$escapedAttr} NOT IN (".implode(', ', $inParams).')';
                     }
                     break;
 
@@ -3854,10 +3825,10 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $needle = $values[0] ?? null;
-                    if (!is_string($needle)) {
+                    if (! is_string($needle)) {
                         throw new Exception("startsWith needle must be a string for attribute '{$attribute}'");
                     }
-                    $paramName = 'param_' . $paramCounter++;
+                    $paramName = 'param_'.$paramCounter++;
                     $filters[] = "startsWith({$escapedAttr}, {{$paramName}:String})";
                     $params[$paramName] = $needle;
                     break;
@@ -3866,17 +3837,17 @@ class ClickHouse extends SQL
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
                     $needle = $values[0] ?? null;
-                    if (!is_string($needle)) {
+                    if (! is_string($needle)) {
                         throw new Exception("endsWith needle must be a string for attribute '{$attribute}'");
                     }
-                    $paramName = 'param_' . $paramCounter++;
+                    $paramName = 'param_'.$paramCounter++;
                     $filters[] = "endsWith({$escapedAttr}, {{$paramName}:String})";
                     $params[$paramName] = $needle;
                     break;
 
                 case Query::TYPE_LIMIT:
-                    $limitVal = is_array($values) && !empty($values) ? $values[0] : $values;
-                    if (!\is_int($limitVal)) {
+                    $limitVal = is_array($values) && ! empty($values) ? $values[0] : $values;
+                    if (! \is_int($limitVal)) {
                         throw new Exception('Invalid limit value. Expected int');
                     }
                     $limit = $limitVal;
@@ -3884,8 +3855,8 @@ class ClickHouse extends SQL
                     break;
 
                 case Query::TYPE_OFFSET:
-                    $offsetVal = is_array($values) && !empty($values) ? $values[0] : $values;
-                    if (!\is_int($offsetVal)) {
+                    $offsetVal = is_array($values) && ! empty($values) ? $values[0] : $values;
+                    if (! \is_int($offsetVal)) {
                         throw new Exception('Invalid offset value. Expected int');
                     }
                     $offset = $offsetVal;
@@ -3895,16 +3866,16 @@ class ClickHouse extends SQL
                 case UsageQuery::TYPE_GROUP_BY_INTERVAL:
                     $this->validateAttributeName($attribute, $type);
                     $interval = $values[0] ?? '1h';
-                    if (!is_string($interval)) {
+                    if (! is_string($interval)) {
                         throw new Exception(
-                            'Invalid groupByInterval interval: expected string, got ' . get_debug_type($interval) . '. Allowed: '
-                            . implode(', ', array_keys(UsageQuery::VALID_INTERVALS))
+                            'Invalid groupByInterval interval: expected string, got '.get_debug_type($interval).'. Allowed: '
+                            .implode(', ', array_keys(UsageQuery::VALID_INTERVALS))
                         );
                     }
-                    if (!isset(UsageQuery::VALID_INTERVALS[$interval])) {
+                    if (! isset(UsageQuery::VALID_INTERVALS[$interval])) {
                         throw new Exception(
                             "Invalid groupByInterval interval '{$interval}'. Allowed: "
-                            . implode(', ', array_keys(UsageQuery::VALID_INTERVALS))
+                            .implode(', ', array_keys(UsageQuery::VALID_INTERVALS))
                         );
                     }
                     $groupByInterval = $interval;
@@ -3912,7 +3883,7 @@ class ClickHouse extends SQL
 
                 case UsageQuery::TYPE_GROUP_BY:
                     $this->validateGroupByAttribute($attribute, $type);
-                    if (!in_array($attribute, $groupBy, true)) {
+                    if (! in_array($attribute, $groupBy, true)) {
                         $groupBy[] = $attribute;
                     }
                     break;
@@ -3924,7 +3895,7 @@ class ClickHouse extends SQL
             'params' => $params,
         ];
 
-        if (!empty($orderBy)) {
+        if (! empty($orderBy)) {
             $result['orderBy'] = $orderBy;
             $result['orderAttributes'] = $orderAttributes;
         }
@@ -3941,7 +3912,7 @@ class ClickHouse extends SQL
             $result['groupByInterval'] = $groupByInterval;
         }
 
-        if (!empty($groupBy)) {
+        if (! empty($groupBy)) {
             $result['groupBy'] = $groupBy;
         }
 
@@ -3956,8 +3927,7 @@ class ClickHouse extends SQL
     /**
      * Parse ClickHouse JSON results into Metric array.
      *
-     * @param string $result
-     * @param string $type 'event' or 'gauge' — used to set the type attribute on parsed metrics
+     * @param  string  $type  'event' or 'gauge' — used to set the type attribute on parsed metrics
      * @return array<Metric>
      */
     private function parseResults(string $result, string $type = 'event'): array
@@ -3968,7 +3938,7 @@ class ClickHouse extends SQL
 
         $json = json_decode($result, true);
 
-        if (!is_array($json) || !isset($json['data']) || !is_array($json['data'])) {
+        if (! is_array($json) || ! isset($json['data']) || ! is_array($json['data'])) {
             return [];
         }
 
@@ -3976,7 +3946,7 @@ class ClickHouse extends SQL
         $metrics = [];
 
         foreach ($rows as $row) {
-            if (!is_array($row)) {
+            if (! is_array($row)) {
                 continue;
             }
             $document = [];
@@ -3987,9 +3957,9 @@ class ClickHouse extends SQL
                 } elseif ($key === 'value') {
                     $document[$key] = $value !== null ? (int) $value : null;
                 } elseif ($key === 'time') {
-                    $parsedTime = (string)$value;
+                    $parsedTime = (string) $value;
                     if (strpos($parsedTime, 'T') === false) {
-                        $parsedTime = str_replace(' ', 'T', $parsedTime) . '+00:00';
+                        $parsedTime = str_replace(' ', 'T', $parsedTime).'+00:00';
                     }
                     $document[$key] = $parsedTime;
                 } elseif ($key === 'tags') {
@@ -4020,8 +3990,7 @@ class ClickHouse extends SQL
     /**
      * Get the SELECT column list for queries.
      *
-     * @param string $type 'event' or 'gauge'
-     * @return string
+     * @param  string  $type  'event' or 'gauge'
      */
     private function getSelectColumns(string $type = 'event'): string
     {
@@ -4044,20 +4013,6 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Build tenant filter clause.
-     *
-     * @return string
-     */
-    private function getTenantFilter(): string
-    {
-        if (!$this->sharedTables || $this->tenant === null) {
-            return '';
-        }
-
-        return "tenant = {tenant:Nullable(String)}";
-    }
-
-    /**
      * Purge usage metrics matching the given queries.
      * Deletes from the specified table(s).
      *
@@ -4068,13 +4023,15 @@ class ClickHouse extends SQL
      * with event-only attributes (path/method/status/etc.) leave existing
      * daily rows in place.
      *
-     * @param array<Query> $queries
-     * @param string|null $type 'event', 'gauge', or null (purge both)
+     * @param  array<Query>  $queries
+     * @param  string|null  $type  'event', 'gauge', or null (purge both)
+     *
      * @throws Exception
      */
-    public function purge(array $queries = [], ?string $type = null): bool
+    public function purge(array $queries = [], ?string $type = null, ?string $tenant = null): bool
     {
         $this->setOperationContext('purge()');
+        $queries = $this->withTenant($queries, $tenant);
 
         $typesToPurge = [];
         if ($type === Usage::TYPE_EVENT || $type === null) {
@@ -4086,7 +4043,7 @@ class ClickHouse extends SQL
 
         foreach ($typesToPurge as $purgeType) {
             $tableName = $this->getTableForType($purgeType);
-            $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
+            $escapedTable = $this->escapeIdentifier($this->database).'.'.$this->escapeIdentifier($tableName);
 
             $parsed = $this->parseQueries($queries, $purgeType);
             $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
@@ -4117,8 +4074,8 @@ class ClickHouse extends SQL
      * staleness is worse than degradation, and the next ingest cycle adds
      * data back.
      *
-     * @param array<Query> $queries
-     * @param array<int, string> $safeAttributes
+     * @param  array<Query>  $queries
+     * @param  array<int, string>  $safeAttributes
      * @return array<Query>
      */
     private function buildStaleRollupPurgeQueries(array $queries, array $safeAttributes): array
@@ -4130,6 +4087,7 @@ class ClickHouse extends SQL
                 $filtered[] = $query;
             }
         }
+
         return $this->translateTimeQueriesToDayBoundaries($filtered);
     }
 
@@ -4153,7 +4111,8 @@ class ClickHouse extends SQL
      * unrelated metrics. The next ingest cycle will overwrite any rows
      * the caller's raw-table purge left stale.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
+     *
      * @throws Exception
      */
     private function purgeDaily(array $queries): void
@@ -4173,7 +4132,7 @@ class ClickHouse extends SQL
             if ($attr === '') {
                 continue;
             }
-            if (!in_array($attr, $safeAttributes, true)) {
+            if (! in_array($attr, $safeAttributes, true)) {
                 $compatible = false;
                 break;
             }
@@ -4183,7 +4142,7 @@ class ClickHouse extends SQL
             ? $this->translateTimeQueriesToDayBoundaries($queries)
             : $this->buildStaleRollupPurgeQueries($queries, $safeAttributes);
 
-        if (!empty($queries) && empty($dailyQueries)) {
+        if (! empty($queries) && empty($dailyQueries)) {
             return;
         }
 

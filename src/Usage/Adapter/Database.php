@@ -6,10 +6,10 @@ use Utopia\Database\Database as UtopiaDatabase;
 use Utopia\Database\Document;
 use Utopia\Database\Exception\Duplicate as DuplicateException;
 use Utopia\Database\Query as DatabaseQuery;
+use Utopia\Query\Query;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
-use Utopia\Query\Query;
 
 class Database extends SQL
 {
@@ -36,10 +36,10 @@ class Database extends SQL
     {
         try {
             $databaseName = $this->db->getDatabase();
-            if (!$this->db->exists($databaseName)) {
+            if (! $this->db->exists($databaseName)) {
                 return [
                     'healthy' => false,
-                    'error' => "Database '{$databaseName}' does not exist"
+                    'error' => "Database '{$databaseName}' does not exist",
                 ];
             }
 
@@ -49,19 +49,19 @@ class Database extends SQL
                     'healthy' => false,
                     'database' => $databaseName,
                     'collection' => $collectionName,
-                    'error' => "Collection '{$collectionName}' is missing or empty in database '{$databaseName}'"
+                    'error' => "Collection '{$collectionName}' is missing or empty in database '{$databaseName}'",
                 ];
             }
 
             return [
                 'healthy' => true,
                 'database' => $databaseName,
-                'collection' => $collectionName
+                'collection' => $collectionName,
             ];
         } catch (\Exception $e) {
             return [
                 'healthy' => false,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ];
         }
     }
@@ -122,10 +122,9 @@ class Database extends SQL
      * Database adapter uses a single collection for both types. The $type parameter
      * is stored as a field in each document for query-time differentiation.
      *
-     * @param array<array{metric: string, value: int, tags?: array<string,mixed>}> $metrics
-     * @param string $type Metric type: 'event' or 'gauge'
-     * @param int $batchSize
-     * @return bool
+     * @param  array<array{metric: string, value: int, tags?: array<string,mixed>}>  $metrics
+     * @param  string  $type  Metric type: 'event' or 'gauge'
+     *
      * @throws \Exception
      */
     public function addBatch(array $metrics, string $type, int $batchSize = 1000): bool
@@ -152,7 +151,7 @@ class Database extends SQL
                     'metric' => $metric['metric'],
                     'value' => $metric['value'],
                     'type' => $type,
-                    'time' => (new \DateTime())->format('Y-m-d H:i:s.v'),
+                    'time' => (new \DateTime)->format('Y-m-d H:i:s.v'),
                 ], $columns);
 
                 $documents[] = new Document($docData);
@@ -173,22 +172,21 @@ class Database extends SQL
      *
      * Stub implementation for Database adapter.
      *
-     * @param array<string> $metrics
-     * @param string $interval
-     * @param string $startDate
-     * @param string $endDate
-     * @param array<Query> $queries
-     * @param bool $zeroFill
-     * @param string|null $type
+     * @param  array<string>  $metrics
+     * @param  array<Query>  $queries
      * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
      */
-    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
+    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null, ?string $tenant = null): array
     {
+        if ($tenant !== null) {
+            $this->setTenant($tenant);
+        }
         // Stub: Database adapter time series not yet implemented
         $output = [];
         foreach ($metrics as $metric) {
             $output[$metric] = ['total' => 0, 'data' => []];
         }
+
         return $output;
     }
 
@@ -197,13 +195,13 @@ class Database extends SQL
      *
      * Returns SUM for event metrics, latest value for gauge metrics.
      *
-     * @param string $metric
-     * @param array<Query> $queries
-     * @param string|null $type
-     * @return int
+     * @param  array<Query>  $queries
      */
-    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
+    public function getTotal(string $metric, array $queries = [], ?string $type = null, ?string $tenant = null): int
     {
+        if ($tenant !== null) {
+            $this->setTenant($tenant);
+        }
         $allQueries = array_merge($queries, [
             Query::equal('metric', [$metric]),
         ]);
@@ -221,6 +219,7 @@ class Database extends SQL
             if (empty($gaugeResults)) {
                 return 0;
             }
+
             return (int) ($gaugeResults[0]->getValue(0) ?? 0);
         }
 
@@ -237,6 +236,7 @@ class Database extends SQL
             foreach ($results as $result) {
                 $sum += (int) ($result->getValue(0) ?? 0);
             }
+
             return $sum;
         }
 
@@ -251,14 +251,14 @@ class Database extends SQL
             }
         }
 
-        if (!empty($eventResults) && !empty($gaugeResults)) {
+        if (! empty($eventResults) && ! empty($gaugeResults)) {
             throw new \Exception(
                 "Metric '{$metric}' exists as both event and gauge. "
-                . "Specify \$type explicitly to avoid ambiguous aggregation."
+                .'Specify $type explicitly to avoid ambiguous aggregation.'
             );
         }
 
-        if (!empty($gaugeResults)) {
+        if (! empty($gaugeResults)) {
             // find() returns rows in unspecified order; sort by time so the
             // "latest" gauge sample is deterministic.
             usort(
@@ -266,6 +266,7 @@ class Database extends SQL
                 fn (Metric $a, Metric $b): int => strcmp($a->getTime() ?? '', $b->getTime() ?? '')
             );
             $lastResult = end($gaugeResults);
+
             return (int) ($lastResult->getValue(0) ?? 0);
         }
 
@@ -280,13 +281,15 @@ class Database extends SQL
     /**
      * Get totals for multiple metrics.
      *
-     * @param array<string> $metrics
-     * @param array<Query> $queries
-     * @param string|null $type
+     * @param  array<string>  $metrics
+     * @param  array<Query>  $queries
      * @return array<string, int>
      */
-    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
+    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null, ?string $tenant = null): array
     {
+        if ($tenant !== null) {
+            $this->setTenant($tenant);
+        }
         if (empty($metrics)) {
             return [];
         }
@@ -305,13 +308,14 @@ class Database extends SQL
      *
      * Events-only by default — summing gauges is semantically meaningless.
      *
-     * @param array<Query> $queries
-     * @param string $attribute
-     * @param string $type 'event' or 'gauge'
-     * @return int
+     * @param  array<Query>  $queries
+     * @param  string  $type  'event' or 'gauge'
      */
-    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
+    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT, ?string $tenant = null): int
     {
+        if ($tenant !== null) {
+            $this->setTenant($tenant);
+        }
         /** @var array<Metric> $results */
         $results = $this->find($queries, $type);
 
@@ -326,47 +330,47 @@ class Database extends SQL
     /**
      * Find from daily table — Database adapter falls back to regular find for events.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      * @return array<Metric>
      */
-    public function findDaily(array $queries = []): array
+    public function findDaily(array $queries = [], ?string $tenant = null): array
     {
-        return $this->find($queries, Usage::TYPE_EVENT);
+        return $this->find($queries, Usage::TYPE_EVENT, $tenant);
     }
 
     /**
      * Sum multiple metrics from daily table — falls back to individual sumDaily calls.
      *
-     * @param array<\Utopia\Query\Query> $queries
+     * @param  array<\Utopia\Query\Query>  $queries
      * @return array<string, int>
      */
-    public function sumDailyBatch(array $metrics, array $queries = []): array
+    public function sumDailyBatch(array $metrics, array $queries = [], ?string $tenant = null): array
     {
         $totals = \array_fill_keys($metrics, 0);
         foreach ($metrics as $metric) {
             $metricQueries = array_merge($queries, [Query::equal('metric', [$metric])]);
-            $totals[$metric] = $this->sumDaily($metricQueries);
+            $totals[$metric] = $this->sumDaily($metricQueries, 'value', $tenant);
         }
+
         return $totals;
     }
 
     /**
      * Sum from daily table — Database adapter falls back to regular sum for events.
      *
-     * @param array<Query> $queries
-     * @param string $attribute
-     * @return int
+     * @param  array<Query>  $queries
      */
-    public function sumDaily(array $queries = [], string $attribute = 'value'): int
+    public function sumDaily(array $queries = [], string $attribute = 'value', ?string $tenant = null): int
     {
-        return $this->sum($queries, $attribute, Usage::TYPE_EVENT);
+        return $this->sum($queries, $attribute, Usage::TYPE_EVENT, $tenant);
     }
 
     /**
      * Convert Utopia\Query\Query to Utopia\Database\Query for use with the Database class.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
      * @return array<DatabaseQuery>
+     *
      * @throws \Exception When a groupBy attribute is not a valid dimension column,
      *                    or when groupBy is used without groupByInterval.
      */
@@ -386,14 +390,14 @@ class Database extends SQL
                     $dbQueries[] = DatabaseQuery::equal($attribute, $values);
                     break;
                 case Query::TYPE_GREATER:
-                    if (!empty($values)) {
+                    if (! empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::greaterThan($attribute, $value);
                     }
                     break;
                 case Query::TYPE_LESSER:
-                    if (!empty($values)) {
+                    if (! empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::lessThan($attribute, $value);
@@ -413,7 +417,7 @@ class Database extends SQL
                     $dbQueries[] = DatabaseQuery::contains($attribute, $values);
                     break;
                 case Query::TYPE_NOT_EQUAL:
-                    if (!empty($values)) {
+                    if (! empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::notEqual($attribute, $value);
@@ -433,24 +437,24 @@ class Database extends SQL
                     }
                     break;
                 case Query::TYPE_STARTS_WITH:
-                    if (!empty($values) && is_string($values[0])) {
+                    if (! empty($values) && is_string($values[0])) {
                         $dbQueries[] = DatabaseQuery::startsWith($attribute, $values[0]);
                     }
                     break;
                 case Query::TYPE_ENDS_WITH:
-                    if (!empty($values) && is_string($values[0])) {
+                    if (! empty($values) && is_string($values[0])) {
                         $dbQueries[] = DatabaseQuery::endsWith($attribute, $values[0]);
                     }
                     break;
                 case Query::TYPE_LESSER_EQUAL:
-                    if (!empty($values)) {
+                    if (! empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::lessThanEqual($attribute, $value);
                     }
                     break;
                 case Query::TYPE_GREATER_EQUAL:
-                    if (!empty($values)) {
+                    if (! empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::greaterThanEqual($attribute, $value);
@@ -463,14 +467,14 @@ class Database extends SQL
                     $dbQueries[] = DatabaseQuery::orderAsc($attribute);
                     break;
                 case Query::TYPE_LIMIT:
-                    if (!empty($values)) {
+                    if (! empty($values)) {
                         /** @var int|string $val */
                         $val = $values[0] ?? 0;
                         $dbQueries[] = DatabaseQuery::limit((int) $val);
                     }
                     break;
                 case Query::TYPE_OFFSET:
-                    if (!empty($values)) {
+                    if (! empty($values)) {
                         /** @var int|string $val */
                         $val = $values[0] ?? 0;
                         $dbQueries[] = DatabaseQuery::offset((int) $val);
@@ -497,7 +501,8 @@ class Database extends SQL
      * for the Database adapter since both share one collection), and groupBy
      * does not push the aggregation hints down to SQL — it just validates them.
      *
-     * @param array<Query> $queries
+     * @param  array<Query>  $queries
+     *
      * @throws \Exception
      */
     private function validateGroupByQueries(array $queries): void
@@ -511,20 +516,22 @@ class Database extends SQL
 
             $attribute = $query->getAttribute();
 
-            if (!in_array($attribute, $allowed, true)) {
+            if (! in_array($attribute, $allowed, true)) {
                 throw new \Exception(
-                    "Invalid groupBy attribute '{$attribute}'. Allowed: " . implode(', ', $allowed)
+                    "Invalid groupBy attribute '{$attribute}'. Allowed: ".implode(', ', $allowed)
                 );
             }
         }
     }
 
     /**
-     * @param array<Query> $queries
-     * @param string|null $type
+     * @param  array<Query>  $queries
      */
-    public function purge(array $queries = [], ?string $type = null): bool
+    public function purge(array $queries = [], ?string $type = null, ?string $tenant = null): bool
     {
+        if ($tenant !== null) {
+            $this->setTenant($tenant);
+        }
         $queries = $this->withTypeFilter($queries, $type);
 
         $this->db->getAuthorization()->skip(function () use ($queries) {
@@ -553,17 +560,20 @@ class Database extends SQL
      * so callers can isolate event vs gauge rows. When $type is null both
      * are returned (caller distinguishes via Metric::getType()).
      *
-     * @param array<Query> $queries
-     * @param string|null $type
+     * @param  array<Query>  $queries
      * @return array<Metric>
      */
-    public function find(array $queries = [], ?string $type = null): array
+    public function find(array $queries = [], ?string $type = null, ?string $tenant = null): array
     {
+        if ($tenant !== null) {
+            $this->setTenant($tenant);
+        }
         $queries = $this->withTypeFilter($queries, $type);
 
         /** @var array<Document> $result */
         $result = $this->db->getAuthorization()->skip(function () use ($queries) {
             $dbQueries = $this->convertQueriesToDatabase($queries);
+
             return $this->db->find(
                 collection: $this->collection,
                 queries: $dbQueries,
@@ -580,18 +590,20 @@ class Database extends SQL
      * utopia-php/database accepts a `$max` argument that pushes the cap
      * down into the underlying SQL.
      *
-     * @param array<Query> $queries
-     * @param string|null $type
-     * @param int|null $max Optional upper bound (inclusive) for the count
-     * @return int
+     * @param  array<Query>  $queries
+     * @param  int|null  $max  Optional upper bound (inclusive) for the count
      */
-    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
+    public function count(array $queries = [], ?string $type = null, ?int $max = null, ?string $tenant = null): int
     {
+        if ($tenant !== null) {
+            $this->setTenant($tenant);
+        }
         $queries = $this->withTypeFilter($queries, $type);
 
         /** @var int $count */
         $count = $this->db->getAuthorization()->skip(function () use ($queries, $max) {
             $dbQueries = $this->convertQueriesToDatabase($queries);
+
             return $this->db->count(
                 collection: $this->collection,
                 queries: $dbQueries,
@@ -605,8 +617,7 @@ class Database extends SQL
     /**
      * Append a `type = $type` filter to the query list when $type is non-null.
      *
-     * @param array<Query> $queries
-     * @param string|null $type
+     * @param  array<Query>  $queries
      * @return array<Query>
      */
     private function withTypeFilter(array $queries, ?string $type): array
@@ -616,7 +627,7 @@ class Database extends SQL
         }
 
         if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
-            throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: " . Usage::TYPE_EVENT . ', ' . Usage::TYPE_GAUGE);
+            throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: ".Usage::TYPE_EVENT.', '.Usage::TYPE_GAUGE);
         }
 
         return array_merge($queries, [Query::equal('type', [$type])]);
@@ -624,43 +635,37 @@ class Database extends SQL
 
     /**
      * Set the namespace prefix for table names.
-     *
-     * @param string $namespace
-     * @return self
      */
     public function setNamespace(string $namespace): self
     {
         $this->db->setNamespace($namespace);
+
         return $this;
     }
 
     /**
      * Set the tenant ID for multi-tenant support.
-     *
-     * @param string|null $tenant
-     * @return self
      */
     public function setTenant(?string $tenant): self
     {
-        if ($tenant !== null && !is_numeric($tenant)) {
+        if ($tenant !== null && ! is_numeric($tenant)) {
             throw new \InvalidArgumentException(
-                'Database adapter requires a numeric tenant ID, got: ' . $tenant
+                'Database adapter requires a numeric tenant ID, got: '.$tenant
             );
         }
 
         $this->db->setTenant($tenant !== null ? (int) $tenant : null);
+
         return $this;
     }
 
     /**
      * Enable or disable shared tables mode.
-     *
-     * @param bool $sharedTables
-     * @return self
      */
     public function setSharedTables(bool $sharedTables): self
     {
         $this->db->setSharedTables($sharedTables);
+
         return $this;
     }
 }
