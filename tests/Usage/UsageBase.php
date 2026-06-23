@@ -137,7 +137,6 @@ trait UsageBase
         // Event metrics batch
         $totals = $this->usage->getTotalBatch(['requests', 'bandwidth'], [], Usage::TYPE_EVENT);
 
-        $this->assertIsArray($totals);
         $this->assertArrayHasKey('requests', $totals);
         $this->assertArrayHasKey('bandwidth', $totals);
 
@@ -160,7 +159,6 @@ trait UsageBase
     public function testGetTotalBatchEmpty(): void
     {
         $totals = $this->usage->getTotalBatch([]);
-        $this->assertIsArray($totals);
         $this->assertEmpty($totals);
     }
 
@@ -179,7 +177,6 @@ trait UsageBase
             Usage::TYPE_EVENT,
         );
 
-        $this->assertIsArray($results);
         $this->assertArrayHasKey('requests', $results);
         $this->assertArrayHasKey('total', $results['requests']);
         $this->assertArrayHasKey('data', $results['requests']);
@@ -662,7 +659,6 @@ trait UsageBase
             Query::equal('metric', ['gbi-requests']),
         ], Usage::TYPE_EVENT);
 
-        $this->assertIsArray($rows);
         foreach ($rows as $row) {
             $this->assertArrayNotHasKey('time', $row->getArrayCopy());
             $this->assertArrayHasKey('service', $row->getArrayCopy());

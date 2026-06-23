@@ -207,7 +207,6 @@ class DatabaseTest extends TestCase
         $health = $adapter->healthCheck();
 
         // Assert basic structure
-        $this->assertIsArray($health);
         $this->assertArrayHasKey('healthy', $health);
 
         // Assert connection is healthy
@@ -246,7 +245,6 @@ class DatabaseTest extends TestCase
         $health = $adapter->healthCheck();
 
         // Assert basic structure
-        $this->assertIsArray($health);
         $this->assertArrayHasKey('healthy', $health);
 
         // Assert connection failed

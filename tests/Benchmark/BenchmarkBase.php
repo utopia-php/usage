@@ -253,11 +253,14 @@ abstract class BenchmarkBase extends TestCase
             $raw = $query->invoke($this->adapter, $sql, []);
             $rawString = is_string($raw) ? $raw : '';
             $json = json_decode($rawString, true);
-            if (is_array($json) && isset($json['data'][0]) && is_array($json['data'][0])) {
+            if (is_array($json) && isset($json['data']) && is_array($json['data']) && isset($json['data'][0]) && is_array($json['data'][0])) {
                 $row = $json['data'][0];
-                $stats['rows_read'] = (int) ($row['rows_read'] ?? 0);
-                $stats['read_bytes'] = (int) ($row['read_bytes'] ?? 0);
-                $stats['query_duration_ms'] = (float) ($row['query_duration_ms'] ?? 0);
+                $rowsRead = $row['rows_read'] ?? 0;
+                $readBytes = $row['read_bytes'] ?? 0;
+                $queryDuration = $row['query_duration_ms'] ?? 0;
+                $stats['rows_read'] = is_numeric($rowsRead) ? (int) $rowsRead : 0;
+                $stats['read_bytes'] = is_numeric($readBytes) ? (int) $readBytes : 0;
+                $stats['query_duration_ms'] = is_numeric($queryDuration) ? (float) $queryDuration : 0.0;
             }
         } catch (Throwable $e) {
         }
@@ -292,7 +295,7 @@ abstract class BenchmarkBase extends TestCase
             $raw = $query->invoke($this->adapter, $sql, []);
             $rawString = is_string($raw) ? $raw : '';
             $json = json_decode($rawString, true);
-            if (!is_array($json) || empty($json['data'])) {
+            if (!is_array($json) || empty($json['data']) || !is_array($json['data'])) {
                 return [];
             }
             $row = $json['data'][0];

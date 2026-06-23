@@ -14,7 +14,6 @@ class MetricTest extends TestCase
     {
         $schema = Metric::getEventSchema();
 
-        $this->assertIsArray($schema);
         // 3 core (metric, value, time) + 24 dimension columns from EVENT_COLUMNS.
         $this->assertCount(3 + count(Metric::EVENT_COLUMNS), $schema);
 
@@ -47,7 +46,6 @@ class MetricTest extends TestCase
     {
         $schema = Metric::getGaugeSchema();
 
-        $this->assertIsArray($schema);
         // 3 core (metric, value, time) + 4 GAUGE_COLUMNS.
         $this->assertCount(3 + count(Metric::GAUGE_COLUMNS), $schema);
 
@@ -78,8 +76,6 @@ class MetricTest extends TestCase
     {
         $indexes = Metric::getEventIndexes();
 
-        $this->assertIsArray($indexes);
-
         $ids = array_column($indexes, '$id');
         $this->assertNotContains('index-userAgent', $ids, 'userAgent index must be dropped');
     }
@@ -91,7 +87,6 @@ class MetricTest extends TestCase
     {
         $indexes = Metric::getGaugeIndexes();
 
-        $this->assertIsArray($indexes);
         $this->assertCount(count(Metric::GAUGE_COLUMNS), $indexes);
     }
 
@@ -155,7 +150,7 @@ class MetricTest extends TestCase
 
         // Should not throw exception
         Metric::validate($validData, 'event');
-        $this->assertTrue(true);
+        $this->expectNotToPerformAssertions();
     }
 
     /**
@@ -172,7 +167,7 @@ class MetricTest extends TestCase
         ];
 
         Metric::validate($validData, 'gauge');
-        $this->assertTrue(true);
+        $this->expectNotToPerformAssertions();
     }
 
     /**
@@ -186,7 +181,7 @@ class MetricTest extends TestCase
         ];
 
         Metric::validate($minimalData, 'event');
-        $this->assertTrue(true);
+        $this->expectNotToPerformAssertions();
     }
 
     /**
@@ -269,7 +264,7 @@ class MetricTest extends TestCase
         ];
 
         Metric::validate($data, 'event');
-        $this->assertTrue(true);
+        $this->expectNotToPerformAssertions();
     }
 
     /**
@@ -284,7 +279,7 @@ class MetricTest extends TestCase
         ];
 
         Metric::validate($data, 'event');
-        $this->assertTrue(true);
+        $this->expectNotToPerformAssertions();
     }
 
     /**
@@ -489,7 +484,6 @@ class MetricTest extends TestCase
         $metric = new Metric($data);
         $attributes = $metric->getAttributes();
 
-        $this->assertIsArray($attributes);
         $this->assertEquals('metric-1', $attributes['$id']);
         $this->assertEquals('requests', $attributes['metric']);
         $this->assertEquals(100, $attributes['value']);
@@ -600,7 +594,6 @@ class MetricTest extends TestCase
         $metric = new Metric($data);
         $array = $metric->toArray();
 
-        $this->assertIsArray($array);
         $this->assertEquals('metric-1', $array['$id']);
         $this->assertEquals('requests', $array['metric']);
         $this->assertEquals(100, $array['value']);
