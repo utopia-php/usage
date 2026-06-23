@@ -1,0 +1,236 @@
+<?php
+
+namespace Utopia\Tests\Usage;
+
+use PHPUnit\Framework\TestCase;
+use Utopia\Usage\Accumulator;
+use Utopia\Usage\Adapter;
+use Utopia\Usage\Usage;
+
+/**
+ * Records addBatch() calls so the Accumulator can be tested without a backend.
+ * addBatch() returns whatever $succeed is set to, letting tests drive the
+ * partial-failure path.
+ */
+class RecordingAdapter extends Adapter
+{
+    /** @var array<array{metrics: array<mixed>, type: string}> */
+    public array $batches = [];
+
+    public bool $succeed = true;
+
+    public function getName(): string
+    {
+        return 'recording';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function healthCheck(): array
+    {
+        return ['healthy' => true];
+    }
+
+    public function setup(): void
+    {
+    }
+
+    /**
+     * @param array<mixed> $metrics
+     */
+    public function addBatch(array $metrics, string $type, int $batchSize = 1000): bool
+    {
+        if ($this->succeed) {
+            $this->batches[] = ['metrics' => $metrics, 'type' => $type];
+        }
+        return $this->succeed;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
+    {
+        return [];
+    }
+
+    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
+    {
+        return 0;
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
+    {
+        return [];
+    }
+
+    public function purge(array $queries = [], ?string $type = null): bool
+    {
+        return true;
+    }
+
+    /**
+     * @return array<mixed>
+     */
+    public function find(array $queries = [], ?string $type = null): array
+    {
+        return [];
+    }
+
+    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
+    {
+        return 0;
+    }
+
+    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
+    {
+        return 0;
+    }
+
+    /**
+     * @return array<mixed>
+     */
+    public function findDaily(array $queries = []): array
+    {
+        return [];
+    }
+
+    public function sumDaily(array $queries = [], string $attribute = 'value'): int
+    {
+        return 0;
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    public function sumDailyBatch(array $metrics, array $queries = []): array
+    {
+        return [];
+    }
+}
+
+class AccumulatorTest extends TestCase
+{
+    private RecordingAdapter $adapter;
+
+    private Accumulator $accumulator;
+
+    protected function setUp(): void
+    {
+        $this->adapter = new RecordingAdapter();
+        $this->accumulator = new Accumulator($this->adapter);
+    }
+
+    public function testEventsSumByKey(): void
+    {
+        $this->accumulator->collect('requests', 10, Usage::TYPE_EVENT);
+        $this->accumulator->collect('requests', 20, Usage::TYPE_EVENT);
+        $this->accumulator->collect('requests', 30, Usage::TYPE_EVENT);
+
+        // Same metric + tags = 1 entry, values summed
+        $this->assertEquals(1, $this->accumulator->count());
+
+        $this->assertTrue($this->accumulator->flush());
+
+        $this->assertCount(1, $this->adapter->batches);
+        $this->assertEquals(Usage::TYPE_EVENT, $this->adapter->batches[0]['type']);
+        $this->assertEquals(60, $this->adapter->batches[0]['metrics'][0]['value']);
+    }
+
+    public function testTagsPartitionEntries(): void
+    {
+        $this->accumulator->collect('requests', 10, Usage::TYPE_EVENT, ['region' => 'us']);
+        $this->accumulator->collect('requests', 20, Usage::TYPE_EVENT, ['region' => 'eu']);
+
+        // Distinct tags = distinct entries
+        $this->assertEquals(2, $this->accumulator->count());
+    }
+
+    public function testGaugesUseLastWriteWins(): void
+    {
+        $this->accumulator->collect('storage', 100, Usage::TYPE_GAUGE);
+        $this->accumulator->collect('storage', 200, Usage::TYPE_GAUGE);
+        $this->accumulator->collect('storage', 300, Usage::TYPE_GAUGE);
+
+        $this->assertEquals(1, $this->accumulator->count());
+
+        $this->assertTrue($this->accumulator->flush());
+
+        $this->assertEquals(Usage::TYPE_GAUGE, $this->adapter->batches[0]['type']);
+        $this->assertEquals(300, $this->adapter->batches[0]['metrics'][0]['value']);
+    }
+
+    public function testFlushSeparatesEventsAndGauges(): void
+    {
+        $this->accumulator->collect('requests', 10, Usage::TYPE_EVENT);
+        $this->accumulator->collect('storage', 100, Usage::TYPE_GAUGE);
+
+        $this->assertTrue($this->accumulator->flush());
+
+        // One batch per type
+        $this->assertCount(2, $this->adapter->batches);
+        $types = [$this->adapter->batches[0]['type'], $this->adapter->batches[1]['type']];
+        $this->assertContains(Usage::TYPE_EVENT, $types);
+        $this->assertContains(Usage::TYPE_GAUGE, $types);
+
+        // Buffer cleared on success
+        $this->assertEquals(0, $this->accumulator->count());
+    }
+
+    public function testFailedFlushRetainsBuffer(): void
+    {
+        $this->accumulator->collect('requests', 10, Usage::TYPE_EVENT);
+
+        $this->adapter->succeed = false;
+        $this->assertFalse($this->accumulator->flush());
+
+        // Nothing written, entry preserved for retry
+        $this->assertCount(0, $this->adapter->batches);
+        $this->assertEquals(1, $this->accumulator->count());
+
+        // A later successful flush drains the buffer
+        $this->adapter->succeed = true;
+        $this->assertTrue($this->accumulator->flush());
+        $this->assertEquals(0, $this->accumulator->count());
+    }
+
+    public function testFlushEmptyBuffer(): void
+    {
+        $this->assertTrue($this->accumulator->flush());
+        $this->assertCount(0, $this->adapter->batches);
+        $this->assertEquals(0, $this->accumulator->count());
+    }
+
+    public function testElapsedSignal(): void
+    {
+        $this->assertLessThan(1.0, $this->accumulator->elapsedSeconds());
+
+        sleep(1);
+
+        $this->assertGreaterThanOrEqual(1.0, $this->accumulator->elapsedSeconds());
+    }
+
+    public function testEmptyMetricNameThrows(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Metric name cannot be empty');
+        $this->accumulator->collect('', 10, Usage::TYPE_EVENT);
+    }
+
+    public function testNegativeValueThrows(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Value cannot be negative');
+        $this->accumulator->collect('requests', -1, Usage::TYPE_EVENT);
+    }
+
+    public function testInvalidTypeThrows(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->accumulator->collect('requests', 10, 'invalid');
+    }
+}

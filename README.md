@@ -79,8 +79,13 @@ Event-specific columns (see `Metric::EVENT_COLUMNS`): `path`, `method`, `status`
 `deviceModel`.
 
 ```php
+use Utopia\Usage\Accumulator;
+
+// Buffer metrics in memory and flush them in batch
+$accumulator = new Accumulator($adapter);
+
 // Collect events — values accumulate in-memory buffer (summed per metric)
-$usage->collect('bandwidth', 5000, Usage::TYPE_EVENT, [
+$accumulator->collect('bandwidth', 5000, Usage::TYPE_EVENT, [
     'path' => '/v1/storage/files',
     'method' => 'POST',
     'status' => '201',
@@ -115,8 +120,8 @@ Gauge-specific columns (see `Metric::GAUGE_COLUMNS`): `teamId`,
 
 ```php
 // Collect gauges — last value wins per metric in buffer
-$usage->collect('users', 1500, Usage::TYPE_GAUGE);
-$usage->collect('storage.size', 1048576, Usage::TYPE_GAUGE, [
+$accumulator->collect('users', 1500, Usage::TYPE_GAUGE);
+$accumulator->collect('storage.size', 1048576, Usage::TYPE_GAUGE, [
     'teamId' => 'team_x',
     'teamInternalId' => '7',
     'resourceId' => 'abc123',
@@ -126,15 +131,15 @@ $usage->collect('storage.size', 1048576, Usage::TYPE_GAUGE, [
 
 ### Flushing
 
-```php
-// Check if flush is recommended (threshold or interval reached)
-if ($usage->shouldFlush()) {
-    $usage->flush(); // Writes events to events table, gauges to gauges table
-}
+The accumulator exposes raw signals — `count()` (buffered entries) and
+`elapsedSeconds()` (seconds since last flush) — and leaves the flush policy to
+the caller.
 
-// Configure thresholds
-$usage->setFlushThreshold(5000);  // Flush after 5000 collect() calls (default: 10,000)
-$usage->setFlushInterval(10);     // Flush after 10 seconds (default: 20)
+```php
+// Flush when the buffer grows large or enough time has passed
+if ($accumulator->count() >= 5000 || $accumulator->elapsedSeconds() >= 10) {
+    $accumulator->flush(); // Writes events to events table, gauges to gauges table
+}
 ```
 
 ### Batch Writes
