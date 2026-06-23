@@ -3299,6 +3299,12 @@ class ClickHouse extends SQL
     private function parseQueries(string $tenant, array $queries, string $type = 'event'): array
     {
         if ($this->sharedTables) {
+            // An empty tenant would compile to `tenant = ''` and silently read
+            // an empty scope. Fail fast instead, like the write side. ("0" is
+            // a valid tenant id, so check for '' specifically.)
+            if ($tenant === '') {
+                throw new Exception('Tenant cannot be empty in shared-tables mode');
+            }
             array_unshift($queries, Query::equal('tenant', [$tenant]));
         }
 
