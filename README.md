@@ -111,7 +111,7 @@ Event-specific columns (see `Metric::EVENT_COLUMNS`): `path`, `method`, `status`
 use Utopia\Usage\Accumulator;
 
 // Buffer metrics in memory and flush them in batch
-$accumulator = new Accumulator($adapter);
+$accumulator = new Accumulator($usage);
 
 // Collect events — tenant first; values accumulate in-memory (summed per tenant+metric)
 $accumulator->collect('project_123', 'bandwidth', 5000, Usage::TYPE_EVENT, [

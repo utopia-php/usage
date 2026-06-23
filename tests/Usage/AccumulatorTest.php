@@ -122,7 +122,7 @@ class AccumulatorTest extends TestCase
     protected function setUp(): void
     {
         $this->adapter = new RecordingAdapter();
-        $this->accumulator = new Accumulator($this->adapter);
+        $this->accumulator = new Accumulator(new Usage($this->adapter));
     }
 
     public function testEventsSumByKey(): void

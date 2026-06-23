@@ -5,7 +5,7 @@ namespace Utopia\Usage;
 /**
  * In-memory metric accumulator.
  *
- * Buffers collect() calls and flushes them to an adapter in batches.
+ * Buffers collect() calls and flushes them to a Usage instance in batches.
  * Events are summed per metric+tags; gauges use last-write-wins.
  *
  * The accumulator exposes raw signals — count() and elapsedSeconds() — so
@@ -13,7 +13,7 @@ namespace Utopia\Usage;
  */
 class Accumulator
 {
-    private Adapter $adapter;
+    private Usage $usage;
 
     /**
      * In-memory buffer for metrics.
@@ -29,11 +29,11 @@ class Accumulator
     private float $flushedAt;
 
     /**
-     * @param  Adapter  $adapter  The adapter to flush buffered metrics to
+     * @param  Usage  $usage  The Usage instance to flush buffered metrics to
      */
-    public function __construct(Adapter $adapter)
+    public function __construct(Usage $usage)
     {
-        $this->adapter = $adapter;
+        $this->usage = $usage;
         $this->flushedAt = microtime(true);
     }
 
@@ -126,7 +126,7 @@ class Accumulator
 
         // Flush events — clear buffer entries only on success.
         if (!empty($events)) {
-            if ($this->adapter->addBatch($events, Usage::TYPE_EVENT)) {
+            if ($this->usage->addBatch($events, Usage::TYPE_EVENT)) {
                 foreach ($eventKeys as $key) {
                     unset($this->buffer[$key]);
                 }
@@ -137,7 +137,7 @@ class Accumulator
 
         // Flush gauges — clear buffer entries only on success.
         if (!empty($gauges)) {
-            if ($this->adapter->addBatch($gauges, Usage::TYPE_GAUGE)) {
+            if ($this->usage->addBatch($gauges, Usage::TYPE_GAUGE)) {
                 foreach ($gaugeKeys as $key) {
                     unset($this->buffer[$key]);
                 }
