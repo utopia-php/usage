@@ -14,7 +14,7 @@ use Utopia\Usage\Usage;
  */
 class RecordingAdapter extends Adapter
 {
-    /** @var array<array{metrics: array<mixed>, type: string}> */
+    /** @var array<array{metrics: array<int, array<string, mixed>>, type: string}> */
     public array $batches = [];
 
     public bool $succeed = true;
@@ -37,7 +37,7 @@ class RecordingAdapter extends Adapter
     }
 
     /**
-     * @param array<mixed> $metrics
+     * @param array<int, array<string, mixed>> $metrics
      */
     public function addBatch(array $metrics, string $type, int $batchSize = 1000): bool
     {

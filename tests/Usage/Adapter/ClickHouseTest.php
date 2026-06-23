@@ -133,6 +133,7 @@ class ClickHouseTest extends TestCase
         $metrics = [];
         for ($i = 0; $i < 100; $i++) {
             $metrics[] = [
+                'tenant' => '1',
                 'metric' => 'large-batch-metric',
                 'value' => $i,
                 'tags' => ['resourceId' => (string) $i],
@@ -226,6 +227,7 @@ class ClickHouseTest extends TestCase
 
         $metrics = [
             [
+                'tenant' => '1',
                 'metric' => 'event-cols-test',
                 'value' => 42,
                 'tags' => [
@@ -302,6 +304,7 @@ class ClickHouseTest extends TestCase
 
         $this->assertTrue($this->usage->addBatch([
             [
+                'tenant' => '1',
                 'metric' => 'gauge-cols-test',
                 'value' => 500,
                 'tags' => [
@@ -526,6 +529,7 @@ class ClickHouseTest extends TestCase
         $metrics = [];
         for ($i = 0; $i < 500; $i++) {
             $metrics[] = [
+                'tenant' => '1',
                 'metric' => 'boundary-test',
                 'value' => 1,
                 'tags' => [],
@@ -566,6 +570,7 @@ class ClickHouseTest extends TestCase
         $metrics = [];
         for ($i = 0; $i < 50; $i++) {
             $metrics[] = [
+                'tenant' => '1',
                 'metric' => 'default-batch-test',
                 'value' => 1,
                 'tags' => [],

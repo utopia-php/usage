@@ -68,6 +68,7 @@ class DatabaseTest extends TestCase
 
         $this->assertTrue($this->usage->addBatch([
             [
+                'tenant' => '1',
                 'metric' => 'event-cols-db',
                 'value' => 42,
                 'tags' => [
@@ -122,6 +123,7 @@ class DatabaseTest extends TestCase
 
         $this->assertTrue($this->usage->addBatch([
             [
+                'tenant' => '1',
                 'metric' => 'gauge-cols-db',
                 'value' => 500,
                 'tags' => [

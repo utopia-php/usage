@@ -27,7 +27,8 @@ class GaugesBench extends BenchmarkBase
 
         $this->runBench('bench_gauges_latest_in_window', function (string $queryId) use ($start30d, $endPartial): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->getTotal($this->tenant, 
+            $this->usage->getTotal(
+                $this->tenant,
                 $this->metric,
                 [
                     Query::greaterThanEqual('time', $start30d),

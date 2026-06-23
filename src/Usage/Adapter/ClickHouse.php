@@ -1811,7 +1811,7 @@ class ClickHouse extends SQL
         $this->recordRoute($operation, $plan, $route);
 
         if ($route === 'daily') {
-            $total = $this->sumDaily($this->translateInclusiveMidnightForDaily($queries), 'value');
+            $total = $this->sumDailyScoped($this->translateInclusiveMidnightForDaily($queries), 'value');
             $this->maybeDualRead($queries, $route, $plan, $total);
             return $total;
         }
@@ -2555,8 +2555,20 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('sumDaily()');
 
-        $queries = $this->scopeToTenant($tenant, $queries);
+        return $this->sumDailyScoped($this->scopeToTenant($tenant, $queries), $attribute);
+    }
 
+    /**
+     * Sum the daily table for an already tenant-scoped query list.
+     *
+     * Internal callers (e.g. routedSum) thread the tenant filter in via the
+     * query list, so they call this directly to avoid re-scoping.
+     *
+     * @param array<Query> $queries
+     * @throws Exception
+     */
+    private function sumDailyScoped(array $queries, string $attribute = 'value'): int
+    {
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
         $this->validateDailyAttributeName($attribute);
         $escapedAttribute = $this->escapeIdentifier($attribute);
@@ -3699,7 +3711,10 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('purge()');
 
-        $queries = $this->scopeToTenant($tenant, $queries);
+        // Tenant scopes the delete, but the daily-table forwarding decision
+        // (below) must reason about the caller's own filters — so keep the
+        // unscoped queries around and only fold the tenant into the WHERE.
+        $scopedQueries = $this->scopeToTenant($tenant, $queries);
 
         $typesToPurge = [];
         if ($type === Usage::TYPE_EVENT || $type === null) {
@@ -3713,7 +3728,7 @@ class ClickHouse extends SQL
             $tableName = $this->getTableForType($purgeType);
             $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
 
-            $parsed = $this->parseQueries($queries, $purgeType);
+            $parsed = $this->parseQueries($scopedQueries, $purgeType);
             $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
             $whereClause = $whereData['clause'];
             $params = $whereData['params'];
@@ -3726,7 +3741,7 @@ class ClickHouse extends SQL
             $this->query($sql, $params);
 
             if ($purgeType === Usage::TYPE_EVENT) {
-                $this->purgeDaily($queries);
+                $this->purgeDaily($tenant, $queries);
             }
         }
 
@@ -3778,10 +3793,11 @@ class ClickHouse extends SQL
      * unrelated metrics. The next ingest cycle will overwrite any rows
      * the caller's raw-table purge left stale.
      *
-     * @param array<Query> $queries
+     * @param array<Query> $queries  The caller's filters (tenant-free); the
+     *        tenant is applied as a scope on the resulting delete.
      * @throws Exception
      */
-    private function purgeDaily(array $queries): void
+    private function purgeDaily(string $tenant, array $queries): void
     {
         $safeAttributes = array_values(array_filter(
             self::DAILY_COLUMNS,
@@ -3811,6 +3827,11 @@ class ClickHouse extends SQL
         if (!empty($queries) && empty($dailyQueries)) {
             return;
         }
+
+        // Scope the delete to the tenant only after the compatibility decision,
+        // so the tenant filter never makes an otherwise-imprecise purge look
+        // safe to forward to the rollup.
+        $dailyQueries = $this->scopeToTenant($tenant, $dailyQueries);
 
         $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());
 

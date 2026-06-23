@@ -167,7 +167,8 @@ trait UsageBase
         $start = (new \DateTime())->modify('-1 hour')->format('Y-m-d H:i:s');
         $end = (new \DateTime())->modify('+1 hour')->format('Y-m-d H:i:s');
 
-        $results = $this->usage->getTimeSeries('1', 
+        $results = $this->usage->getTimeSeries(
+            '1',
             ['requests'],
             '1h',
             $start,
@@ -188,7 +189,8 @@ trait UsageBase
         $start = (new \DateTime())->modify('-1 day')->format('Y-m-d H:i:s');
         $end = (new \DateTime())->modify('+1 day')->format('Y-m-d H:i:s');
 
-        $results = $this->usage->getTimeSeries('1', 
+        $results = $this->usage->getTimeSeries(
+            '1',
             ['requests', 'bandwidth'],
             '1d',
             $start,

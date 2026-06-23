@@ -158,8 +158,7 @@ class Database extends SQL
                     'time' => (new \DateTime())->format('Y-m-d H:i:s.v'),
                 ], $columns);
 
-                $tenant = $metric['tenant'] ?? null;
-                $entries[] = ['tenant' => is_string($tenant) ? $tenant : null, 'doc' => new Document($docData)];
+                $entries[] = ['tenant' => $metric['tenant'], 'doc' => new Document($docData)];
             }
 
             foreach (array_chunk($entries, max(1, $batchSize)) as $chunk) {
