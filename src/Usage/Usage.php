@@ -264,25 +264,6 @@ class Usage
     }
 
     /**
-     * Set the namespace prefix for table names.
-     *
-     * Flushes the buffer first so any pending metrics are written under the
-     * previous namespace — buffered entries don't carry adapter context.
-     *
-     * @param string $namespace
-     * @return $this
-     * @throws \Exception
-     */
-    public function setNamespace(string $namespace): self
-    {
-        $this->flush();
-        if (method_exists($this->adapter, 'setNamespace')) {
-            $this->adapter->setNamespace($namespace);
-        }
-        return $this;
-    }
-
-    /**
      * Set the tenant ID for multi-tenant support.
      *
      * Flushes the buffer first so any pending metrics are written under the
@@ -298,40 +279,6 @@ class Usage
         if (method_exists($this->adapter, 'setTenant')) {
             $this->adapter->setTenant($tenant);
         }
-        return $this;
-    }
-
-    /**
-     * Enable or disable shared tables mode (multi-tenant with tenant column).
-     *
-     * Flushes the buffer first so any pending metrics are written under the
-     * previous mode — buffered entries don't carry adapter context.
-     *
-     * @param bool $sharedTables
-     * @return $this
-     * @throws \Exception
-     */
-    public function setSharedTables(bool $sharedTables): self
-    {
-        $this->flush();
-        if (method_exists($this->adapter, 'setSharedTables')) {
-            $this->adapter->setSharedTables($sharedTables);
-        }
-        return $this;
-    }
-
-    /**
-     * Enable parity sampling for routed reads. At rate=0 the sampler is
-     * disabled (default). At rate>0 each routed read is re-executed against
-     * the raw table with the given probability and logs a `dual_read_warning`
-     * entry when totals diverge by more than 1%. Pass 1.0 for every-read
-     * sampling (CI use) or small values (0.01) for production canaries.
-     *
-     * @param float $rate 0.0 (off) … 1.0 (every read)
-     */
-    public function setDualReadSampleRate(float $rate): self
-    {
-        $this->adapter->setDualReadSampleRate($rate);
         return $this;
     }
 

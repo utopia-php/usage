@@ -55,14 +55,17 @@ abstract class BenchmarkBase extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $this->adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $this->adapter->setNamespace($this->namespace);
-        $this->adapter->setSharedTables(true);
+        $this->adapter = new ClickHouseAdapter(
+            $host,
+            $username,
+            $password,
+            $port,
+            $secure,
+            namespace: $this->namespace,
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+            sharedTables: true,
+        );
         $this->adapter->setTenant($this->tenant);
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $this->adapter->setDatabase($database);
-        }
 
         $this->usage = new Usage($this->adapter);
         $this->usage->setup();

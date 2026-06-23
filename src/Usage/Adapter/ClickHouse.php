@@ -79,36 +79,30 @@ class ClickHouse extends SQL
         Query::TYPE_ENDS_WITH,
     ];
 
-    private string $host;
+    private readonly string $host;
 
-    private int $port;
+    private readonly int $port;
 
-    private string $database = self::DEFAULT_DATABASE;
+    private readonly string $database;
 
     private string $table = self::DEFAULT_TABLE;
 
-    private string $username;
+    private readonly string $username;
 
-    private string $password;
+    private readonly string $password;
 
     /** @var bool Whether to use HTTPS for ClickHouse HTTP interface */
-    private bool $secure = false;
+    private readonly bool $secure;
 
-    private ClientInterface $client;
+    private readonly ClientInterface $client;
 
-    private RequestFactory $requestFactory;
+    private readonly RequestFactory $requestFactory;
 
     protected ?string $tenant = null;
 
-    protected bool $sharedTables = false;
+    protected readonly bool $sharedTables;
 
-    protected string $namespace = '';
-
-    /** @var bool Whether to log queries for debugging */
-    private bool $enableQueryLogging = false;
-
-    /** @var array<array{sql: string, params: array<string, mixed>, duration: float, timestamp: float, success: bool, error?: string}> Query execution log */
-    private array $queryLog = [];
+    protected readonly string $namespace;
 
     /** @var int Number of requests made using this adapter instance */
     private int $requestCount = 0;
@@ -117,10 +111,10 @@ class ClickHouse extends SQL
     private ?string $operationContext = null;
 
     /** @var bool Whether to enable ClickHouse async inserts (server-side batching) */
-    private bool $asyncInserts = false;
+    private readonly bool $asyncInserts;
 
     /** @var bool Whether to wait for async insert confirmation before returning */
-    private bool $asyncInsertWait = true;
+    private readonly bool $asyncInsertWait;
 
     /**
      * Opt-in query_id forwarded to ClickHouse on the next query() call only.
@@ -141,7 +135,7 @@ class ClickHouse extends SQL
      * the raw events table and logs the delta. Recommended 0.01 for
      * progressive rollout; default 0.0 (off).
      */
-    private float $dualReadSampleRate = 0.0;
+    private readonly float $dualReadSampleRate;
 
     /**
      * @param  string  $host  ClickHouse host
@@ -154,6 +148,16 @@ class ClickHouse extends SQL
      *   timeouts, TLS, or retries — e.g. wrap an adapter in
      *   `Utopia\Client\Decorator\Retry`, or pass a `Utopia\Client\Pool` to share a
      *   bounded set of connections across concurrent (coroutine) callers.
+     * @param  string  $namespace  Table name prefix for multi-project support
+     * @param  string  $database  ClickHouse database name (default: 'default')
+     * @param  bool  $sharedTables  Whether tables are shared across tenants
+     * @param  bool  $asyncInserts  Whether to use ClickHouse async inserts (server-side batching)
+     * @param  bool  $asyncInsertWait  Whether to wait for async insert confirmation before returning
+     * @param  float  $dualReadSampleRate  Parity-sampling rate, clamped to
+     *   0.0 (off) … 1.0 (every read). When > 0 each eligible routed read is
+     *   re-executed against the raw events table and logs a `warning` route
+     *   entry if the totals diverge by >1%. Use 0.01 for a production canary
+     *   or 1.0 in CI.
      */
     public function __construct(
         string $host,
@@ -161,16 +165,34 @@ class ClickHouse extends SQL
         string $password = '',
         int $port = self::DEFAULT_PORT,
         bool $secure = false,
-        ?ClientInterface $client = null
+        ?ClientInterface $client = null,
+        string $namespace = '',
+        string $database = self::DEFAULT_DATABASE,
+        bool $sharedTables = false,
+        bool $asyncInserts = false,
+        bool $asyncInsertWait = true,
+        float $dualReadSampleRate = 0.0
     ) {
         $this->validateHost($host);
         $this->validatePort($port);
+        if (!empty($namespace)) {
+            $this->validateIdentifier($namespace, 'Namespace');
+        }
+        $this->validateIdentifier($database, 'Database');
 
         $this->host = $host;
         $this->port = $port;
         $this->username = $username;
         $this->password = $password;
         $this->secure = $secure;
+        $this->namespace = $namespace;
+        $this->database = $database;
+        $this->sharedTables = $sharedTables;
+        $this->asyncInserts = $asyncInserts;
+        $this->asyncInsertWait = $asyncInsertWait;
+        // Clamp to [0.0, 1.0] so out-of-range rates can't disable or
+        // over-trigger the parity sampler.
+        $this->dualReadSampleRate = max(0.0, min(1.0, $dualReadSampleRate));
 
         // `withConnectionReuse()` keeps the underlying cURL handle alive across
         // requests so the TCP/TLS handshake is paid once. Auth and database are
@@ -178,32 +200,6 @@ class ClickHouse extends SQL
         // a pure transport.
         $this->client = $client ?? new Client((new CurlAdapter())->withConnectionReuse());
         $this->requestFactory = new RequestFactory();
-    }
-
-    /**
-     * Enable or disable query logging for debugging.
-     *
-     * @param bool $enable Whether to enable query logging
-     * @return self
-     */
-    public function enableQueryLogging(bool $enable = true): self
-    {
-        $this->enableQueryLogging = $enable;
-        return $this;
-    }
-
-    /**
-     * Enable or disable ClickHouse async inserts (server-side batching).
-     *
-     * @param bool $enable Whether to enable async inserts
-     * @param bool $waitForConfirmation Whether to wait for server-side flush before returning
-     * @return self
-     */
-    public function setAsyncInserts(bool $enable, bool $waitForConfirmation = true): self
-    {
-        $this->asyncInserts = $enable;
-        $this->asyncInsertWait = $waitForConfirmation;
-        return $this;
     }
 
     /**
@@ -237,58 +233,17 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Sample rate for dual-read parity checks. When > 0, eligible
-     * routed reads also execute against the raw events table and log a
-     * `warning` route entry if the totals diverge by >1%.
-     *
-     * @param float $rate 0.0 (off) … 1.0 (every read)
-     */
-    public function setDualReadSampleRate(float $rate): self
-    {
-        if ($rate < 0.0) {
-            $rate = 0.0;
-        }
-        if ($rate > 1.0) {
-            $rate = 1.0;
-        }
-        $this->dualReadSampleRate = $rate;
-        return $this;
-    }
-
-    /**
      * Get connection statistics for monitoring.
      *
-     * @return array{request_count: int, query_logging_enabled: bool, async_inserts: bool, async_insert_wait: bool}
+     * @return array{request_count: int, async_inserts: bool, async_insert_wait: bool}
      */
     public function getConnectionStats(): array
     {
         return [
             'request_count' => $this->requestCount,
-            'query_logging_enabled' => $this->enableQueryLogging,
             'async_inserts' => $this->asyncInserts,
             'async_insert_wait' => $this->asyncInsertWait,
         ];
-    }
-
-    /**
-     * Get the query execution log.
-     *
-     * @return array<array{sql: string, params: array<string, mixed>, duration: float, timestamp: float, success: bool, error?: string}>
-     */
-    public function getQueryLog(): array
-    {
-        return $this->queryLog;
-    }
-
-    /**
-     * Clear the query execution log.
-     *
-     * @return self
-     */
-    public function clearQueryLog(): self
-    {
-        $this->queryLog = [];
-        return $this;
     }
 
     /**
@@ -417,56 +372,12 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Set the namespace for multi-project support.
-     *
-     * @param string $namespace
-     * @return self
-     * @throws Exception
-     */
-    public function setNamespace(string $namespace): self
-    {
-        if (!empty($namespace)) {
-            $this->validateIdentifier($namespace, 'Namespace');
-        }
-        $this->namespace = $namespace;
-        return $this;
-    }
-
-    /**
-     * Set the database name for subsequent operations.
-     *
-     * @param string $database
-     * @return self
-     * @throws Exception
-     */
-    public function setDatabase(string $database): self
-    {
-        $this->validateIdentifier($database, 'Database');
-        $this->database = $database;
-        return $this;
-    }
-
-    /**
-     * Enable or disable HTTPS for ClickHouse HTTP interface.
-     */
-    public function setSecure(bool $secure): self
-    {
-        $this->secure = $secure;
-        return $this;
-    }
-
-    /**
-     * Get the namespace.
-     *
-     * @return string
-     */
-    public function getNamespace(): string
-    {
-        return $this->namespace;
-    }
-
-    /**
      * Set the tenant ID for multi-tenant support.
+     *
+     * Tenant is the one piece of adapter configuration that legitimately
+     * changes over an instance's lifetime — a single adapter serves many
+     * tenants across requests — so it stays a mutable setter while the rest
+     * of the configuration is fixed at construction.
      *
      * @param string|null $tenant
      * @return self
@@ -475,38 +386,6 @@ class ClickHouse extends SQL
     {
         $this->tenant = $tenant;
         return $this;
-    }
-
-    /**
-     * Get the tenant ID.
-     *
-     * @return string|null
-     */
-    public function getTenant(): ?string
-    {
-        return $this->tenant;
-    }
-
-    /**
-     * Set whether tables are shared across tenants.
-     *
-     * @param bool $sharedTables
-     * @return self
-     */
-    public function setSharedTables(bool $sharedTables): self
-    {
-        $this->sharedTables = $sharedTables;
-        return $this;
-    }
-
-    /**
-     * Get whether tables are shared across tenants.
-     *
-     * @return bool
-     */
-    public function isSharedTables(): bool
-    {
-        return $this->sharedTables;
     }
 
     /**
@@ -572,36 +451,6 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Log a query execution for debugging purposes.
-     *
-     * @param string $sql SQL query executed
-     * @param array<string, mixed> $params Query parameters
-     * @param float $duration Execution duration in seconds
-     * @param bool $success Whether the query succeeded
-     * @param string|null $error Error message if query failed
-     */
-    private function logQuery(string $sql, array $params, float $duration, bool $success, ?string $error = null): void
-    {
-        if (!$this->enableQueryLogging) {
-            return;
-        }
-
-        $logEntry = [
-            'sql' => $sql,
-            'params' => $params,
-            'duration' => $duration,
-            'timestamp' => microtime(true),
-            'success' => $success,
-        ];
-
-        if ($error !== null) {
-            $logEntry['error'] = $error;
-        }
-
-        $this->queryLog[] = $logEntry;
-    }
-
-    /**
      * Set the current operation context for better error messages.
      *
      * @param string|null $context
@@ -655,7 +504,6 @@ class ClickHouse extends SQL
         $queryId = $this->nextQueryId;
         $this->nextQueryId = null;
 
-        $startTime = microtime(true);
         $scheme = $this->secure ? 'https' : 'http';
 
         // ClickHouse reads `query` and `param_*` from a multipart/form-data
@@ -681,23 +529,18 @@ class ClickHouse extends SQL
         try {
             $response = $this->client->sendRequest($request);
         } catch (Throwable $e) {
-            $duration = microtime(true) - $startTime;
             $errorMsg = $this->buildErrorMessage("ClickHouse query failed: {$e->getMessage()}", null, $sql);
-            $this->logQuery($sql, $params, $duration, false, $errorMsg);
             throw new Exception($errorMsg, 0, $e);
         }
 
         $httpCode = $response->getStatusCode();
         $bodyStr = (string) $response->getBody();
-        $duration = microtime(true) - $startTime;
 
         if ($httpCode !== 200) {
             $errorMsg = $this->buildErrorMessage("ClickHouse query failed with HTTP {$httpCode}: {$bodyStr}", null, $sql);
-            $this->logQuery($sql, $params, $duration, false, $errorMsg);
             throw new Exception($errorMsg);
         }
 
-        $this->logQuery($sql, $params, $duration, true);
         return $bodyStr;
     }
 
@@ -777,7 +620,6 @@ class ClickHouse extends SQL
         // deduplication, so a retried insert that reaches the server twice
         // leaves duplicate rows behind. The default transport does not retry
         // POST; any injected retry strategy must keep it that way.
-        $startTime = microtime(true);
         $scheme = $this->secure ? 'https' : 'http';
         $escapedTable = $this->escapeIdentifier($table);
         $rowCount = count($data);
@@ -792,31 +634,21 @@ class ClickHouse extends SQL
         $this->requestCount++;
 
         $body = implode("\n", $data);
-        $sql = "INSERT INTO {$escapedTable} FORMAT JSONEachRow";
-        $params = ['rows' => $rowCount, 'bytes' => strlen($body)];
 
         $request = $this->requestFactory->body(Method::POST, $url, $body, 'application/x-ndjson', $this->buildHeaders());
 
         try {
             $response = $this->client->sendRequest($request);
         } catch (Throwable $e) {
-            $duration = microtime(true) - $startTime;
             $errorMsg = $this->buildErrorMessage("ClickHouse insert failed: {$e->getMessage()}", $table, "INSERT INTO {$table} ({$rowCount} rows)");
-            $this->logQuery($sql, $params, $duration, false, $errorMsg);
             throw new Exception($errorMsg, 0, $e);
         }
 
-        $httpCode = $response->getStatusCode();
-        $duration = microtime(true) - $startTime;
-
-        if ($httpCode !== 200) {
+        if ($response->getStatusCode() !== 200) {
             $bodyStr = (string) $response->getBody();
-            $errorMsg = $this->buildErrorMessage("ClickHouse insert failed with HTTP {$httpCode}: {$bodyStr}", $table, "INSERT INTO {$table} ({$rowCount} rows)");
-            $this->logQuery($sql, $params, $duration, false, $errorMsg);
+            $errorMsg = $this->buildErrorMessage("ClickHouse insert failed with HTTP {$response->getStatusCode()}: {$bodyStr}", $table, "INSERT INTO {$table} ({$rowCount} rows)");
             throw new Exception($errorMsg);
         }
-
-        $this->logQuery($sql, $params, $duration, true);
     }
 
     /**

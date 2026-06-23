@@ -36,17 +36,16 @@ composer require utopia-php/usage
 use Utopia\Usage\Usage;
 use Utopia\Usage\Adapter\ClickHouse;
 
+// Configuration is fixed at construction; only the tenant changes per request.
 $adapter = new ClickHouse(
     host: 'clickhouse-server',
     username: 'default',
     password: '',
     port: 8123,
-    secure: false
+    secure: false,
+    namespace: 'my_app',
+    sharedTables: true,
 );
-
-// Multi-tenant setup
-$adapter->setNamespace('my_app');
-$adapter->setSharedTables(true);
 $adapter->setTenant('project_123');
 
 $usage = new Usage($adapter);
@@ -333,9 +332,11 @@ Extend `Utopia\Usage\Adapter` and implement:
 - `sumDaily(array $queries, string $attribute): int`
 - `sumDailyBatch(array $metrics, array $queries): array`
 - `purge(array $queries, ?string $type): bool`
-- `setNamespace(string $namespace): self`
 - `setTenant(?string $tenant): self`
-- `setSharedTables(bool $sharedTables): self`
+
+Namespace, database, shared-tables mode, async inserts, query logging and the
+dual-read sample rate are set once via the adapter constructor (see "Using
+ClickHouse Adapter" above). Only the tenant changes over an instance's lifetime.
 
 ## System Requirements
 

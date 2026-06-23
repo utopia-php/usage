@@ -22,14 +22,16 @@ class ClickHouseTest extends TestCase
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage');
+        $adapter = new ClickHouseAdapter(
+            $host,
+            $username,
+            $password,
+            $port,
+            $secure,
+            namespace: 'utopia_usage',
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+        );
         $adapter->setTenant('1');
-
-        // Optional customization via env vars
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $adapter->setDatabase($database);
-        }
 
         $this->usage = new Usage($adapter);
         $this->usage->setup();
@@ -43,14 +45,17 @@ class ClickHouseTest extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage_shared');
-        $adapter->setSharedTables(true);
+        $adapter = new ClickHouseAdapter(
+            $host,
+            $username,
+            $password,
+            $port,
+            $secure,
+            namespace: 'utopia_usage_shared',
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+            sharedTables: true,
+        );
         $adapter->setTenant('1');
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $adapter->setDatabase($database);
-        }
 
         $usage = new Usage($adapter);
         $usage->setup();
@@ -742,13 +747,16 @@ class ClickHouseTest extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage_pooling_test');
+        $adapter = new ClickHouseAdapter(
+            $host,
+            $username,
+            $password,
+            $port,
+            $secure,
+            namespace: 'utopia_usage_pooling_test',
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+        );
         $adapter->setTenant('1');
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $adapter->setDatabase($database);
-        }
 
         $usage = new Usage($adapter);
         $usage->setup();
@@ -758,7 +766,6 @@ class ClickHouseTest extends TestCase
         // can confirm requests are flowing over the pooled connection.
         $stats = $adapter->getConnectionStats();
         $this->assertArrayHasKey('request_count', $stats);
-        $this->assertArrayHasKey('query_logging_enabled', $stats);
 
         $initialCount = $stats['request_count'];
 
@@ -786,9 +793,15 @@ class ClickHouseTest extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage_error_test');
-        $adapter->setDatabase('nonexistent_db_for_testing_errors_12345');
+        $adapter = new ClickHouseAdapter(
+            $host,
+            $username,
+            $password,
+            $port,
+            $secure,
+            namespace: 'utopia_usage_error_test',
+            database: 'nonexistent_db_for_testing_errors_12345',
+        );
         $adapter->setTenant('1');
 
         $usage = new Usage($adapter);
@@ -819,16 +832,24 @@ class ClickHouseTest extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage_async');
+        $database = getenv('CLICKHOUSE_DATABASE') ?: 'default';
+
+        $makeAdapter = static fn (bool $asyncInserts, bool $asyncInsertWait): ClickHouseAdapter =>
+            new ClickHouseAdapter(
+                $host,
+                $username,
+                $password,
+                $port,
+                $secure,
+                namespace: 'utopia_usage_async',
+                database: $database,
+                asyncInserts: $asyncInserts,
+                asyncInsertWait: $asyncInsertWait,
+            );
+
+        // Async inserts enabled, waiting for confirmation.
+        $adapter = $makeAdapter(true, true);
         $adapter->setTenant('1');
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $adapter->setDatabase($database);
-        }
-
-        // Enable async inserts
-        $adapter->setAsyncInserts(true, waitForConfirmation: true);
 
         $stats = $adapter->getConnectionStats();
         $this->assertTrue($stats['async_inserts']);
@@ -846,14 +867,13 @@ class ClickHouseTest extends TestCase
         $total = $usage->getTotal('async-test', [], Usage::TYPE_EVENT);
         $this->assertEquals(42, $total);
 
-        // Test fire-and-forget mode
-        $adapter->setAsyncInserts(true, waitForConfirmation: false);
-        $stats = $adapter->getConnectionStats();
+        // Fire-and-forget mode: async on, no wait for confirmation.
+        $stats = $makeAdapter(true, false)->getConnectionStats();
+        $this->assertTrue($stats['async_inserts']);
         $this->assertFalse($stats['async_insert_wait']);
 
-        // Disable async inserts
-        $adapter->setAsyncInserts(false);
-        $stats = $adapter->getConnectionStats();
+        // Async inserts disabled.
+        $stats = $makeAdapter(false, true)->getConnectionStats();
         $this->assertFalse($stats['async_inserts']);
 
         $usage->purge();
