@@ -53,6 +53,9 @@ class Accumulator
      */
     public function collect(string $tenant, string $metric, int $value, string $type, array $tags = []): self
     {
+        if (empty($tenant)) {
+            throw new \InvalidArgumentException('Tenant cannot be empty');
+        }
         if (empty($metric)) {
             throw new \InvalidArgumentException('Metric name cannot be empty');
         }
@@ -63,8 +66,13 @@ class Accumulator
             throw new \InvalidArgumentException("Invalid metric type '{$type}'. Allowed: " . Usage::TYPE_EVENT . ', ' . Usage::TYPE_GAUGE);
         }
 
-        $tagsHash = !empty($tags) ? md5(json_encode($tags, JSON_THROW_ON_ERROR)) : '';
-        $key = $tenant . ':' . $metric . ':' . $type . ':' . $tagsHash;
+        // Hash the full identity so distinct (tenant, metric, type, tags)
+        // tuples never collide on the key — a raw `:`-join would let
+        // e.g. tenant "a"/metric "b:c" and tenant "a:b"/metric "c" share one
+        // entry. Tags are sorted first so key order doesn't matter.
+        $canonicalTags = $tags;
+        ksort($canonicalTags);
+        $key = md5(json_encode([$tenant, $metric, $type, $canonicalTags], JSON_THROW_ON_ERROR));
 
         if ($type === Usage::TYPE_EVENT && isset($this->buffer[$key])) {
             // Additive: sum values for the same tenant + metric + tags combination
@@ -146,7 +154,12 @@ class Accumulator
             }
         }
 
-        $this->flushedAt = microtime(true);
+        // Only restart the timer when nothing is left pending. On a partial
+        // failure the retained entries keep aging so elapsedSeconds() reflects
+        // how overdue they are instead of resetting to a fresh interval.
+        if (empty($this->buffer)) {
+            $this->flushedAt = microtime(true);
+        }
 
         return $overallResult;
     }

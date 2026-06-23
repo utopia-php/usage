@@ -1239,12 +1239,17 @@ class ClickHouse extends SQL
             $tags = $metricData['tags'] ?? [];
             $this->validateMetricData($metric, $value, $type, $tags, $index);
 
-            if (array_key_exists('tenant', $metricData)) {
-                $tenantValue = $metricData['tenant'];
+            $hasTenant = array_key_exists('tenant', $metricData);
 
-                if ($tenantValue !== null && !is_string($tenantValue)) {
-                    throw new Exception("Metric #{$index}: 'tenant' must be a string or null, got " . gettype($tenantValue));
-                }
+            // Shared tables filter every read by tenant, so a row written
+            // without one would be invisible to normal tenant-scoped reads.
+            // Reject it at write time rather than silently storing dead data.
+            if ($this->sharedTables && (!$hasTenant || !is_string($metricData['tenant']) || $metricData['tenant'] === '')) {
+                throw new Exception("Metric #{$index}: 'tenant' is required (non-empty string) when shared tables are enabled");
+            }
+
+            if ($hasTenant && $metricData['tenant'] !== null && !is_string($metricData['tenant'])) {
+                throw new Exception("Metric #{$index}: 'tenant' must be a string or null, got " . gettype($metricData['tenant']));
             }
         }
     }

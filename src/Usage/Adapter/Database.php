@@ -643,6 +643,12 @@ class Database extends SQL
      * Scope the underlying Utopia\Database instance to a tenant for the next
      * operation. The Database adapter requires a numeric tenant ID.
      *
+     * The adapter takes ownership of the injected db's tenant: every call
+     * sets it and none restores it (Utopia\Database has no per-call tenant —
+     * only the mutable instance tenant — and save/restore around each call is
+     * its own footgun). Hand this adapter a db dedicated to usage, not one
+     * whose tenant other code depends on between calls.
+     *
      * @param string|null $tenant
      */
     private function setDbTenant(?string $tenant): void

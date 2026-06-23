@@ -229,11 +229,39 @@ class AccumulatorTest extends TestCase
         $this->assertGreaterThanOrEqual(1.0, $this->accumulator->elapsedSeconds());
     }
 
+    public function testEmptyTenantThrows(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Tenant cannot be empty');
+        $this->accumulator->collect('', 'requests', 10, Usage::TYPE_EVENT);
+    }
+
     public function testEmptyMetricNameThrows(): void
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Metric name cannot be empty');
         $this->accumulator->collect('t1', '', 10, Usage::TYPE_EVENT);
+    }
+
+    public function testKeyDistinguishesAmbiguousTenantMetricSplits(): void
+    {
+        // tenant "a" + metric "b:c" must not collide with tenant "a:b" + metric "c"
+        $this->accumulator->collect('a', 'b:c', 10, Usage::TYPE_EVENT);
+        $this->accumulator->collect('a:b', 'c', 20, Usage::TYPE_EVENT);
+
+        $this->assertEquals(2, $this->accumulator->count());
+    }
+
+    public function testTagOrderDoesNotSplitEntries(): void
+    {
+        // Same logical tags in different insertion order must sum into one entry
+        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT, ['teamId' => 't', 'resourceId' => 'r']);
+        $this->accumulator->collect('t1', 'requests', 20, Usage::TYPE_EVENT, ['resourceId' => 'r', 'teamId' => 't']);
+
+        $this->assertEquals(1, $this->accumulator->count());
+
+        $this->assertTrue($this->accumulator->flush());
+        $this->assertEquals(30, $this->adapter->batches[0]['metrics'][0]['value']);
     }
 
     public function testNegativeValueThrows(): void
