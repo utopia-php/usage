@@ -65,7 +65,6 @@ abstract class BenchmarkBase extends TestCase
             database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
             sharedTables: true,
         );
-        $this->adapter->setTenant($this->tenant);
 
         $this->usage = new Usage($this->adapter);
         $this->usage->setup();
@@ -171,7 +170,7 @@ abstract class BenchmarkBase extends TestCase
      */
     protected function purgeAll(): void
     {
-        $this->usage->purge();
+        $this->usage->purge($this->tenant);
     }
 
     /**

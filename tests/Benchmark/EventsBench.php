@@ -25,7 +25,7 @@ class EventsBench extends BenchmarkBase
 
         $this->runBench('bench_events_sum_30d', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->sum([
+            $this->usage->sum($this->tenant, [
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $start),
                 Query::lessThanEqual('time', $end),
@@ -34,7 +34,7 @@ class EventsBench extends BenchmarkBase
 
         $this->runBench('bench_events_timeseries_30d_1h', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
+            $this->usage->find($this->tenant, [
                 UsageQuery::groupByInterval('time', '1h'),
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $start),
@@ -45,7 +45,7 @@ class EventsBench extends BenchmarkBase
 
         $this->runBench('bench_events_count_max_5k', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->count([
+            $this->usage->count($this->tenant, [
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $start),
                 Query::lessThanEqual('time', $end),
@@ -56,6 +56,7 @@ class EventsBench extends BenchmarkBase
             $batch = [];
             for ($i = 0; $i < 10000; $i++) {
                 $batch[] = [
+                    'tenant' => $this->tenant,
                     'metric' => 'bench.insert.10k',
                     'value' => $i,
                     'tags' => [
@@ -72,7 +73,7 @@ class EventsBench extends BenchmarkBase
 
         $this->runBench('bench_events_topN_path_30d', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
+            $this->usage->find($this->tenant, [
                 UsageQuery::groupBy('path'),
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $start),
@@ -83,7 +84,7 @@ class EventsBench extends BenchmarkBase
 
         $this->runBench('bench_events_topN_country_30d', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
+            $this->usage->find($this->tenant, [
                 UsageQuery::groupBy('country'),
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $start),
@@ -94,7 +95,7 @@ class EventsBench extends BenchmarkBase
 
         $this->runBench('bench_events_topN_service_30d', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
+            $this->usage->find($this->tenant, [
                 UsageQuery::groupBy('service'),
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $start),
@@ -107,7 +108,7 @@ class EventsBench extends BenchmarkBase
         $todayEnd = (new DateTime('+2 hour'))->format('Y-m-d H:i:s');
         $this->runBench('bench_events_topN_path_today_partial', function (string $queryId) use ($todayStart, $todayEnd): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
+            $this->usage->find($this->tenant, [
                 UsageQuery::groupBy('path'),
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $todayStart),
@@ -118,7 +119,7 @@ class EventsBench extends BenchmarkBase
 
         $this->runBench('bench_events_topN_path_30d_filtered_resource', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
+            $this->usage->find($this->tenant, [
                 UsageQuery::groupBy('path'),
                 Query::equal('metric', [$this->metric]),
                 Query::equal('resource', ['function']),
@@ -130,7 +131,7 @@ class EventsBench extends BenchmarkBase
 
         $this->runBench('bench_events_topN_path_country', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
+            $this->usage->find($this->tenant, [
                 UsageQuery::groupBy('path'),
                 UsageQuery::groupBy('country'),
                 Query::equal('metric', [$this->metric]),
@@ -144,6 +145,7 @@ class EventsBench extends BenchmarkBase
             $batch = [];
             for ($i = 0; $i < 10000; $i++) {
                 $batch[] = [
+                    'tenant' => $this->tenant,
                     'metric' => 'bench.insert.with_projections',
                     'value' => $i,
                     'tags' => [

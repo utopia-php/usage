@@ -50,12 +50,12 @@ class RecordingAdapter extends Adapter
     /**
      * @return array<string, mixed>
      */
-    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
+    public function getTimeSeries(string $tenant, array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
     {
         return [];
     }
 
-    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
+    public function getTotal(string $tenant, string $metric, array $queries = [], ?string $type = null): int
     {
         return 0;
     }
@@ -63,12 +63,12 @@ class RecordingAdapter extends Adapter
     /**
      * @return array<string, int>
      */
-    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
+    public function getTotalBatch(string $tenant, array $metrics, array $queries = [], ?string $type = null): array
     {
         return [];
     }
 
-    public function purge(array $queries = [], ?string $type = null): bool
+    public function purge(string $tenant, array $queries = [], ?string $type = null): bool
     {
         return true;
     }
@@ -76,17 +76,17 @@ class RecordingAdapter extends Adapter
     /**
      * @return array<mixed>
      */
-    public function find(array $queries = [], ?string $type = null): array
+    public function find(string $tenant, array $queries = [], ?string $type = null): array
     {
         return [];
     }
 
-    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
+    public function count(string $tenant, array $queries = [], ?string $type = null, ?int $max = null): int
     {
         return 0;
     }
 
-    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
+    public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
     {
         return 0;
     }
@@ -94,12 +94,12 @@ class RecordingAdapter extends Adapter
     /**
      * @return array<mixed>
      */
-    public function findDaily(array $queries = []): array
+    public function findDaily(string $tenant, array $queries = []): array
     {
         return [];
     }
 
-    public function sumDaily(array $queries = [], string $attribute = 'value'): int
+    public function sumDaily(string $tenant, array $queries = [], string $attribute = 'value'): int
     {
         return 0;
     }
@@ -107,7 +107,7 @@ class RecordingAdapter extends Adapter
     /**
      * @return array<string, int>
      */
-    public function sumDailyBatch(array $metrics, array $queries = []): array
+    public function sumDailyBatch(string $tenant, array $metrics, array $queries = []): array
     {
         return [];
     }
@@ -127,9 +127,9 @@ class AccumulatorTest extends TestCase
 
     public function testEventsSumByKey(): void
     {
-        $this->accumulator->collect('requests', 10, Usage::TYPE_EVENT);
-        $this->accumulator->collect('requests', 20, Usage::TYPE_EVENT);
-        $this->accumulator->collect('requests', 30, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'requests', 20, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'requests', 30, Usage::TYPE_EVENT);
 
         // Same metric + tags = 1 entry, values summed
         $this->assertEquals(1, $this->accumulator->count());
@@ -143,18 +143,33 @@ class AccumulatorTest extends TestCase
 
     public function testTagsPartitionEntries(): void
     {
-        $this->accumulator->collect('requests', 10, Usage::TYPE_EVENT, ['region' => 'us']);
-        $this->accumulator->collect('requests', 20, Usage::TYPE_EVENT, ['region' => 'eu']);
+        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT, ['region' => 'us']);
+        $this->accumulator->collect('t1', 'requests', 20, Usage::TYPE_EVENT, ['region' => 'eu']);
 
         // Distinct tags = distinct entries
         $this->assertEquals(2, $this->accumulator->count());
     }
 
+    public function testTenantPartitionsEntries(): void
+    {
+        // Same metric + tags but different tenants must not collapse
+        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t2', 'requests', 20, Usage::TYPE_EVENT);
+
+        $this->assertEquals(2, $this->accumulator->count());
+
+        $this->assertTrue($this->accumulator->flush());
+
+        $tenants = array_column($this->adapter->batches[0]['metrics'], 'tenant');
+        sort($tenants);
+        $this->assertEquals(['t1', 't2'], $tenants);
+    }
+
     public function testGaugesUseLastWriteWins(): void
     {
-        $this->accumulator->collect('storage', 100, Usage::TYPE_GAUGE);
-        $this->accumulator->collect('storage', 200, Usage::TYPE_GAUGE);
-        $this->accumulator->collect('storage', 300, Usage::TYPE_GAUGE);
+        $this->accumulator->collect('t1', 'storage', 100, Usage::TYPE_GAUGE);
+        $this->accumulator->collect('t1', 'storage', 200, Usage::TYPE_GAUGE);
+        $this->accumulator->collect('t1', 'storage', 300, Usage::TYPE_GAUGE);
 
         $this->assertEquals(1, $this->accumulator->count());
 
@@ -166,8 +181,8 @@ class AccumulatorTest extends TestCase
 
     public function testFlushSeparatesEventsAndGauges(): void
     {
-        $this->accumulator->collect('requests', 10, Usage::TYPE_EVENT);
-        $this->accumulator->collect('storage', 100, Usage::TYPE_GAUGE);
+        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'storage', 100, Usage::TYPE_GAUGE);
 
         $this->assertTrue($this->accumulator->flush());
 
@@ -183,7 +198,7 @@ class AccumulatorTest extends TestCase
 
     public function testFailedFlushRetainsBuffer(): void
     {
-        $this->accumulator->collect('requests', 10, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT);
 
         $this->adapter->succeed = false;
         $this->assertFalse($this->accumulator->flush());
@@ -218,19 +233,19 @@ class AccumulatorTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Metric name cannot be empty');
-        $this->accumulator->collect('', 10, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', '', 10, Usage::TYPE_EVENT);
     }
 
     public function testNegativeValueThrows(): void
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Value cannot be negative');
-        $this->accumulator->collect('requests', -1, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'requests', -1, Usage::TYPE_EVENT);
     }
 
     public function testInvalidTypeThrows(): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        $this->accumulator->collect('requests', 10, 'invalid');
+        $this->accumulator->collect('t1', 'requests', 10, 'invalid');
     }
 }

@@ -98,8 +98,6 @@ class ClickHouse extends SQL
 
     private readonly RequestFactory $requestFactory;
 
-    protected ?string $tenant = null;
-
     protected readonly bool $sharedTables;
 
     protected readonly string $namespace;
@@ -372,20 +370,24 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Set the tenant ID for multi-tenant support.
+     * Prepend a tenant filter to the query list (shared-tables mode only).
      *
-     * Tenant is the one piece of adapter configuration that legitimately
-     * changes over an instance's lifetime — a single adapter serves many
-     * tenants across requests — so it stays a mutable setter while the rest
-     * of the configuration is fixed at construction.
+     * In non-shared mode the tables have no tenant column, so the tenant is
+     * ignored. Threading the scope in as a normal query lets the existing
+     * parse/where pipeline bind and filter it like any other column.
      *
-     * @param string|null $tenant
-     * @return self
+     * @param array<Query> $queries
+     * @return array<Query>
      */
-    public function setTenant(?string $tenant): self
+    private function scopeToTenant(string $tenant, array $queries): array
     {
-        $this->tenant = $tenant;
-        return $this;
+        if (!$this->sharedTables) {
+            return $queries;
+        }
+
+        array_unshift($queries, Query::equal('tenant', [$tenant]));
+
+        return $queries;
     }
 
     /**
@@ -1258,11 +1260,11 @@ class ClickHouse extends SQL
             $tags = $metricData['tags'] ?? [];
             $this->validateMetricData($metric, $value, $type, $tags, $index);
 
-            if (array_key_exists('$tenant', $metricData)) {
-                $tenantValue = $metricData['$tenant'];
+            if (array_key_exists('tenant', $metricData)) {
+                $tenantValue = $metricData['tenant'];
 
                 if ($tenantValue !== null && !is_string($tenantValue)) {
-                    throw new Exception("Metric #{$index}: '\$tenant' must be a string or null, got " . gettype($tenantValue));
+                    throw new Exception("Metric #{$index}: 'tenant' must be a string or null, got " . gettype($tenantValue));
                 }
             }
         }
@@ -1341,11 +1343,7 @@ class ClickHouse extends SQL
      */
     private function resolveTenantFromMetric(array $metricData): ?string
     {
-        $tenant = array_key_exists('$tenant', $metricData) ? $metricData['$tenant'] : $this->tenant;
-
-        if ($tenant === null) {
-            return null;
-        }
+        $tenant = $metricData['tenant'] ?? null;
 
         if (is_string($tenant)) {
             return $tenant;
@@ -1367,9 +1365,11 @@ class ClickHouse extends SQL
      * @return array<Metric>
      * @throws Exception
      */
-    public function find(array $queries = [], ?string $type = null): array
+    public function find(string $tenant, array $queries = [], ?string $type = null): array
     {
         $this->setOperationContext('find()');
+
+        $queries = $this->scopeToTenant($tenant, $queries);
 
         if ($type !== null) {
             return $this->findFromTable($queries, $type);
@@ -1695,9 +1695,11 @@ class ClickHouse extends SQL
      * @return int
      * @throws Exception
      */
-    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
+    public function count(string $tenant, array $queries = [], ?string $type = null, ?int $max = null): int
     {
         $this->setOperationContext('count()');
+
+        $queries = $this->scopeToTenant($tenant, $queries);
 
         if ($type !== null) {
             return $this->countFromTable($queries, $type, $max);
@@ -1782,9 +1784,11 @@ class ClickHouse extends SQL
      * @return int
      * @throws Exception
      */
-    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
+    public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
     {
         $this->setOperationContext('sum()');
+
+        $queries = $this->scopeToTenant($tenant, $queries);
 
         if ($type === Usage::TYPE_EVENT && $attribute === 'value') {
             return $this->routedSum($queries, 'sum');
@@ -2497,9 +2501,11 @@ class ClickHouse extends SQL
      * @return array<Metric>
      * @throws Exception
      */
-    public function findDaily(array $queries = []): array
+    public function findDaily(string $tenant, array $queries = []): array
     {
         $this->setOperationContext('findDaily()');
+
+        $queries = $this->scopeToTenant($tenant, $queries);
 
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
 
@@ -2545,9 +2551,11 @@ class ClickHouse extends SQL
      * @return int
      * @throws Exception
      */
-    public function sumDaily(array $queries = [], string $attribute = 'value'): int
+    public function sumDaily(string $tenant, array $queries = [], string $attribute = 'value'): int
     {
         $this->setOperationContext('sumDaily()');
+
+        $queries = $this->scopeToTenant($tenant, $queries);
 
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
         $this->validateDailyAttributeName($attribute);
@@ -2578,13 +2586,15 @@ class ClickHouse extends SQL
      * @return array<string, int>
      * @throws Exception
      */
-    public function sumDailyBatch(array $metrics, array $queries = []): array
+    public function sumDailyBatch(string $tenant, array $metrics, array $queries = []): array
     {
         if (empty($metrics)) {
             return [];
         }
 
         $this->setOperationContext('sumDailyBatch()');
+
+        $queries = $this->scopeToTenant($tenant, $queries);
 
         foreach ($queries as $query) {
             $attr = $query->getAttribute();
@@ -2655,7 +2665,7 @@ class ClickHouse extends SQL
      * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
      * @throws Exception
      */
-    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
+    public function getTimeSeries(string $tenant, array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
     {
         if (empty($metrics)) {
             return [];
@@ -2666,6 +2676,8 @@ class ClickHouse extends SQL
         }
 
         $this->setOperationContext('getTimeSeries()');
+
+        $queries = $this->scopeToTenant($tenant, $queries);
 
         // Initialize result structure
         $output = [];
@@ -2758,13 +2770,7 @@ class ClickHouse extends SQL
         $params['start_date'] = $this->formatDateTime($startDate);
         $params['end_date'] = $this->formatDateTime($endDate);
 
-        // Build tenant filter
-        $tenantFilter = '';
-        if ($this->sharedTables && $this->tenant !== null) {
-            $tenantFilter = ' AND tenant = {tenant:Nullable(String)}';
-            $params['tenant'] = $this->tenant;
-        }
-
+        // Tenant scoping arrives as a normal query filter (see scopeToTenant).
         $additionalWhere = '';
         if (!empty($additionalFilters)) {
             $additionalWhere = ' AND ' . implode(' AND ', $additionalFilters);
@@ -2782,7 +2788,7 @@ class ClickHouse extends SQL
             FROM {$fromTable}
             WHERE metric IN ({$metricInClause})
                 AND time BETWEEN {start_date:DateTime64(3, 'UTC')} AND {end_date:DateTime64(3, 'UTC')}
-                {$tenantFilter}{$additionalWhere}
+                {$additionalWhere}
             GROUP BY metric, bucket
             ORDER BY bucket ASC
             FORMAT JSON
@@ -2876,9 +2882,11 @@ class ClickHouse extends SQL
      * @return int
      * @throws Exception
      */
-    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
+    public function getTotal(string $tenant, string $metric, array $queries = [], ?string $type = null): int
     {
         $this->setOperationContext('getTotal()');
+
+        $queries = $this->scopeToTenant($tenant, $queries);
 
         if ($type === Usage::TYPE_EVENT) {
             return $this->getTotalFromEvents($metric, $queries);
@@ -2970,13 +2978,15 @@ class ClickHouse extends SQL
      * @return array<string, int>
      * @throws Exception
      */
-    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
+    public function getTotalBatch(string $tenant, array $metrics, array $queries = [], ?string $type = null): array
     {
         if (empty($metrics)) {
             return [];
         }
 
         $this->setOperationContext('getTotalBatch()');
+
+        $queries = $this->scopeToTenant($tenant, $queries);
 
         // Initialize all metrics to 0
         $totals = \array_fill_keys($metrics, 0);
@@ -3066,29 +3076,20 @@ class ClickHouse extends SQL
     /**
      * Build WHERE clause from filters with optional tenant filtering.
      *
+     * Tenant scoping is threaded in as a normal query filter (see
+     * scopeToTenant()), so it arrives here already folded into $filters.
+     *
      * @param array<string> $filters
      * @param array<string, mixed> $params
-     * @param bool $includeTenant
      * @return array{clause: string, params: array<string, mixed>}
      */
-    private function buildWhereClause(array $filters, array $params = [], bool $includeTenant = true): array
+    private function buildWhereClause(array $filters, array $params = []): array
     {
-        $conditions = $filters;
-        $whereParams = $params;
-
-        if ($includeTenant) {
-            $tenantFilter = $this->getTenantFilter();
-            if ($tenantFilter) {
-                $conditions[] = $tenantFilter;
-                $whereParams['tenant'] = $this->tenant;
-            }
-        }
-
-        $clause = !empty($conditions) ? ' WHERE ' . implode(' AND ', $conditions) : '';
+        $clause = !empty($filters) ? ' WHERE ' . implode(' AND ', $filters) : '';
 
         return [
             'clause' => $clause,
-            'params' => $whereParams
+            'params' => $params
         ];
     }
 
@@ -3680,20 +3681,6 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Build tenant filter clause.
-     *
-     * @return string
-     */
-    private function getTenantFilter(): string
-    {
-        if (!$this->sharedTables || $this->tenant === null) {
-            return '';
-        }
-
-        return "tenant = {tenant:Nullable(String)}";
-    }
-
-    /**
      * Purge usage metrics matching the given queries.
      * Deletes from the specified table(s).
      *
@@ -3708,9 +3695,11 @@ class ClickHouse extends SQL
      * @param string|null $type 'event', 'gauge', or null (purge both)
      * @throws Exception
      */
-    public function purge(array $queries = [], ?string $type = null): bool
+    public function purge(string $tenant, array $queries = [], ?string $type = null): bool
     {
         $this->setOperationContext('purge()');
+
+        $queries = $this->scopeToTenant($tenant, $queries);
 
         $typesToPurge = [];
         if ($type === Usage::TYPE_EVENT || $type === null) {

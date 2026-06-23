@@ -9,43 +9,12 @@ use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
 /**
  * Shared base for ClickHouse adapter integration tests.
  *
- * Centralizes the env-driven adapter wiring and a handful of reflection
- * helpers that every test in this directory needs (database name lookup,
- * private query() / table-name resolver invocation).
+ * Holds only the reflection helpers that need access to private adapter
+ * internals (database name lookup, private query() / table-name resolver).
+ * Adapter construction is intentionally inlined in each test for clarity.
  */
 abstract class ClickHouseTestCase extends TestCase
 {
-    /**
-     * Build a ClickHouse adapter from the standard test env variables.
-     * Subclasses override namespace and tenant to keep test data isolated.
-     */
-    protected function makeAdapter(string $namespace, ?string $tenant = '1'): ClickHouseAdapter
-    {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $database = getenv('CLICKHOUSE_DATABASE') ?: 'default';
-
-        $adapter = new ClickHouseAdapter(
-            $host,
-            $username,
-            $password,
-            $port,
-            $secure,
-            namespace: $namespace,
-            database: $database,
-            sharedTables: true,
-        );
-        if ($tenant !== null) {
-            $adapter->setTenant($tenant);
-        }
-
-        return $adapter;
-    }
-
     /**
      * Read the adapter's `database` property (private).
      */

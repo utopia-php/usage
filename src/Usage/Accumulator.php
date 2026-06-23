@@ -17,9 +17,11 @@ class Accumulator
 
     /**
      * In-memory buffer for metrics.
-     * Keyed by "{metric}:{type}:{tagsHash}" — events are summed, gauges use last-write-wins.
+     * Keyed by "{tenant}:{metric}:{type}:{tagsHash}" — events are summed, gauges
+     * use last-write-wins. Tenant is part of the key so metrics for different
+     * tenants never collapse into one entry.
      *
-     * @var array<string, array{metric: string, value: int, type: string, tags: array<string, mixed>}>
+     * @var array<string, array{tenant: string, metric: string, value: int, type: string, tags: array<string, mixed>}>
      */
     private array $buffer = [];
 
@@ -42,13 +44,14 @@ class Accumulator
      * For gauge type: last-write-wins semantics.
      * No period fan-out — raw timestamps are used.
      *
+     * @param string $tenant Tenant scope (shared-tables mode)
      * @param string $metric Metric name
      * @param int $value Value
      * @param string $type Metric type: 'event' or 'gauge'
      * @param array<string,mixed> $tags Optional tags
      * @return self
      */
-    public function collect(string $metric, int $value, string $type, array $tags = []): self
+    public function collect(string $tenant, string $metric, int $value, string $type, array $tags = []): self
     {
         if (empty($metric)) {
             throw new \InvalidArgumentException('Metric name cannot be empty');
@@ -61,14 +64,15 @@ class Accumulator
         }
 
         $tagsHash = !empty($tags) ? md5(json_encode($tags, JSON_THROW_ON_ERROR)) : '';
-        $key = $metric . ':' . $type . ':' . $tagsHash;
+        $key = $tenant . ':' . $metric . ':' . $type . ':' . $tagsHash;
 
         if ($type === Usage::TYPE_EVENT && isset($this->buffer[$key])) {
-            // Additive: sum values for the same metric + tags combination
+            // Additive: sum values for the same tenant + metric + tags combination
             $this->buffer[$key]['value'] += $value;
         } else {
             // New event entry, or gauge (last-write-wins)
             $this->buffer[$key] = [
+                'tenant' => $tenant,
                 'metric' => $metric,
                 'value' => $value,
                 'type' => $type,

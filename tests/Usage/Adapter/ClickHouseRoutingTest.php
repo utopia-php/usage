@@ -20,21 +20,30 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
     protected function setUp(): void
     {
-        $this->adapter = $this->makeAdapter('utopia_usage_routing');
+        $this->adapter = new ClickHouseAdapter(
+            getenv('CLICKHOUSE_HOST') ?: 'clickhouse',
+            getenv('CLICKHOUSE_USER') ?: 'default',
+            getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse',
+            (int) (getenv('CLICKHOUSE_PORT') ?: 8123),
+            (bool) (getenv('CLICKHOUSE_SECURE') ?: false),
+            namespace: 'utopia_usage_routing',
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+            sharedTables: true,
+        );
         $this->usage = new Usage($this->adapter);
         $this->usage->setup();
-        $this->usage->purge();
+        $this->usage->purge('1');
 
         $this->seedHistoricalRow('routed.metric', 100, '-5 days', ['path' => '/v1/a']);
         $this->seedHistoricalRow('routed.metric', 200, '-3 days', ['path' => '/v1/b']);
         $this->assertTrue($this->usage->addBatch([
-            ['metric' => 'routed.metric', 'value' => 50, 'tags' => ['path' => '/v1/c']],
+            ['tenant' => '1', 'metric' => 'routed.metric', 'value' => 50, 'tags' => ['path' => '/v1/c']],
         ], Usage::TYPE_EVENT));
     }
 
     protected function tearDown(): void
     {
-        $this->usage->purge();
+        $this->usage->purge('1');
     }
 
     /**
@@ -74,7 +83,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
         $rawSum = $this->sumRaw('routed.metric', $start, $end);
 
-        $sum = $this->usage->sum([
+        $sum = $this->usage->sum('1', [
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
@@ -97,7 +106,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
         $rawSum = $this->sumRaw('routed.metric', $start, $end);
 
-        $sum = $this->usage->sum([
+        $sum = $this->usage->sum('1', [
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
@@ -121,7 +130,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $start = (new DateTime('-7 days 12:30:00', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
         $end = (new DateTime('-2 days 12:30:00', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
 
-        $this->usage->sum([
+        $this->usage->sum('1', [
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
@@ -141,7 +150,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
         $rawSum = $this->sumRaw('routed.metric', $start, $end);
 
-        $sum = $this->usage->sum([
+        $sum = $this->usage->sum('1', [
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
@@ -162,7 +171,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
         $rawSum = $this->sumRaw('routed.metric', $start, $end);
 
-        $sum = $this->usage->sum([
+        $sum = $this->usage->sum('1', [
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
             Query::equal('metric', ['routed.metric']),
@@ -181,7 +190,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
         $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
-        $this->usage->sum([
+        $this->usage->sum('1', [
             Query::equal('metric', ['routed.metric']),
             Query::equal('path', ['/v1/a']),
             Query::greaterThanEqual('time', $start),
@@ -200,7 +209,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
         $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
-        $this->usage->sum([
+        $this->usage->sum('1', [
             Query::equal('metric', ['routed.metric']),
             Query::equal('country', ['us']),
             Query::greaterThanEqual('time', $start),
@@ -222,7 +231,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $start = (new DateTime('-2 days 14:00:00', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
         $end = (new DateTime('+1 hour', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
 
-        $sum = $this->usage->sum([
+        $sum = $this->usage->sum('1', [
             Query::equal('metric', [$metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
@@ -241,7 +250,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
         $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
 
-        $this->usage->sum([
+        $this->usage->sum('1', [
             UsageQuery::groupByInterval('time', '1h'),
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
@@ -262,7 +271,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $endLoose = (new DateTime('+5 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
         $endTighter = (new DateTime('-1 day', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
 
-        $this->usage->sum([
+        $this->usage->sum('1', [
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
             Query::greaterThanEqual('time', $startTighter),
@@ -283,7 +292,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
         $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
 
-        $this->usage->sum([
+        $this->usage->sum('1', [
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
         ], 'value', Usage::TYPE_EVENT);
@@ -298,7 +307,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $this->adapter->clearRouteLog();
 
         try {
-            $this->usage->sum([
+            $this->usage->sum('1', [
                 Query::equal('metric', ['routed.metric']),
                 Query::greaterThanEqual('time', 'not-a-date'),
                 Query::lessThanEqual('time', 'not-a-date-either'),
@@ -321,7 +330,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
      */
     public function testNarrowPurgeWithNoTimeBoundDoesNotWipeDailyMv(): void
     {
-        $this->usage->purge();
+        $this->usage->purge('1');
 
         // Seed two metrics on two different days; let the daily MV
         // capture both as fully closed-day rows.
@@ -335,12 +344,12 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         // bound. The raw delete narrows on path; the daily side has
         // no path column so the legacy logic would fall through to
         // DELETE WHERE 1=1 and wipe both metrics' daily rows.
-        $this->usage->purge([
+        $this->usage->purge('1', [
             Query::equal('path', ['/v1/remove']),
         ], Usage::TYPE_EVENT);
 
         $this->adapter->clearRouteLog();
-        $keepSum = $this->usage->sum([
+        $keepSum = $this->usage->sum('1', [
             Query::equal('metric', ['purge.keep']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
@@ -358,7 +367,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
      */
     public function testValueFilterPurgeDoesNotMatchAggregateDailyRows(): void
     {
-        $this->usage->purge();
+        $this->usage->purge('1');
 
         // Seed two raw rows whose values sum to 10 on the same day,
         // so the daily MV row has value = 10. A naive purge with
@@ -369,14 +378,14 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
         $end = (new DateTime('-1 day', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
 
-        $this->usage->purge([
+        $this->usage->purge('1', [
             Query::equal('value', [10]),
         ], Usage::TYPE_EVENT);
 
         // value is raw-only, so the routed sum stays on raw — it
         // sees the still-present rows. The point of this test is the
         // daily MV; check it directly via sumDaily.
-        $dailySum = $this->usage->sumDaily([
+        $dailySum = $this->usage->sumDaily('1', [
             Query::equal('metric', ['purge.value']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),

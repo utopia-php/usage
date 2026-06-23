@@ -28,7 +28,10 @@ abstract class Adapter
      * For events, path/method/status/resource/resourceId are extracted from tags
      * into dedicated columns; remaining tags stay in the tags JSON.
      *
-     * @param  array<array{metric: string, value: int, tags?: array<string,mixed>}>  $metrics
+     * Each metric carries its own `tenant` (shared-tables mode), so a single
+     * batch may span multiple tenants.
+     *
+     * @param  array<array{tenant: string, metric: string, value: int, tags?: array<string,mixed>}>  $metrics
      * @param  string  $type  Metric type: 'event' or 'gauge' — determines which table to write to
      * @param  int  $batchSize  Maximum number of metrics per INSERT statement
      */
@@ -40,6 +43,7 @@ abstract class Adapter
      * Groups data by the specified interval (1h or 1d) and applies
      * SUM for event metrics and argMax for gauge metrics.
      *
+     * @param  string  $tenant  Tenant scope (shared-tables mode)
      * @param  array<string>  $metrics  List of metric names
      * @param  string  $interval  Aggregation interval: '1h' or '1d'
      * @param  string  $startDate  Start datetime string
@@ -49,7 +53,7 @@ abstract class Adapter
      * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
      */
-    abstract public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array;
+    abstract public function getTimeSeries(string $tenant, array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array;
 
     /**
      * Get total value for a single metric.
@@ -57,42 +61,46 @@ abstract class Adapter
      * Returns sum for event metrics, latest value for gauge metrics.
      * When $type is null, queries both tables.
      *
+     * @param  string  $tenant  Tenant scope (shared-tables mode)
      * @param  string  $metric  Metric name
      * @param  array<\Utopia\Query\Query>  $queries  Additional query filters
      * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      * @return int
      */
-    abstract public function getTotal(string $metric, array $queries = [], ?string $type = null): int;
+    abstract public function getTotal(string $tenant, string $metric, array $queries = [], ?string $type = null): int;
 
     /**
      * Get totals for multiple metrics in a single query.
      *
      * Returns sum for event metrics, latest value for gauge metrics.
      *
+     * @param  string  $tenant  Tenant scope (shared-tables mode)
      * @param  array<string>  $metrics  List of metric names
      * @param  array<\Utopia\Query\Query>  $queries  Additional query filters
      * @param  string|null  $type  Metric type: 'event', 'gauge', or null (query both)
      * @return array<string, int>
      */
-    abstract public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array;
+    abstract public function getTotalBatch(string $tenant, array $metrics, array $queries = [], ?string $type = null): array;
 
     /**
      * Purge usage metrics matching the given queries.
      * When no queries are provided, all metrics are deleted.
      *
+     * @param string $tenant Tenant scope (shared-tables mode)
      * @param array<\Utopia\Query\Query> $queries
      * @param string|null $type Metric type: 'event', 'gauge', or null (purge both)
      */
-    abstract public function purge(array $queries = [], ?string $type = null): bool;
+    abstract public function purge(string $tenant, array $queries = [], ?string $type = null): bool;
 
     /**
      * Find metrics using Query objects.
      *
+     * @param string $tenant Tenant scope (shared-tables mode)
      * @param array<\Utopia\Query\Query> $queries
      * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
      * @return array<Metric>
      */
-    abstract public function find(array $queries = [], ?string $type = null): array;
+    abstract public function find(string $tenant, array $queries = [], ?string $type = null): array;
 
     /**
      * Count metrics using Query objects.
@@ -102,12 +110,13 @@ abstract class Adapter
      * This keeps large counts cheap for endpoints that only need a capped
      * total. When $max is null the count is unbounded.
      *
+     * @param string $tenant Tenant scope (shared-tables mode)
      * @param array<\Utopia\Query\Query> $queries
      * @param string|null $type Metric type: 'event', 'gauge', or null (count both)
      * @param int|null $max Optional upper bound for the count (inclusive)
      * @return int
      */
-    abstract public function count(array $queries = [], ?string $type = null, ?int $max = null): int;
+    abstract public function count(string $tenant, array $queries = [], ?string $type = null, ?int $max = null): int;
 
     /**
      * Sum metric values using Query objects.
@@ -115,12 +124,13 @@ abstract class Adapter
      * Events-only by default because summing gauges is semantically meaningless
      * (adding point-in-time snapshots doesn't produce a useful total).
      *
+     * @param string $tenant Tenant scope (shared-tables mode)
      * @param array<\Utopia\Query\Query> $queries
      * @param string $attribute Attribute to sum (default: 'value')
      * @param string $type Metric type: 'event' or 'gauge'
      * @return int
      */
-    abstract public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int;
+    abstract public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int;
 
     /**
      * Find event metrics from the pre-aggregated daily table.
@@ -130,10 +140,11 @@ abstract class Adapter
      * Note: Daily MV only stores event metrics. This method always queries
      * the daily events table — gauges are never pre-aggregated.
      *
+     * @param string $tenant Tenant scope (shared-tables mode)
      * @param array<\Utopia\Query\Query> $queries  Filters (metric, time range, resource, etc.)
      * @return array<Metric>
      */
-    abstract public function findDaily(array $queries = []): array;
+    abstract public function findDaily(string $tenant, array $queries = []): array;
 
     /**
      * Sum event metric values from the pre-aggregated daily table.
@@ -141,11 +152,12 @@ abstract class Adapter
      * Note: Daily MV only stores event metrics. This method always queries
      * the daily events table — gauges are never pre-aggregated.
      *
+     * @param string $tenant Tenant scope (shared-tables mode)
      * @param array<\Utopia\Query\Query> $queries
      * @param string $attribute Attribute to sum (default: 'value')
      * @return int
      */
-    abstract public function sumDaily(array $queries = [], string $attribute = 'value'): int;
+    abstract public function sumDaily(string $tenant, array $queries = [], string $attribute = 'value'): int;
 
     /**
      * Sum multiple event metrics from the pre-aggregated daily table in one query.
@@ -153,9 +165,10 @@ abstract class Adapter
      * Note: Daily MV only stores event metrics. This method always queries
      * the daily events table — gauges are never pre-aggregated.
      *
+     * @param string $tenant Tenant scope (shared-tables mode)
      * @param array<string> $metrics List of metric names
      * @param array<\Utopia\Query\Query> $queries Additional filters (e.g. date range)
      * @return array<string, int> Metric name => sum value
      */
-    abstract public function sumDailyBatch(array $metrics, array $queries = []): array;
+    abstract public function sumDailyBatch(string $tenant, array $metrics, array $queries = []): array;
 }

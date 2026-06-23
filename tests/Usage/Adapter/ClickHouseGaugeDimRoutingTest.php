@@ -26,10 +26,19 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
 
     protected function setUp(): void
     {
-        $this->adapter = $this->makeAdapter('utopia_usage_gauge_dim_routing');
+        $this->adapter = new ClickHouseAdapter(
+            getenv('CLICKHOUSE_HOST') ?: 'clickhouse',
+            getenv('CLICKHOUSE_USER') ?: 'default',
+            getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse',
+            (int) (getenv('CLICKHOUSE_PORT') ?: 8123),
+            (bool) (getenv('CLICKHOUSE_SECURE') ?: false),
+            namespace: 'utopia_usage_gauge_dim_routing',
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+            sharedTables: true,
+        );
         $this->usage = new Usage($this->adapter);
         $this->usage->setup();
-        $this->usage->purge();
+        $this->usage->purge('1');
 
         $this->seedHistoricalRow($this->metric, 100, '-5 days', ['service' => 'storage', 'resource' => 'file', 'resourceId' => 'f1']);
         $this->seedHistoricalRow($this->metric, 200, '-4 days', ['service' => 'storage', 'resource' => 'file', 'resourceId' => 'f2']);
@@ -37,13 +46,13 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
         $this->seedHistoricalRow($this->metric, 80, '-3 days', ['service' => 'functions', 'resource' => 'function', 'resourceId' => 'fn1']);
 
         $this->usage->addBatch([
-            ['metric' => $this->metric, 'value' => 999, 'tags' => ['service' => 'storage', 'resource' => 'file', 'resourceId' => 'f1']],
+            ['tenant' => '1', 'metric' => $this->metric, 'value' => 999, 'tags' => ['service' => 'storage', 'resource' => 'file', 'resourceId' => 'f1']],
         ], Usage::TYPE_GAUGE);
     }
 
     protected function tearDown(): void
     {
-        $this->usage->purge();
+        $this->usage->purge('1');
     }
 
     /**
@@ -109,7 +118,7 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $this->usage->find($queries, Usage::TYPE_GAUGE);
+        $this->usage->find('1', $queries, Usage::TYPE_GAUGE);
 
         $this->assertProjectionUsed($queryId, $expectedProjection);
     }
@@ -123,7 +132,7 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $this->usage->find([
+        $this->usage->find('1', [
             UsageQuery::groupByInterval('time', '1h'),
             UsageQuery::groupBy('service'),
             Query::equal('metric', [$this->metric]),
@@ -141,7 +150,7 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $this->usage->find([
+        $this->usage->find('1', [
             UsageQuery::groupBy('service'),
             Query::equal('metric', [$this->metric]),
             Query::equal('resourceId', ['x']),
@@ -159,7 +168,7 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $this->usage->find([
+        $this->usage->find('1', [
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
@@ -175,7 +184,7 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $this->usage->find([
+        $this->usage->find('1', [
             UsageQuery::groupBy('service'),
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),

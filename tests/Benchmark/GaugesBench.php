@@ -27,7 +27,7 @@ class GaugesBench extends BenchmarkBase
 
         $this->runBench('bench_gauges_latest_in_window', function (string $queryId) use ($start30d, $endPartial): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->getTotal(
+            $this->usage->getTotal($this->tenant, 
                 $this->metric,
                 [
                     Query::greaterThanEqual('time', $start30d),
@@ -39,7 +39,7 @@ class GaugesBench extends BenchmarkBase
 
         $this->runBench('bench_gauges_topN_service_30d', function (string $queryId) use ($start30d, $endClosed): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
+            $this->usage->find($this->tenant, [
                 UsageQuery::groupBy('service'),
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $start30d),
@@ -50,7 +50,7 @@ class GaugesBench extends BenchmarkBase
 
         $this->runBench('bench_gauges_topN_resource_30d', function (string $queryId) use ($start30d, $endClosed): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
+            $this->usage->find($this->tenant, [
                 UsageQuery::groupBy('resource'),
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $start30d),
@@ -61,7 +61,7 @@ class GaugesBench extends BenchmarkBase
 
         $this->runBench('bench_gauges_topN_service_today_partial', function (string $queryId) use ($start30d, $endPartial): void {
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->find([
+            $this->usage->find($this->tenant, [
                 UsageQuery::groupBy('service'),
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $start30d),
