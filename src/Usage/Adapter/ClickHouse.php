@@ -5,6 +5,7 @@ namespace Utopia\Usage\Adapter;
 use DateTime;
 use DateTimeZone;
 use Exception;
+use Psr\Http\Client\ClientInterface;
 use Throwable;
 use Utopia\Client;
 use Utopia\Client\Adapter\Curl\Client as CurlAdapter;
@@ -93,7 +94,7 @@ class ClickHouse extends SQL
     /** @var bool Whether to use HTTPS for ClickHouse HTTP interface */
     private bool $secure = false;
 
-    private Client $client;
+    private ClientInterface $client;
 
     private RequestFactory $requestFactory;
 
@@ -148,9 +149,11 @@ class ClickHouse extends SQL
      * @param  string  $password  ClickHouse password (default: '')
      * @param  int  $port  ClickHouse HTTP port (default: 8123)
      * @param  bool  $secure  Whether to use HTTPS (default: false)
-     * @param  Client|null  $client  HTTP transport. Defaults to a cURL client
-     *   with persistent connection reuse. Inject your own to control timeouts,
-     *   TLS, or retries — e.g. wrap an adapter in `Utopia\Client\Decorator\Retry`.
+     * @param  ClientInterface|null  $client  PSR-18 HTTP transport. Defaults to a
+     *   cURL client with persistent connection reuse. Inject your own to control
+     *   timeouts, TLS, or retries — e.g. wrap an adapter in
+     *   `Utopia\Client\Decorator\Retry`, or pass a `Utopia\Client\Pool` to share a
+     *   bounded set of connections across concurrent (coroutine) callers.
      */
     public function __construct(
         string $host,
@@ -158,7 +161,7 @@ class ClickHouse extends SQL
         string $password = '',
         int $port = self::DEFAULT_PORT,
         bool $secure = false,
-        ?Client $client = null
+        ?ClientInterface $client = null
     ) {
         $this->validateHost($host);
         $this->validatePort($port);
