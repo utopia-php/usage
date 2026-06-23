@@ -623,19 +623,12 @@ class Database extends SQL
     }
 
     /**
-     * Set the namespace prefix for table names.
-     *
-     * @param string $namespace
-     * @return self
-     */
-    public function setNamespace(string $namespace): self
-    {
-        $this->db->setNamespace($namespace);
-        return $this;
-    }
-
-    /**
      * Set the tenant ID for multi-tenant support.
+     *
+     * Tenant is the one piece of configuration that changes over an
+     * instance's lifetime (a single adapter serves many tenants across
+     * requests), so it stays a mutable setter. Namespace and shared-tables
+     * mode are configured directly on the injected Utopia\Database instance.
      *
      * @param string|null $tenant
      * @return self
@@ -649,18 +642,6 @@ class Database extends SQL
         }
 
         $this->db->setTenant($tenant !== null ? (int) $tenant : null);
-        return $this;
-    }
-
-    /**
-     * Enable or disable shared tables mode.
-     *
-     * @param bool $sharedTables
-     * @return self
-     */
-    public function setSharedTables(bool $sharedTables): self
-    {
-        $this->db->setSharedTables($sharedTables);
         return $this;
     }
 }

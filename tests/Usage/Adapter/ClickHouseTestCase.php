@@ -27,15 +27,20 @@ abstract class ClickHouseTestCase extends TestCase
         $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
         $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
 
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace($namespace);
-        $adapter->setSharedTables(true);
+        $database = getenv('CLICKHOUSE_DATABASE') ?: 'default';
+
+        $adapter = new ClickHouseAdapter(
+            $host,
+            $username,
+            $password,
+            $port,
+            $secure,
+            namespace: $namespace,
+            database: $database,
+            sharedTables: true,
+        );
         if ($tenant !== null) {
             $adapter->setTenant($tenant);
-        }
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $adapter->setDatabase($database);
         }
 
         return $adapter;
