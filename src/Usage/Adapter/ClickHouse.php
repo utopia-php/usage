@@ -8,6 +8,7 @@ use Exception;
 use Throwable;
 use Utopia\Client;
 use Utopia\Client\Adapter\Curl\Client as CurlAdapter;
+use Utopia\Psr7\ContentType;
 use Utopia\Psr7\Header;
 use Utopia\Psr7\Method;
 use Utopia\Psr7\Request\Factory as RequestFactory;
@@ -832,18 +833,26 @@ class ClickHouse extends SQL
             function (int $attempt) use ($sql, $params, $queryId): string {
                 $startTime = microtime(true);
                 $scheme = $this->secure ? 'https' : 'http';
-                $url = "{$scheme}://{$this->host}:{$this->port}/";
+
+                // ClickHouse HTTP interface: query parameters and query_id are
+                // URL query string; the SQL itself goes in the raw POST body.
+                // ClickHouse does not parse application/x-www-form-urlencoded
+                // bodies — submitting `query=...` form-encoded gets read as
+                // raw SQL and fails at position 1.
+                $queryParams = [];
                 if ($queryId !== null) {
-                    $url .= '?' . http_build_query(['query_id' => $queryId]);
+                    $queryParams['query_id'] = $queryId;
+                }
+                foreach ($params as $key => $value) {
+                    $queryParams['param_' . $key] = $this->formatParamValue($value);
+                }
+                $url = "{$scheme}://{$this->host}:{$this->port}/";
+                if ($queryParams !== []) {
+                    $url .= '?' . http_build_query($queryParams);
                 }
 
                 if ($attempt === 0) {
                     $this->requestCount++;
-                }
-
-                $body = ['query' => $sql];
-                foreach ($params as $key => $value) {
-                    $body['param_' . $key] = $this->formatParamValue($value);
                 }
 
                 $headers = ['X-ClickHouse-Database' => $this->database];
@@ -851,7 +860,7 @@ class ClickHouse extends SQL
                     $headers[Header::ACCEPT_ENCODING] = 'gzip';
                 }
 
-                $request = $this->requestFactory->form(Method::POST, $url, $body, $headers);
+                $request = $this->requestFactory->body(Method::POST, $url, $sql, ContentType::PLAIN_TEXT, $headers);
                 $response = $this->client->sendRequest($request);
                 $httpCode = $response->getStatusCode();
                 $bodyStr = (string) $response->getBody();
