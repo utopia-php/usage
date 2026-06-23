@@ -12,21 +12,21 @@
     "scripts": {
         "lint": "./vendor/bin/pint --test",
         "format": "./vendor/bin/pint",
-        "check": "./vendor/bin/phpstan analyse --level max src tests",
+        "check": "./vendor/bin/phpstan analyse -c phpstan.neon",
         "test": "./vendor/bin/phpunit --configuration phpunit.xml --testsuite \"Test Suite\"",
         "bench": "./vendor/bin/phpunit --configuration phpunit.xml --testsuite Benchmark"
     },
     "minimum-stability": "stable",
     "require": {
-        "php": ">=8.0",
-        "utopia-php/fetch": "^1.1",
+        "php": ">=8.4",
+        "utopia-php/client": "^0.1",
         "utopia-php/database": "5.*|6.0.*",
         "utopia-php/query": "0.1.*"
     },
     "require-dev": {
         "phpunit/phpunit": "^9.5",
         "utopia-php/cache": "^3.0",
-        "phpstan/phpstan": "1.*",
+        "phpstan/phpstan": "^2.0",
         "laravel/pint": "1.*"
     },
     "autoload": {

@@ -6,7 +6,11 @@ use DateTime;
 use DateTimeZone;
 use Exception;
 use Throwable;
-use Utopia\Fetch\Client;
+use Utopia\Client;
+use Utopia\Client\Adapter\Curl\Client as CurlAdapter;
+use Utopia\Psr7\Header;
+use Utopia\Psr7\Method;
+use Utopia\Psr7\Request\Factory as RequestFactory;
 use Utopia\Query\Query;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
@@ -92,6 +96,8 @@ class ClickHouse extends SQL
 
     private Client $client;
 
+    private RequestFactory $requestFactory;
+
     protected ?string $tenant = null;
 
     protected bool $sharedTables = false;
@@ -172,11 +178,17 @@ class ClickHouse extends SQL
         $this->password = $password;
         $this->secure = $secure;
 
-        // Initialize the HTTP client for connection reuse
-        $this->client = new Client();
-        $this->client->addHeader('X-ClickHouse-User', $this->username);
-        $this->client->addHeader('X-ClickHouse-Key', $this->password);
-        $this->client->setTimeout(30_000); // 30 seconds
+        // Persistent HTTP client. `withConnectionReuse()` keeps the underlying
+        // cURL handle alive across requests so the TCP/TLS handshake is paid
+        // once per (origin, adapter) pair, and per-request headers are layered
+        // on the immutable Request via the factory.
+        $this->client = (new Client((new CurlAdapter())->withConnectionReuse()))
+            ->withTimeout(30)
+            ->withHeaders([
+                'X-ClickHouse-User' => $this->username,
+                'X-ClickHouse-Key'  => $this->password,
+            ]);
+        $this->requestFactory = new RequestFactory();
     }
 
     /**
@@ -194,7 +206,7 @@ class ClickHouse extends SQL
         if ($milliseconds > 600000) {
             throw new Exception('Timeout cannot exceed 600000 milliseconds (10 minutes)');
         }
-        $this->client->setTimeout($milliseconds);
+        $this->client = $this->client->withTimeout($milliseconds / 1000);
         return $this;
     }
 
@@ -223,9 +235,15 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Enable or disable HTTP keep-alive for connection pooling.
+     * Keep-alive / TCP connection reuse is now always on — the underlying
+     * `Utopia\Client` is constructed with `withConnectionReuse()` and the
+     * cURL handle is held for the adapter's lifetime, so the TCP/TLS
+     * handshake is paid once and every subsequent query reuses the socket.
      *
-     * @param bool $enable Whether to enable keep-alive (default: true)
+     * The flag is preserved for source-compatibility with existing callers;
+     * passing `false` no longer disables reuse.
+     *
+     * @param bool $enable No-op; kept for API compatibility.
      * @return self
      */
     public function setKeepAlive(bool $enable): self
@@ -819,18 +837,6 @@ class ClickHouse extends SQL
                     $url .= '?' . http_build_query(['query_id' => $queryId]);
                 }
 
-                $this->client->addHeader('X-ClickHouse-Database', $this->database);
-
-                if ($this->enableKeepAlive) {
-                    $this->client->addHeader('Connection', 'keep-alive');
-                } else {
-                    $this->client->addHeader('Connection', 'close');
-                }
-
-                if ($this->enableCompression) {
-                    $this->client->addHeader('Accept-Encoding', 'gzip');
-                }
-
                 if ($attempt === 0) {
                     $this->requestCount++;
                 }
@@ -840,16 +846,17 @@ class ClickHouse extends SQL
                     $body['param_' . $key] = $this->formatParamValue($value);
                 }
 
-                $response = $this->client->fetch(
-                    url: $url,
-                    method: Client::METHOD_POST,
-                    body: $body
-                );
+                $headers = ['X-ClickHouse-Database' => $this->database];
+                if ($this->enableCompression) {
+                    $headers[Header::ACCEPT_ENCODING] = 'gzip';
+                }
+
+                $request = $this->requestFactory->form(Method::POST, $url, $body, $headers);
+                $response = $this->client->sendRequest($request);
                 $httpCode = $response->getStatusCode();
+                $bodyStr = (string) $response->getBody();
 
                 if ($httpCode !== 200) {
-                    $bodyStr = $response->getBody();
-                    $bodyStr = is_string($bodyStr) ? $bodyStr : '';
                     $duration = microtime(true) - $startTime;
                     $baseError = "ClickHouse query failed with HTTP {$httpCode}: {$bodyStr}";
                     $errorMsg = $this->buildErrorMessage($baseError, null, $sql);
@@ -858,11 +865,9 @@ class ClickHouse extends SQL
                     throw new Exception($errorMsg . '|HTTP_CODE:' . $httpCode);
                 }
 
-                $body = $response->getBody();
-                $result = is_string($body) ? $body : '';
                 $duration = microtime(true) - $startTime;
                 $this->logQuery($sql, $params, $duration, true, null, $attempt);
-                return $result;
+                return $bodyStr;
             },
             function (Exception $e, ?int $httpCode): bool {
                 $exceptionHttpCode = null;
@@ -912,19 +917,6 @@ class ClickHouse extends SQL
                 }
                 $url = "{$scheme}://{$this->host}:{$this->port}/?" . http_build_query($queryParams);
 
-                $this->client->addHeader('X-ClickHouse-Database', $this->database);
-                $this->client->addHeader('Content-Type', 'application/x-ndjson');
-
-                if ($this->enableKeepAlive) {
-                    $this->client->addHeader('Connection', 'keep-alive');
-                } else {
-                    $this->client->addHeader('Connection', 'close');
-                }
-
-                if ($this->enableCompression) {
-                    $this->client->addHeader('Accept-Encoding', 'gzip');
-                }
-
                 if ($attempt === 0) {
                     $this->requestCount++;
                 }
@@ -934,32 +926,28 @@ class ClickHouse extends SQL
                 $sql = "INSERT INTO {$escapedTable} FORMAT JSONEachRow";
                 $params = ['rows' => count($data), 'bytes' => strlen($body)];
 
-                try {
-                    $response = $this->client->fetch(
-                        url: $url,
-                        method: Client::METHOD_POST,
-                        body: $body
-                    );
-
-                    $httpCode = $response->getStatusCode();
-
-                    if ($httpCode !== 200) {
-                        $bodyStr = $response->getBody();
-                        $bodyStr = is_string($bodyStr) ? $bodyStr : '';
-                        $duration = microtime(true) - $startTime;
-                        $rowCount = count($data);
-                        $baseError = "ClickHouse insert failed with HTTP {$httpCode}: {$bodyStr}";
-                        $errorMsg = $this->buildErrorMessage($baseError, $table, "INSERT INTO {$table} ({$rowCount} rows)");
-                        $this->logQuery($sql, $params, $duration, false, $errorMsg, $attempt);
-
-                        throw new Exception($errorMsg . '|HTTP_CODE:' . $httpCode);
-                    }
-
-                    $duration = microtime(true) - $startTime;
-                    $this->logQuery($sql, $params, $duration, true, null, $attempt);
-                } finally {
-                    $this->client->removeHeader('Content-Type');
+                $headers = ['X-ClickHouse-Database' => $this->database];
+                if ($this->enableCompression) {
+                    $headers[Header::ACCEPT_ENCODING] = 'gzip';
                 }
+
+                $request = $this->requestFactory->body(Method::POST, $url, $body, 'application/x-ndjson', $headers);
+                $response = $this->client->sendRequest($request);
+                $httpCode = $response->getStatusCode();
+
+                if ($httpCode !== 200) {
+                    $bodyStr = (string) $response->getBody();
+                    $duration = microtime(true) - $startTime;
+                    $rowCount = count($data);
+                    $baseError = "ClickHouse insert failed with HTTP {$httpCode}: {$bodyStr}";
+                    $errorMsg = $this->buildErrorMessage($baseError, $table, "INSERT INTO {$table} ({$rowCount} rows)");
+                    $this->logQuery($sql, $params, $duration, false, $errorMsg, $attempt);
+
+                    throw new Exception($errorMsg . '|HTTP_CODE:' . $httpCode);
+                }
+
+                $duration = microtime(true) - $startTime;
+                $this->logQuery($sql, $params, $duration, true, null, $attempt);
             },
             function (Exception $e, ?int $httpCode): bool {
                 // Never retry inserts. The underlying MergeTree engine has
