@@ -681,7 +681,6 @@ class ClickHouseTest extends TestCase
         $health = $adapter->healthCheck();
 
         // Assert basic structure
-        $this->assertIsArray($health);
         $this->assertArrayHasKey('healthy', $health);
         $this->assertArrayHasKey('host', $health);
         $this->assertArrayHasKey('port', $health);
@@ -712,7 +711,6 @@ class ClickHouseTest extends TestCase
         $health = $adapter->healthCheck();
 
         // Assert basic structure
-        $this->assertIsArray($health);
         $this->assertArrayHasKey('healthy', $health);
         $this->assertArrayHasKey('host', $health);
 
@@ -731,152 +729,6 @@ class ClickHouseTest extends TestCase
         if (isset($health['response_time'])) {
             $this->assertIsFloat($health['response_time']);
         }
-    }
-
-    /**
-     * Test setTimeout() method with valid timeout
-     */
-    public function testSetTimeoutValid(): void
-    {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-
-        // Test setting valid timeout
-        $result = $adapter->setTimeout(5000); // 5 seconds
-
-        // Should return self for chaining
-        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
-
-        // Test that it still works after setting timeout
-        $health = $adapter->healthCheck();
-        $this->assertTrue($health['healthy']);
-    }
-
-    /**
-     * Test setTimeout() with minimum timeout (1 second)
-     */
-    public function testSetTimeoutMinimum(): void
-    {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port);
-        $adapter->setTimeout(1000); // 1 second minimum
-
-        $this->assertTrue(true); // If we reach here, no exception was thrown
-    }
-
-    /**
-     * Test setTimeout() with maximum timeout (10 minutes)
-     */
-    public function testSetTimeoutMaximum(): void
-    {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port);
-        $adapter->setTimeout(600000); // 10 minutes maximum
-
-        $this->assertTrue(true); // If we reach here, no exception was thrown
-    }
-
-    /**
-     * Test setTimeout() with timeout below minimum
-     */
-    public function testSetTimeoutBelowMinimum(): void
-    {
-        $this->expectException(\Exception::class);
-        $this->expectExceptionMessage('Timeout must be at least 1000 milliseconds');
-
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port);
-        $adapter->setTimeout(999); // Below minimum
-    }
-
-    /**
-     * Test setTimeout() with timeout above maximum
-     */
-    public function testSetTimeoutAboveMaximum(): void
-    {
-        $this->expectException(\Exception::class);
-        $this->expectExceptionMessage('Timeout cannot exceed 600000 milliseconds');
-
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port);
-        $adapter->setTimeout(600001); // Above maximum
-    }
-
-    /**
-     * Test compression functionality
-     */
-    public function testCompression(): void
-    {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage_compression_test');
-        $adapter->setTenant('1');
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $adapter->setDatabase($database);
-        }
-
-        $usage = new Usage($adapter);
-        $usage->setup();
-
-        // Test enabling compression
-        $result = $adapter->setCompression(true);
-        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
-
-        // Test disabling compression
-        $result = $adapter->setCompression(false);
-        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
-
-        // Enable compression for all subsequent operations
-        $adapter->setCompression(true);
-
-        // Insert data using addBatch with compression enabled
-        $batchResult = $usage->addBatch([
-            ['metric' => 'compression.test.batch', 'value' => 50, 'tags' => ['service' => 'batch']],
-            ['metric' => 'compression.test.batch', 'value' => 75, 'tags' => ['service' => 'batch']],
-            ['metric' => 'compression.test.single', 'value' => 100, 'tags' => ['service' => 'single']],
-        ], Usage::TYPE_EVENT);
-        $this->assertTrue($batchResult);
-
-        // Verify find query works with compression
-        $metrics = $usage->find([], Usage::TYPE_EVENT);
-        $this->assertIsArray($metrics);
-
-        // Verify count query works with compression
-        $count = $usage->count([], Usage::TYPE_EVENT);
-        $this->assertIsInt($count);
-
-        // Verify sum operation works with compression
-        $sum = $usage->sum([
-            \Utopia\Query\Query::equal('metric', ['compression.test.batch']),
-        ], 'value', Usage::TYPE_EVENT);
-        $this->assertIsInt($sum);
     }
 
     /**
@@ -901,25 +753,12 @@ class ClickHouseTest extends TestCase
         $usage = new Usage($adapter);
         $usage->setup();
 
-        // Test enabling keep-alive
-        $result = $adapter->setKeepAlive(true);
-        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
-
-        // Test disabling keep-alive
-        $result = $adapter->setKeepAlive(false);
-        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
-
-        // Re-enable for testing
-        $adapter->setKeepAlive(true);
-
-        // Get initial stats
+        // Connection reuse is always on (the transport client holds the cURL
+        // handle for its lifetime). Stats expose the request counter so callers
+        // can confirm requests are flowing over the pooled connection.
         $stats = $adapter->getConnectionStats();
-        $this->assertIsArray($stats);
         $this->assertArrayHasKey('request_count', $stats);
-        $this->assertArrayHasKey('keep_alive_enabled', $stats);
-        $this->assertArrayHasKey('compression_enabled', $stats);
         $this->assertArrayHasKey('query_logging_enabled', $stats);
-        $this->assertTrue($stats['keep_alive_enabled']);
 
         $initialCount = $stats['request_count'];
 
@@ -937,114 +776,6 @@ class ClickHouseTest extends TestCase
     }
 
     /**
-     * Test retry logic configuration
-     */
-    public function testRetryConfiguration(): void
-    {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-
-        // Test setting max retries
-        $result = $adapter->setMaxRetries(5);
-        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
-
-        // Test setting retry delay
-        $result = $adapter->setRetryDelay(200);
-        $this->assertInstanceOf(ClickHouseAdapter::class, $result);
-
-        // Verify stats reflect configuration
-        $stats = $adapter->getConnectionStats();
-        $this->assertSame(5, $stats['max_retries']);
-        $this->assertSame(200, $stats['retry_delay']);
-
-        // Test valid retry range (0-10)
-        $adapter->setMaxRetries(0);
-        $stats = $adapter->getConnectionStats();
-        $this->assertSame(0, $stats['max_retries']);
-
-        $adapter->setMaxRetries(10);
-        $stats = $adapter->getConnectionStats();
-        $this->assertSame(10, $stats['max_retries']);
-    }
-
-    /**
-     * Test retry validation errors
-     */
-    public function testRetryValidation(): void
-    {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-
-        // Test max retries below minimum
-        $this->expectException(\Exception::class);
-        $this->expectExceptionMessage('Max retries must be between 0 and 10');
-        $adapter->setMaxRetries(-1);
-    }
-
-    /**
-     * Test retry delay validation
-     */
-    public function testRetryDelayValidation(): void
-    {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-
-        // Test retry delay below minimum
-        $this->expectException(\Exception::class);
-        $this->expectExceptionMessage('Retry delay must be between 10 and 5000 milliseconds');
-        $adapter->setRetryDelay(5);
-    }
-
-    /**
-     * Test retry logic with successful operations
-     */
-    public function testRetryWithSuccessfulOperations(): void
-    {
-        $host = getenv('CLICKHOUSE_HOST') ?: 'clickhouse';
-        $username = getenv('CLICKHOUSE_USER') ?: 'default';
-        $password = getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse';
-        $port = (int) (getenv('CLICKHOUSE_PORT') ?: 8123);
-        $secure = (bool) (getenv('CLICKHOUSE_SECURE') ?: false);
-
-        $adapter = new ClickHouseAdapter($host, $username, $password, $port, $secure);
-        $adapter->setNamespace('utopia_usage_retry_test');
-        $adapter->setTenant('1');
-        $adapter->setMaxRetries(2);
-        $adapter->setRetryDelay(50);
-
-        if ($database = getenv('CLICKHOUSE_DATABASE')) {
-            $adapter->setDatabase($database);
-        }
-
-        $usage = new Usage($adapter);
-        $usage->setup();
-
-        // These operations should succeed on first attempt (no retries needed)
-        $result = $usage->addBatch([
-            ['metric' => 'retry.test', 'value' => 100, 'tags' => ['service' => 'success']],
-        ], Usage::TYPE_EVENT);
-        $this->assertTrue($result);
-
-        $count = $usage->count([], Usage::TYPE_EVENT);
-        $this->assertIsInt($count);
-    }
-
-    /**
      * Test error messages include operation context
      */
     public function testErrorMessagesIncludeContext(): void
@@ -1059,7 +790,6 @@ class ClickHouseTest extends TestCase
         $adapter->setNamespace('utopia_usage_error_test');
         $adapter->setDatabase('nonexistent_db_for_testing_errors_12345');
         $adapter->setTenant('1');
-        $adapter->setMaxRetries(0); // Disable retries for faster test
 
         $usage = new Usage($adapter);
 

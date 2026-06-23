@@ -276,11 +276,11 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
         $raw = $this->queryRaw($this->adapter, $sql);
         $json = json_decode($raw, true);
-        if (!is_array($json) || empty($json['data'])) {
+        if (!is_array($json) || empty($json['data']) || !is_array($json['data'])) {
             return [];
         }
         $row = $json['data'][0];
-        $projections = $row['projections'] ?? [];
+        $projections = is_array($row) ? ($row['projections'] ?? []) : [];
         $out = [];
         foreach (is_array($projections) ? $projections : [] as $p) {
             if (is_string($p)) {

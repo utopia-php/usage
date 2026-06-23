@@ -132,8 +132,11 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $rawString = $this->queryRaw($legacyAdapter, "SHOW CREATE TABLE {$fullName} FORMAT JSON");
         $json = json_decode($rawString, true);
         $ddl = '';
-        if (is_array($json) && isset($json['data'][0]['statement']) && is_string($json['data'][0]['statement'])) {
-            $ddl = $json['data'][0]['statement'];
+        if (is_array($json) && isset($json['data']) && is_array($json['data']) && isset($json['data'][0]) && is_array($json['data'][0])) {
+            $statement = $json['data'][0]['statement'] ?? '';
+            if (is_string($statement)) {
+                $ddl = $statement;
+            }
         }
 
         $this->assertStringContainsString('`service` LowCardinality(Nullable(String))', $ddl);
@@ -145,7 +148,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $database = $this->databaseName($this->adapter);
         $raw = $this->queryRaw($this->adapter, "SHOW CREATE TABLE `{$database}`.`{$table}` FORMAT JSON");
         $json = json_decode($raw, true);
-        if (is_array($json) && isset($json['data'][0]) && is_array($json['data'][0])) {
+        if (is_array($json) && isset($json['data']) && is_array($json['data']) && isset($json['data'][0]) && is_array($json['data'][0])) {
             $statement = $json['data'][0]['statement'] ?? '';
             if (is_string($statement)) {
                 return $statement;

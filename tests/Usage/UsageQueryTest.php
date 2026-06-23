@@ -110,7 +110,6 @@ class UsageQueryTest extends TestCase
 
     public function testValidIntervalsConstant(): void
     {
-        $this->assertIsArray(UsageQuery::VALID_INTERVALS);
         $this->assertArrayHasKey('1m', UsageQuery::VALID_INTERVALS);
         $this->assertArrayHasKey('5m', UsageQuery::VALID_INTERVALS);
         $this->assertArrayHasKey('15m', UsageQuery::VALID_INTERVALS);

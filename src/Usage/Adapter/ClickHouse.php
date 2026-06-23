@@ -6,7 +6,10 @@ use DateTime;
 use DateTimeZone;
 use Exception;
 use Throwable;
-use Utopia\Fetch\Client;
+use Utopia\Client;
+use Utopia\Client\Adapter\Curl\Client as CurlAdapter;
+use Utopia\Psr7\Method;
+use Utopia\Psr7\Request\Factory as RequestFactory;
 use Utopia\Query\Query;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
@@ -92,6 +95,8 @@ class ClickHouse extends SQL
 
     private Client $client;
 
+    private RequestFactory $requestFactory;
+
     protected ?string $tenant = null;
 
     protected bool $sharedTables = false;
@@ -104,20 +109,8 @@ class ClickHouse extends SQL
     /** @var array<array{sql: string, params: array<string, mixed>, duration: float, timestamp: float, success: bool, error?: string}> Query execution log */
     private array $queryLog = [];
 
-    /** @var bool Whether to enable gzip compression for HTTP requests/responses */
-    private bool $enableCompression = false;
-
-    /** @var bool Whether to enable HTTP keep-alive for connection pooling */
-    private bool $enableKeepAlive = true;
-
     /** @var int Number of requests made using this adapter instance */
     private int $requestCount = 0;
-
-    /** @var int Maximum number of retry attempts for failed requests (0 = no retries) */
-    private int $maxRetries = 3;
-
-    /** @var int Initial retry delay in milliseconds (doubles with each retry) */
-    private int $retryDelay = 100;
 
     /** @var string|null Current operation context for better error messages */
     private ?string $operationContext = null;
@@ -155,13 +148,17 @@ class ClickHouse extends SQL
      * @param  string  $password  ClickHouse password (default: '')
      * @param  int  $port  ClickHouse HTTP port (default: 8123)
      * @param  bool  $secure  Whether to use HTTPS (default: false)
+     * @param  Client|null  $client  HTTP transport. Defaults to a cURL client
+     *   with persistent connection reuse. Inject your own to control timeouts,
+     *   TLS, or retries — e.g. wrap an adapter in `Utopia\Client\Decorator\Retry`.
      */
     public function __construct(
         string $host,
         string $username = 'default',
         string $password = '',
         int $port = self::DEFAULT_PORT,
-        bool $secure = false
+        bool $secure = false,
+        ?Client $client = null
     ) {
         $this->validateHost($host);
         $this->validatePort($port);
@@ -172,30 +169,12 @@ class ClickHouse extends SQL
         $this->password = $password;
         $this->secure = $secure;
 
-        // Initialize the HTTP client for connection reuse
-        $this->client = new Client();
-        $this->client->addHeader('X-ClickHouse-User', $this->username);
-        $this->client->addHeader('X-ClickHouse-Key', $this->password);
-        $this->client->setTimeout(30_000); // 30 seconds
-    }
-
-    /**
-     * Set the HTTP request timeout in milliseconds.
-     *
-     * @param int $milliseconds Timeout in milliseconds (min: 1000ms, max: 600000ms)
-     * @return self
-     * @throws Exception If timeout is out of valid range
-     */
-    public function setTimeout(int $milliseconds): self
-    {
-        if ($milliseconds < 1000) {
-            throw new Exception('Timeout must be at least 1000 milliseconds (1 second)');
-        }
-        if ($milliseconds > 600000) {
-            throw new Exception('Timeout cannot exceed 600000 milliseconds (10 minutes)');
-        }
-        $this->client->setTimeout($milliseconds);
-        return $this;
+        // `withConnectionReuse()` keeps the underlying cURL handle alive across
+        // requests so the TCP/TLS handshake is paid once. Auth and database are
+        // layered on each request via the factory, so an injected client stays
+        // a pure transport.
+        $this->client = $client ?? new Client((new CurlAdapter())->withConnectionReuse());
+        $this->requestFactory = new RequestFactory();
     }
 
     /**
@@ -207,63 +186,6 @@ class ClickHouse extends SQL
     public function enableQueryLogging(bool $enable = true): self
     {
         $this->enableQueryLogging = $enable;
-        return $this;
-    }
-
-    /**
-     * Enable or disable gzip compression for HTTP requests/responses.
-     *
-     * @param bool $enable Whether to enable compression
-     * @return self
-     */
-    public function setCompression(bool $enable): self
-    {
-        $this->enableCompression = $enable;
-        return $this;
-    }
-
-    /**
-     * Enable or disable HTTP keep-alive for connection pooling.
-     *
-     * @param bool $enable Whether to enable keep-alive (default: true)
-     * @return self
-     */
-    public function setKeepAlive(bool $enable): self
-    {
-        $this->enableKeepAlive = $enable;
-        return $this;
-    }
-
-    /**
-     * Set maximum number of retry attempts for failed requests.
-     *
-     * @param int $maxRetries Maximum retry attempts (0-10, 0 = no retries)
-     * @return self
-     * @throws Exception If maxRetries is out of valid range
-     */
-    public function setMaxRetries(int $maxRetries): self
-    {
-        if ($maxRetries < 0 || $maxRetries > 10) {
-            throw new Exception('Max retries must be between 0 and 10');
-        }
-        $this->maxRetries = $maxRetries;
-        return $this;
-    }
-
-    /**
-     * Set initial retry delay in milliseconds.
-     * Delay doubles with each retry attempt (exponential backoff).
-     *
-     * @param int $milliseconds Initial delay in milliseconds (10-5000ms)
-     * @return self
-     * @throws Exception If delay is out of valid range
-     */
-    public function setRetryDelay(int $milliseconds): self
-    {
-        if ($milliseconds < 10 || $milliseconds > 5000) {
-            throw new Exception('Retry delay must be between 10 and 5000 milliseconds');
-        }
-        $this->retryDelay = $milliseconds;
         return $this;
     }
 
@@ -333,17 +255,13 @@ class ClickHouse extends SQL
     /**
      * Get connection statistics for monitoring.
      *
-     * @return array{request_count: int, keep_alive_enabled: bool, compression_enabled: bool, query_logging_enabled: bool, max_retries: int, retry_delay: int, async_inserts: bool, async_insert_wait: bool}
+     * @return array{request_count: int, query_logging_enabled: bool, async_inserts: bool, async_insert_wait: bool}
      */
     public function getConnectionStats(): array
     {
         return [
             'request_count' => $this->requestCount,
-            'keep_alive_enabled' => $this->enableKeepAlive,
-            'compression_enabled' => $this->enableCompression,
             'query_logging_enabled' => $this->enableQueryLogging,
-            'max_retries' => $this->maxRetries,
-            'retry_delay' => $this->retryDelay,
             'async_inserts' => $this->asyncInserts,
             'async_insert_wait' => $this->asyncInsertWait,
         ];
@@ -399,9 +317,9 @@ class ClickHouse extends SQL
         try {
             // Simple connectivity test
             $response = $this->query('SELECT 1 as ping FORMAT JSON');
-            $json = json_decode($response, true);
+            $rows = $this->decodeRows($response);
 
-            if (!is_array($json) || !isset($json['data'][0]['ping'])) {
+            if (!isset($rows[0]['ping'])) {
                 $result['error'] = 'Invalid response format';
                 return $result;
             }
@@ -409,11 +327,11 @@ class ClickHouse extends SQL
             // Get server version and uptime
             try {
                 $versionResponse = $this->query('SELECT version() as version, uptime() as uptime FORMAT JSON');
-                $versionJson = json_decode($versionResponse, true);
+                $versionRows = $this->decodeRows($versionResponse);
 
-                if (is_array($versionJson) && isset($versionJson['data'][0])) {
-                    $result['version'] = (string) $versionJson['data'][0]['version'];
-                    $result['uptime'] = (int) $versionJson['data'][0]['uptime'];
+                if (isset($versionRows[0])) {
+                    $result['version'] = self::toStr($versionRows[0]['version'] ?? null);
+                    $result['uptime'] = self::toInt($versionRows[0]['uptime'] ?? null);
                 }
             } catch (Exception $e) {
                 // Version info is optional, don't fail health check
@@ -658,9 +576,8 @@ class ClickHouse extends SQL
      * @param float $duration Execution duration in seconds
      * @param bool $success Whether the query succeeded
      * @param string|null $error Error message if query failed
-     * @param int $retryAttempt Current retry attempt number
      */
-    private function logQuery(string $sql, array $params, float $duration, bool $success, ?string $error = null, int $retryAttempt = 0): void
+    private function logQuery(string $sql, array $params, float $duration, bool $success, ?string $error = null): void
     {
         if (!$this->enableQueryLogging) {
             return;
@@ -674,48 +591,11 @@ class ClickHouse extends SQL
             'success' => $success,
         ];
 
-        if ($retryAttempt > 0) {
-            $logEntry['retry_attempt'] = $retryAttempt;
-        }
-
         if ($error !== null) {
             $logEntry['error'] = $error;
         }
 
         $this->queryLog[] = $logEntry;
-    }
-
-    /**
-     * Determine if an error is retryable.
-     *
-     * @param int|null $httpCode HTTP status code if available
-     * @param string $errorMessage Error message
-     * @return bool True if the error is retryable
-     */
-    private function isRetryableError(?int $httpCode, string $errorMessage): bool
-    {
-        if ($httpCode !== null) {
-            if (in_array($httpCode, [408, 429, 500, 502, 503, 504], true)) {
-                return true;
-            }
-            if ($httpCode >= 400 && $httpCode < 500) {
-                return false;
-            }
-        }
-
-        $retryablePatterns = [
-            'connection', 'timeout', 'timed out', 'refused', 'reset',
-            'broken pipe', 'network', 'temporary', 'unavailable',
-        ];
-
-        $lowerMessage = strtolower($errorMessage);
-        foreach ($retryablePatterns as $pattern) {
-            if (strpos($lowerMessage, $pattern) !== false) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**
@@ -727,44 +607,6 @@ class ClickHouse extends SQL
     private function setOperationContext(?string $context): void
     {
         $this->operationContext = $context;
-    }
-
-    /**
-     * Execute an operation with automatic retry logic and exponential backoff.
-     *
-     * @template T
-     * @param callable(int): T $operation
-     * @param callable(Exception, int|null): bool $shouldRetry
-     * @param callable(Exception, int): Exception $buildException
-     * @return T
-     * @throws Exception
-     */
-    private function executeWithRetry(callable $operation, callable $shouldRetry, callable $buildException): mixed
-    {
-        $attempt = 0;
-        $lastException = null;
-
-        while ($attempt <= $this->maxRetries) {
-            try {
-                return $operation($attempt);
-            } catch (Exception $e) {
-                $lastException = $e;
-
-                if ($attempt < $this->maxRetries && $shouldRetry($e, $attempt)) {
-                    $attempt++;
-                    $delay = $this->retryDelay * (2 ** ($attempt - 1));
-                    usleep($delay * 1000);
-                    continue;
-                }
-
-                throw $buildException($e, $attempt);
-            }
-        }
-
-        throw $buildException(
-            $lastException ?? new Exception('Unknown error occurred'),
-            $this->maxRetries
-        );
     }
 
     /**
@@ -810,80 +652,109 @@ class ClickHouse extends SQL
         $queryId = $this->nextQueryId;
         $this->nextQueryId = null;
 
-        return $this->executeWithRetry(
-            function (int $attempt) use ($sql, $params, $queryId): string {
-                $startTime = microtime(true);
-                $scheme = $this->secure ? 'https' : 'http';
-                $url = "{$scheme}://{$this->host}:{$this->port}/";
-                if ($queryId !== null) {
-                    $url .= '?' . http_build_query(['query_id' => $queryId]);
-                }
+        $startTime = microtime(true);
+        $scheme = $this->secure ? 'https' : 'http';
 
-                $this->client->addHeader('X-ClickHouse-Database', $this->database);
+        // ClickHouse reads `query` and `param_*` from a multipart/form-data
+        // body (the pattern the pre-migration cURL transport used). Keeping the
+        // SQL and bound parameters in the body — rather than the URL query
+        // string — avoids request-line length limits (HTTP 414) on large
+        // `equal`/tag filters. ClickHouse does NOT parse
+        // application/x-www-form-urlencoded bodies, so multipart is required.
+        // Only the tiny query_id, which has no size concern, stays in the URL.
+        $parts = ['query' => $sql];
+        foreach ($params as $key => $value) {
+            $parts['param_' . $key] = $this->formatParamValue($value);
+        }
+        $url = "{$scheme}://{$this->host}:{$this->port}/";
+        if ($queryId !== null) {
+            $url .= '?' . http_build_query(['query_id' => $queryId]);
+        }
 
-                if ($this->enableKeepAlive) {
-                    $this->client->addHeader('Connection', 'keep-alive');
-                } else {
-                    $this->client->addHeader('Connection', 'close');
-                }
+        $this->requestCount++;
 
-                if ($this->enableCompression) {
-                    $this->client->addHeader('Accept-Encoding', 'gzip');
-                }
+        $request = $this->requestFactory->multipart(Method::POST, $url, $parts, $this->buildHeaders());
 
-                if ($attempt === 0) {
-                    $this->requestCount++;
-                }
+        try {
+            $response = $this->client->sendRequest($request);
+        } catch (Throwable $e) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = $this->buildErrorMessage("ClickHouse query failed: {$e->getMessage()}", null, $sql);
+            $this->logQuery($sql, $params, $duration, false, $errorMsg);
+            throw new Exception($errorMsg, 0, $e);
+        }
 
-                $body = ['query' => $sql];
-                foreach ($params as $key => $value) {
-                    $body['param_' . $key] = $this->formatParamValue($value);
-                }
+        $httpCode = $response->getStatusCode();
+        $bodyStr = (string) $response->getBody();
+        $duration = microtime(true) - $startTime;
 
-                $response = $this->client->fetch(
-                    url: $url,
-                    method: Client::METHOD_POST,
-                    body: $body
-                );
-                $httpCode = $response->getStatusCode();
+        if ($httpCode !== 200) {
+            $errorMsg = $this->buildErrorMessage("ClickHouse query failed with HTTP {$httpCode}: {$bodyStr}", null, $sql);
+            $this->logQuery($sql, $params, $duration, false, $errorMsg);
+            throw new Exception($errorMsg);
+        }
 
-                if ($httpCode !== 200) {
-                    $bodyStr = $response->getBody();
-                    $bodyStr = is_string($bodyStr) ? $bodyStr : '';
-                    $duration = microtime(true) - $startTime;
-                    $baseError = "ClickHouse query failed with HTTP {$httpCode}: {$bodyStr}";
-                    $errorMsg = $this->buildErrorMessage($baseError, null, $sql);
-                    $this->logQuery($sql, $params, $duration, false, $errorMsg, $attempt);
+        $this->logQuery($sql, $params, $duration, true);
+        return $bodyStr;
+    }
 
-                    throw new Exception($errorMsg . '|HTTP_CODE:' . $httpCode);
-                }
+    /**
+     * Decode a ClickHouse `FORMAT JSON` response body into its data rows.
+     * Returns an empty list when the body is not the expected envelope.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function decodeRows(string $response): array
+    {
+        $json = json_decode($response, true);
+        if (!is_array($json) || !isset($json['data']) || !is_array($json['data'])) {
+            return [];
+        }
 
-                $body = $response->getBody();
-                $result = is_string($body) ? $body : '';
-                $duration = microtime(true) - $startTime;
-                $this->logQuery($sql, $params, $duration, true, null, $attempt);
-                return $result;
-            },
-            function (Exception $e, ?int $httpCode): bool {
-                $exceptionHttpCode = null;
-                if (preg_match('/\|HTTP_CODE:(\d+)$/', $e->getMessage(), $matches)) {
-                    $exceptionHttpCode = (int) $matches[1];
-                }
-                return $this->isRetryableError($exceptionHttpCode, $e->getMessage());
-            },
-            function (Exception $e, int $attempt) use ($sql): Exception {
-                $cleanMessage = preg_replace('/\|HTTP_CODE:\d+$/', '', $e->getMessage());
-                $cleanMessage = is_string($cleanMessage) ? $cleanMessage : $e->getMessage();
-
-                if (strpos($cleanMessage, '[Operation:') !== false) {
-                    return new Exception($cleanMessage, 0, $e);
-                }
-
-                $baseError = "ClickHouse query execution failed after " . ($attempt + 1) . " attempt(s): {$cleanMessage}";
-                $errorMsg = $this->buildErrorMessage($baseError, null, $sql);
-                return new Exception($errorMsg, 0, $e);
+        $rows = [];
+        foreach ($json['data'] as $row) {
+            if (!is_array($row)) {
+                continue;
             }
-        );
+            $typed = [];
+            foreach ($row as $key => $value) {
+                $typed[(string) $key] = $value;
+            }
+            $rows[] = $typed;
+        }
+
+        return $rows;
+    }
+
+    private static function toInt(mixed $value): int
+    {
+        return is_numeric($value) ? (int) $value : 0;
+    }
+
+    private static function toFloat(mixed $value): float
+    {
+        return is_numeric($value) ? (float) $value : 0.0;
+    }
+
+    private static function toStr(mixed $value): string
+    {
+        return is_scalar($value) ? (string) $value : '';
+    }
+
+    /**
+     * Build the per-request headers ClickHouse expects: credentials and target
+     * database. Applied to every request so the injected transport client stays
+     * auth-agnostic.
+     *
+     * @return array<string, string>
+     */
+    private function buildHeaders(): array
+    {
+        return [
+            'X-ClickHouse-User' => $this->username,
+            'X-ClickHouse-Key' => $this->password,
+            'X-ClickHouse-Database' => $this->database,
+        ];
     }
 
     /**
@@ -899,91 +770,50 @@ class ClickHouse extends SQL
             return;
         }
 
-        $this->executeWithRetry(
-            function (int $attempt) use ($table, $data): void {
-                $startTime = microtime(true);
-                $scheme = $this->secure ? 'https' : 'http';
-                $escapedTable = $this->escapeIdentifier($table);
+        // Inserts are not idempotent: the MergeTree engine has no row-level
+        // deduplication, so a retried insert that reaches the server twice
+        // leaves duplicate rows behind. The default transport does not retry
+        // POST; any injected retry strategy must keep it that way.
+        $startTime = microtime(true);
+        $scheme = $this->secure ? 'https' : 'http';
+        $escapedTable = $this->escapeIdentifier($table);
+        $rowCount = count($data);
 
-                $queryParams = ['query' => "INSERT INTO {$escapedTable} FORMAT JSONEachRow"];
-                if ($this->asyncInserts) {
-                    $queryParams['async_insert'] = '1';
-                    $queryParams['wait_for_async_insert'] = $this->asyncInsertWait ? '1' : '0';
-                }
-                $url = "{$scheme}://{$this->host}:{$this->port}/?" . http_build_query($queryParams);
+        $queryParams = ['query' => "INSERT INTO {$escapedTable} FORMAT JSONEachRow"];
+        if ($this->asyncInserts) {
+            $queryParams['async_insert'] = '1';
+            $queryParams['wait_for_async_insert'] = $this->asyncInsertWait ? '1' : '0';
+        }
+        $url = "{$scheme}://{$this->host}:{$this->port}/?" . http_build_query($queryParams);
 
-                $this->client->addHeader('X-ClickHouse-Database', $this->database);
-                $this->client->addHeader('Content-Type', 'application/x-ndjson');
+        $this->requestCount++;
 
-                if ($this->enableKeepAlive) {
-                    $this->client->addHeader('Connection', 'keep-alive');
-                } else {
-                    $this->client->addHeader('Connection', 'close');
-                }
+        $body = implode("\n", $data);
+        $sql = "INSERT INTO {$escapedTable} FORMAT JSONEachRow";
+        $params = ['rows' => $rowCount, 'bytes' => strlen($body)];
 
-                if ($this->enableCompression) {
-                    $this->client->addHeader('Accept-Encoding', 'gzip');
-                }
+        $request = $this->requestFactory->body(Method::POST, $url, $body, 'application/x-ndjson', $this->buildHeaders());
 
-                if ($attempt === 0) {
-                    $this->requestCount++;
-                }
+        try {
+            $response = $this->client->sendRequest($request);
+        } catch (Throwable $e) {
+            $duration = microtime(true) - $startTime;
+            $errorMsg = $this->buildErrorMessage("ClickHouse insert failed: {$e->getMessage()}", $table, "INSERT INTO {$table} ({$rowCount} rows)");
+            $this->logQuery($sql, $params, $duration, false, $errorMsg);
+            throw new Exception($errorMsg, 0, $e);
+        }
 
-                $body = implode("\n", $data);
+        $httpCode = $response->getStatusCode();
+        $duration = microtime(true) - $startTime;
 
-                $sql = "INSERT INTO {$escapedTable} FORMAT JSONEachRow";
-                $params = ['rows' => count($data), 'bytes' => strlen($body)];
+        if ($httpCode !== 200) {
+            $bodyStr = (string) $response->getBody();
+            $errorMsg = $this->buildErrorMessage("ClickHouse insert failed with HTTP {$httpCode}: {$bodyStr}", $table, "INSERT INTO {$table} ({$rowCount} rows)");
+            $this->logQuery($sql, $params, $duration, false, $errorMsg);
+            throw new Exception($errorMsg);
+        }
 
-                try {
-                    $response = $this->client->fetch(
-                        url: $url,
-                        method: Client::METHOD_POST,
-                        body: $body
-                    );
-
-                    $httpCode = $response->getStatusCode();
-
-                    if ($httpCode !== 200) {
-                        $bodyStr = $response->getBody();
-                        $bodyStr = is_string($bodyStr) ? $bodyStr : '';
-                        $duration = microtime(true) - $startTime;
-                        $rowCount = count($data);
-                        $baseError = "ClickHouse insert failed with HTTP {$httpCode}: {$bodyStr}";
-                        $errorMsg = $this->buildErrorMessage($baseError, $table, "INSERT INTO {$table} ({$rowCount} rows)");
-                        $this->logQuery($sql, $params, $duration, false, $errorMsg, $attempt);
-
-                        throw new Exception($errorMsg . '|HTTP_CODE:' . $httpCode);
-                    }
-
-                    $duration = microtime(true) - $startTime;
-                    $this->logQuery($sql, $params, $duration, true, null, $attempt);
-                } finally {
-                    $this->client->removeHeader('Content-Type');
-                }
-            },
-            function (Exception $e, ?int $httpCode): bool {
-                // Never retry inserts. The underlying MergeTree engine has
-                // no row-level deduplication, so a retried insert that hits
-                // the server twice (network blip + first request actually
-                // succeeded) leaves duplicate rows behind. Surface the
-                // failure to the caller instead — they can replay the
-                // batch from durable storage if they choose.
-                return false;
-            },
-            function (Exception $e, int $attempt) use ($table, $data): Exception {
-                $cleanMessage = preg_replace('/\|HTTP_CODE:\d+$/', '', $e->getMessage());
-                $cleanMessage = is_string($cleanMessage) ? $cleanMessage : $e->getMessage();
-
-                if (strpos($cleanMessage, '[Operation:') !== false) {
-                    return new Exception($cleanMessage, 0, $e);
-                }
-
-                $rowCount = count($data);
-                $baseError = "ClickHouse insert execution failed after " . ($attempt + 1) . " attempt(s): {$cleanMessage}";
-                $errorMsg = $this->buildErrorMessage($baseError, $table, "INSERT INTO {$table} ({$rowCount} rows)");
-                return new Exception($errorMsg, 0, $e);
-            }
-        );
+        $this->logQuery($sql, $params, $duration, true);
     }
 
     /**
@@ -1560,10 +1390,6 @@ class ClickHouse extends SQL
         if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
             throw new \InvalidArgumentException($prefix . "Invalid type '{$type}'. Allowed: " . Usage::TYPE_EVENT . ', ' . Usage::TYPE_GAUGE);
         }
-
-        if (!is_array($tags)) {
-            throw new Exception($prefix . 'Tags must be an array');
-        }
     }
 
     /**
@@ -1977,26 +1803,16 @@ class ClickHouse extends SQL
             return [];
         }
 
-        $json = json_decode($result, true);
-
-        if (!is_array($json) || !isset($json['data']) || !is_array($json['data'])) {
-            return [];
-        }
-
-        $rows = $json['data'];
+        $rows = $this->decodeRows($result);
         $metrics = [];
 
         foreach ($rows as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-
             $document = [];
 
             foreach ($row as $key => $value) {
                 if ($key === 'bucket') {
                     // Map 'bucket' back to 'time' for consistent Metric objects
-                    $parsedTime = (string) $value;
+                    $parsedTime = self::toStr($value);
                     if (strpos($parsedTime, 'T') === false) {
                         $parsedTime = str_replace(' ', 'T', $parsedTime) . '+00:00';
                     }
@@ -2111,13 +1927,13 @@ class ClickHouse extends SQL
         }
 
         $result = $this->query($sql, $params);
-        $json = json_decode($result, true);
+        $rows = $this->decodeRows($result);
 
-        if (!is_array($json) || !isset($json['data'][0]['total'])) {
+        if (!isset($rows[0]['total'])) {
             return 0;
         }
 
-        return (int) $json['data'][0]['total'];
+        return self::toInt($rows[0]['total']);
     }
 
     /**
@@ -2392,7 +2208,7 @@ class ClickHouse extends SQL
     {
         $result = [];
         foreach ($queries as $q) {
-            if (!($q instanceof Query) || $q->getAttribute() !== 'time') {
+            if ($q->getAttribute() !== 'time') {
                 $result[] = $q;
                 continue;
             }
@@ -2479,7 +2295,7 @@ class ClickHouse extends SQL
      * lower bound while the raw branch keeps the caller's original literal.
      *
      * @param array<Query> $queries
-     * @return array{nonTime: array<Query>, time: array<Query>}
+     * @return array{nonTime: array<int, Query>, time: array<int, Query>}
      */
     private function splitTimeQueries(array $queries): array
     {
@@ -2791,13 +2607,13 @@ class ClickHouse extends SQL
         ";
 
         $result = $this->query($sql, $rawWhere['params']);
-        $json = json_decode($result, true);
+        $rows = $this->decodeRows($result);
 
-        if (!is_array($json) || !isset($json['data'][0]['total'])) {
+        if (!isset($rows[0]['total'])) {
             return 0;
         }
 
-        return (int) $json['data'][0]['total'];
+        return self::toInt($rows[0]['total']);
     }
 
     /**
@@ -2830,13 +2646,13 @@ class ClickHouse extends SQL
 
         $result = $this->query($sql, $params);
 
-        $json = json_decode($result, true);
+        $rows = $this->decodeRows($result);
 
-        if (!is_array($json) || !isset($json['data'][0]['total'])) {
+        if (!isset($rows[0]['total'])) {
             return 0;
         }
 
-        return (int) $json['data'][0]['total'];
+        return self::toInt($rows[0]['total']);
     }
 
     /**
@@ -2914,9 +2730,9 @@ class ClickHouse extends SQL
         $sql = "SELECT sum({$escapedAttribute}) as total FROM {$fromTable}{$whereData['clause']} FORMAT JSON";
 
         $result = $this->query($sql, $whereData['params']);
-        $json = json_decode($result, true);
+        $rows = $this->decodeRows($result);
 
-        return (is_array($json) && isset($json['data'][0]['total'])) ? (int) $json['data'][0]['total'] : 0;
+        return isset($rows[0]['total']) ? self::toInt($rows[0]['total']) : 0;
     }
 
     /**
@@ -2976,14 +2792,12 @@ class ClickHouse extends SQL
         ";
 
         $result = $this->query($sql, $params);
-        $json = json_decode($result, true);
+        $rows = $this->decodeRows($result);
 
-        if (is_array($json) && isset($json['data']) && is_array($json['data'])) {
-            foreach ($json['data'] as $row) {
-                $metricName = $row['metric'] ?? '';
-                if (isset($totals[$metricName])) {
-                    $totals[$metricName] = (int) ($row['total'] ?? 0);
-                }
+        foreach ($rows as $row) {
+            $metricName = self::toStr($row['metric'] ?? null);
+            if (isset($totals[$metricName])) {
+                $totals[$metricName] = self::toInt($row['total'] ?? null);
             }
         }
 
@@ -3140,36 +2954,34 @@ class ClickHouse extends SQL
         ";
 
         $result = $this->query($sql, $params);
-        $json = json_decode($result, true);
+        $rows = $this->decodeRows($result);
 
         // Initialize result structure
         $output = [];
         foreach ($metrics as $metric) {
-            $output[$metric] = ['total' => 0, 'data' => []];
+            $output[$metric] = ['total' => 0.0, 'data' => []];
         }
 
-        if (is_array($json) && isset($json['data']) && is_array($json['data'])) {
-            foreach ($json['data'] as $row) {
-                $metricName = $row['metric'] ?? '';
-                $bucketTime = (string) ($row['bucket'] ?? '');
-                $value = (float) ($row['agg_value'] ?? 0);
+        foreach ($rows as $row) {
+            $metricName = self::toStr($row['metric'] ?? null);
+            $bucketTime = self::toStr($row['bucket'] ?? null);
+            $value = self::toFloat($row['agg_value'] ?? null);
 
-                if (!isset($output[$metricName])) {
-                    continue;
-                }
-
-                // Format bucket time
-                $formattedDate = $bucketTime;
-                if (strpos($bucketTime, 'T') === false) {
-                    $formattedDate = str_replace(' ', 'T', $bucketTime) . '+00:00';
-                }
-
-                $output[$metricName]['total'] += $value;
-                $output[$metricName]['data'][] = [
-                    'value' => $value,
-                    'date' => $formattedDate,
-                ];
+            if (!isset($output[$metricName])) {
+                continue;
             }
+
+            // Format bucket time
+            $formattedDate = $bucketTime;
+            if (strpos($bucketTime, 'T') === false) {
+                $formattedDate = str_replace(' ', 'T', $bucketTime) . '+00:00';
+            }
+
+            $output[$metricName]['total'] += $value;
+            $output[$metricName]['data'][] = [
+                'value' => $value,
+                'date' => $formattedDate,
+            ];
         }
 
         return $output;
@@ -3299,13 +3111,13 @@ class ClickHouse extends SQL
         ";
 
         $result = $this->query($sql, $whereData['params']);
-        $json = json_decode($result, true);
+        $rows = $this->decodeRows($result);
 
-        if (!is_array($json) || !isset($json['data'][0]['total'])) {
+        if (!isset($rows[0]['total'])) {
             return 0;
         }
 
-        return (int) $json['data'][0]['total'];
+        return self::toInt($rows[0]['total']);
     }
 
     /**
@@ -3385,33 +3197,31 @@ class ClickHouse extends SQL
             ";
 
             $result = $this->query($sql, $params);
-            $json = json_decode($result, true);
+            $rows = $this->decodeRows($result);
 
-            if (is_array($json) && isset($json['data']) && is_array($json['data'])) {
-                foreach ($json['data'] as $row) {
-                    $metricName = $row['metric'] ?? '';
+            foreach ($rows as $row) {
+                $metricName = self::toStr($row['metric'] ?? null);
 
-                    if (!isset($totals[$metricName])) {
-                        continue;
-                    }
-
-                    $rowValue = (int) ($row['agg_val'] ?? 0);
-                    if ($rowValue === 0) {
-                        continue;
-                    }
-
-                    if ($type === null
-                        && isset($contributingType[$metricName])
-                        && $contributingType[$metricName] !== $queryType) {
-                        throw new Exception(
-                            "Metric '{$metricName}' exists in both event and gauge tables. "
-                            . "Specify \$type explicitly to avoid ambiguous aggregation."
-                        );
-                    }
-
-                    $contributingType[$metricName] = $queryType;
-                    $totals[$metricName] = $rowValue;
+                if (!isset($totals[$metricName])) {
+                    continue;
                 }
+
+                $rowValue = self::toInt($row['agg_val'] ?? null);
+                if ($rowValue === 0) {
+                    continue;
+                }
+
+                if ($type === null
+                    && isset($contributingType[$metricName])
+                    && $contributingType[$metricName] !== $queryType) {
+                    throw new Exception(
+                        "Metric '{$metricName}' exists in both event and gauge tables. "
+                        . "Specify \$type explicitly to avoid ambiguous aggregation."
+                    );
+                }
+
+                $contributingType[$metricName] = $queryType;
+                $totals[$metricName] = $rowValue;
             }
         }
 
@@ -3661,7 +3471,7 @@ class ClickHouse extends SQL
      *
      * @param array<Query> $queries
      * @param string $type 'event' or 'gauge' — used for attribute validation
-     * @return array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, orderAttributes?: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, cursor?: array<string, mixed>, cursorDirection?: string}
+     * @return array{filters: array<int, string>, params: array<string, mixed>, orderBy?: array<string>, orderAttributes?: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, cursor?: array<string, mixed>, cursorDirection?: string}
      * @throws Exception
      */
     private function parseQueries(array $queries, string $type = 'event'): array
@@ -3875,7 +3685,7 @@ class ClickHouse extends SQL
                     break;
 
                 case Query::TYPE_LIMIT:
-                    $limitVal = is_array($values) && !empty($values) ? $values[0] : $values;
+                    $limitVal = !empty($values) ? $values[0] : $values;
                     if (!\is_int($limitVal)) {
                         throw new Exception('Invalid limit value. Expected int');
                     }
@@ -3884,7 +3694,7 @@ class ClickHouse extends SQL
                     break;
 
                 case Query::TYPE_OFFSET:
-                    $offsetVal = is_array($values) && !empty($values) ? $values[0] : $values;
+                    $offsetVal = !empty($values) ? $values[0] : $values;
                     if (!\is_int($offsetVal)) {
                         throw new Exception('Invalid offset value. Expected int');
                     }
@@ -3966,28 +3776,19 @@ class ClickHouse extends SQL
             return [];
         }
 
-        $json = json_decode($result, true);
-
-        if (!is_array($json) || !isset($json['data']) || !is_array($json['data'])) {
-            return [];
-        }
-
-        $rows = $json['data'];
+        $rows = $this->decodeRows($result);
         $metrics = [];
 
         foreach ($rows as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
             $document = [];
 
             foreach ($row as $key => $value) {
                 if ($key === 'tenant') {
-                    $document[$key] = $value !== null ? (string) $value : null;
+                    $document[$key] = $value !== null ? self::toStr($value) : null;
                 } elseif ($key === 'value') {
-                    $document[$key] = $value !== null ? (int) $value : null;
+                    $document[$key] = $value !== null ? self::toInt($value) : null;
                 } elseif ($key === 'time') {
-                    $parsedTime = (string)$value;
+                    $parsedTime = self::toStr($value);
                     if (strpos($parsedTime, 'T') === false) {
                         $parsedTime = str_replace(' ', 'T', $parsedTime) . '+00:00';
                     }
