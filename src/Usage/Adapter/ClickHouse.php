@@ -370,27 +370,6 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Prepend a tenant filter to the query list (shared-tables mode only).
-     *
-     * In non-shared mode the tables have no tenant column, so the tenant is
-     * ignored. Threading the scope in as a normal query lets the existing
-     * parse/where pipeline bind and filter it like any other column.
-     *
-     * @param array<Query> $queries
-     * @return array<Query>
-     */
-    private function scopeToTenant(string $tenant, array $queries): array
-    {
-        if (!$this->sharedTables) {
-            return $queries;
-        }
-
-        array_unshift($queries, Query::equal('tenant', [$tenant]));
-
-        return $queries;
-    }
-
-    /**
      * Get the base table name with namespace prefix.
      *
      * @return string
@@ -1369,10 +1348,8 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('find()');
 
-        $queries = $this->scopeToTenant($tenant, $queries);
-
         if ($type !== null) {
-            return $this->findFromTable($queries, $type);
+            return $this->findFromTable($tenant, $queries, $type);
         }
 
         // Cursor pagination is per-table — paginating across both events and
@@ -1397,10 +1374,10 @@ class ClickHouse extends SQL
         // requested limit. Tables whose schema doesn't support every filter
         // attribute (e.g. `path` on a gauge query) are skipped.
         $events = $this->queriesMatchType($queries, Usage::TYPE_EVENT)
-            ? $this->findFromTable($queries, Usage::TYPE_EVENT)
+            ? $this->findFromTable($tenant, $queries, Usage::TYPE_EVENT)
             : [];
         $gauges = $this->queriesMatchType($queries, Usage::TYPE_GAUGE)
-            ? $this->findFromTable($queries, Usage::TYPE_GAUGE)
+            ? $this->findFromTable($tenant, $queries, Usage::TYPE_GAUGE)
             : [];
 
         $merged = array_merge($events, $gauges);
@@ -1457,12 +1434,12 @@ class ClickHouse extends SQL
      * @return array<Metric>
      * @throws Exception
      */
-    private function findFromTable(array $queries, string $type): array
+    private function findFromTable(string $tenant, array $queries, string $type): array
     {
         $tableName = $this->getTableForType($type);
         $fromTable = $this->buildTableReference($tableName);
 
-        $parsed = $this->parseQueries($queries, $type);
+        $parsed = $this->parseQueries($tenant, $queries, $type);
 
         // Cursor pagination is incompatible with time-bucketed aggregation —
         // aggregated rows have no stable identity to anchor a keyset cursor on.
@@ -1699,10 +1676,8 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('count()');
 
-        $queries = $this->scopeToTenant($tenant, $queries);
-
         if ($type !== null) {
-            return $this->countFromTable($queries, $type, $max);
+            return $this->countFromTable($tenant, $queries, $type, $max);
         }
 
         // Count from both tables. Each per-table count is independently
@@ -1710,10 +1685,10 @@ class ClickHouse extends SQL
         // Cap the combined total at $max in PHP to honour the contract.
         // Skip a table when its schema can't satisfy every filter attribute.
         $events = $this->queriesMatchType($queries, Usage::TYPE_EVENT)
-            ? $this->countFromTable($queries, Usage::TYPE_EVENT, $max)
+            ? $this->countFromTable($tenant, $queries, Usage::TYPE_EVENT, $max)
             : 0;
         $gauges = $this->queriesMatchType($queries, Usage::TYPE_GAUGE)
-            ? $this->countFromTable($queries, Usage::TYPE_GAUGE, $max)
+            ? $this->countFromTable($tenant, $queries, Usage::TYPE_GAUGE, $max)
             : 0;
 
         $total = $events + $gauges;
@@ -1734,12 +1709,12 @@ class ClickHouse extends SQL
      * @return int
      * @throws Exception
      */
-    private function countFromTable(array $queries, string $type, ?int $max = null): int
+    private function countFromTable(string $tenant, array $queries, string $type, ?int $max = null): int
     {
         $tableName = $this->getTableForType($type);
         $fromTable = $this->buildTableReference($tableName);
 
-        $parsed = $this->parseQueries($queries, $type);
+        $parsed = $this->parseQueries($tenant, $queries, $type);
 
         $params = $parsed['params'];
         unset($params['limit'], $params['offset']);
@@ -1788,13 +1763,11 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('sum()');
 
-        $queries = $this->scopeToTenant($tenant, $queries);
-
         if ($type === Usage::TYPE_EVENT && $attribute === 'value') {
-            return $this->routedSum($queries, 'sum');
+            return $this->routedSum($tenant, $queries, 'sum');
         }
 
-        return $this->sumFromTable($queries, $attribute, $type);
+        return $this->sumFromTable($tenant, $queries, $attribute, $type);
     }
 
     /**
@@ -1804,24 +1777,24 @@ class ClickHouse extends SQL
      *
      * @param array<Query> $queries
      */
-    private function routedSum(array $queries, string $operation): int
+    private function routedSum(string $tenant, array $queries, string $operation): int
     {
         $plan = $this->extractRoutingPlan($queries);
         $route = $this->selectAggregateSource($plan);
         $this->recordRoute($operation, $plan, $route);
 
         if ($route === 'daily') {
-            $total = $this->sumDailyScoped($this->translateInclusiveMidnightForDaily($queries), 'value');
-            $this->maybeDualRead($queries, $route, $plan, $total);
+            $total = $this->sumDailyTotal($tenant, $this->translateInclusiveMidnightForDaily($queries), 'value');
+            $this->maybeDualRead($tenant, $queries, $route, $plan, $total);
             return $total;
         }
         if ($route === 'hybrid') {
-            $total = $this->sumHybridDailyAndRaw($queries, $plan);
-            $this->maybeDualRead($queries, $route, $plan, $total);
+            $total = $this->sumHybridDailyAndRaw($tenant, $queries, $plan);
+            $this->maybeDualRead($tenant, $queries, $route, $plan, $total);
             return $total;
         }
 
-        return $this->sumFromTable($queries, 'value', Usage::TYPE_EVENT);
+        return $this->sumFromTable($tenant, $queries, 'value', Usage::TYPE_EVENT);
     }
 
     /**
@@ -2368,7 +2341,7 @@ class ClickHouse extends SQL
      * @param string $route
      * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
      */
-    private function maybeDualRead(array $queries, string $route, array $plan, int $rolledTotal): void
+    private function maybeDualRead(string $tenant, array $queries, string $route, array $plan, int $rolledTotal): void
     {
         if ($this->dualReadSampleRate <= 0.0) {
             return;
@@ -2378,7 +2351,7 @@ class ClickHouse extends SQL
         }
 
         try {
-            $rawTotal = $this->sumFromTable($queries, 'value', Usage::TYPE_EVENT);
+            $rawTotal = $this->sumFromTable($tenant, $queries, 'value', Usage::TYPE_EVENT);
         } catch (Throwable $e) {
             return;
         }
@@ -2410,7 +2383,7 @@ class ClickHouse extends SQL
      * @param array<Query> $queries
      * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string} $plan
      */
-    private function sumHybridDailyAndRaw(array $queries, array $plan): int
+    private function sumHybridDailyAndRaw(string $tenant, array $queries, array $plan): int
     {
         $startOfToday = (new DateTime('today', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
 
@@ -2418,9 +2391,9 @@ class ClickHouse extends SQL
         $eventsTable = $this->buildTableReference($this->getEventsTableName());
 
         $split = $this->splitTimeQueries($queries);
-        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
+        $parsed = $this->parseQueries($tenant, $queries, Usage::TYPE_EVENT);
         $dailyParsed = $this->prefixParsedParams(
-            $this->parseQueries($split['nonTime'], Usage::TYPE_EVENT),
+            $this->parseQueries($tenant, $split['nonTime'], Usage::TYPE_EVENT),
             'd_'
         );
 
@@ -2464,7 +2437,7 @@ class ClickHouse extends SQL
      * @return int
      * @throws Exception
      */
-    private function sumFromTable(array $queries, string $attribute, string $type): int
+    private function sumFromTable(string $tenant, array $queries, string $attribute, string $type): int
     {
         $tableName = $this->getTableForType($type);
         $fromTable = $this->buildTableReference($tableName);
@@ -2472,7 +2445,7 @@ class ClickHouse extends SQL
         $this->validateAttributeName($attribute, $type);
         $escapedAttribute = $this->escapeIdentifier($attribute);
 
-        $parsed = $this->parseQueries($queries, $type);
+        $parsed = $this->parseQueries($tenant, $queries, $type);
 
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
         $whereClause = $whereData['clause'];
@@ -2505,8 +2478,6 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('findDaily()');
 
-        $queries = $this->scopeToTenant($tenant, $queries);
-
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
 
         foreach ($queries as $query) {
@@ -2515,7 +2486,7 @@ class ClickHouse extends SQL
                 $this->validateDailyAttributeName($attr);
             }
         }
-        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
+        $parsed = $this->parseQueries($tenant, $queries, Usage::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
         $groupByColumns = $this->sharedTables ? ['tenant'] : [];
@@ -2555,19 +2526,17 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('sumDaily()');
 
-        return $this->sumDailyScoped($this->scopeToTenant($tenant, $queries), $attribute);
+        return $this->sumDailyTotal($tenant, $queries, $attribute);
     }
 
     /**
-     * Sum the daily table for an already tenant-scoped query list.
-     *
-     * Internal callers (e.g. routedSum) thread the tenant filter in via the
-     * query list, so they call this directly to avoid re-scoping.
+     * Sum the daily table. Split out from sumDaily() so internal callers
+     * (e.g. routedSum) can reuse it without re-setting the operation context.
      *
      * @param array<Query> $queries
      * @throws Exception
      */
-    private function sumDailyScoped(array $queries, string $attribute = 'value'): int
+    private function sumDailyTotal(string $tenant, array $queries, string $attribute = 'value'): int
     {
         $fromTable = $this->buildTableReference($this->getEventsDailyTableName());
         $this->validateDailyAttributeName($attribute);
@@ -2579,7 +2548,7 @@ class ClickHouse extends SQL
                 $this->validateDailyAttributeName($attr);
             }
         }
-        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
+        $parsed = $this->parseQueries($tenant, $queries, Usage::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
         $sql = "SELECT sum({$escapedAttribute}) as total FROM {$fromTable}{$whereData['clause']} FORMAT JSON";
@@ -2606,8 +2575,6 @@ class ClickHouse extends SQL
 
         $this->setOperationContext('sumDailyBatch()');
 
-        $queries = $this->scopeToTenant($tenant, $queries);
-
         foreach ($queries as $query) {
             $attr = $query->getAttribute();
             if (!empty($attr)) {
@@ -2629,7 +2596,7 @@ class ClickHouse extends SQL
         }
         $metricInClause = implode(', ', $metricPlaceholders);
 
-        $parsed = $this->parseQueries($queries, Usage::TYPE_EVENT);
+        $parsed = $this->parseQueries($tenant, $queries, Usage::TYPE_EVENT);
         $params = array_merge($metricParams, $parsed['params']);
 
         $whereData = $this->buildWhereClause($parsed['filters'], $params);
@@ -2689,8 +2656,6 @@ class ClickHouse extends SQL
 
         $this->setOperationContext('getTimeSeries()');
 
-        $queries = $this->scopeToTenant($tenant, $queries);
-
         // Initialize result structure
         $output = [];
         foreach ($metrics as $metric) {
@@ -2713,7 +2678,7 @@ class ClickHouse extends SQL
                 continue;
             }
 
-            $typeResult = $this->getTimeSeriesFromTable($metrics, $interval, $startDate, $endDate, $queries, $queryType);
+            $typeResult = $this->getTimeSeriesFromTable($tenant, $metrics, $interval, $startDate, $endDate, $queries, $queryType);
 
             // Merge results
             foreach ($typeResult as $metricName => $metricData) {
@@ -2757,7 +2722,7 @@ class ClickHouse extends SQL
      * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
      * @throws Exception
      */
-    private function getTimeSeriesFromTable(array $metrics, string $interval, string $startDate, string $endDate, array $queries, string $type): array
+    private function getTimeSeriesFromTable(string $tenant, array $metrics, string $interval, string $startDate, string $endDate, array $queries, string $type): array
     {
         $timeFunction = self::INTERVAL_FUNCTIONS[$interval];
         $tableName = $this->getTableForType($type);
@@ -2774,15 +2739,15 @@ class ClickHouse extends SQL
 
         $metricInClause = implode(', ', $metricPlaceholders);
 
-        // Build additional WHERE conditions from queries
-        $parsed = $this->parseQueries($queries, $type);
+        // Build additional WHERE conditions from queries (tenant baked in)
+        $parsed = $this->parseQueries($tenant, $queries, $type);
         $additionalFilters = $parsed['filters'];
         $params = array_merge($metricParams, $parsed['params']);
 
         $params['start_date'] = $this->formatDateTime($startDate);
         $params['end_date'] = $this->formatDateTime($endDate);
 
-        // Tenant scoping arrives as a normal query filter (see scopeToTenant).
+        // Tenant scoping is already folded into $additionalFilters by parseQueries().
         $additionalWhere = '';
         if (!empty($additionalFilters)) {
             $additionalWhere = ' AND ' . implode(' AND ', $additionalFilters);
@@ -2898,19 +2863,17 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('getTotal()');
 
-        $queries = $this->scopeToTenant($tenant, $queries);
-
         if ($type === Usage::TYPE_EVENT) {
-            return $this->getTotalFromEvents($metric, $queries);
+            return $this->getTotalFromEvents($tenant, $metric, $queries);
         }
 
         if ($type === Usage::TYPE_GAUGE) {
-            return $this->getTotalFromGauges($metric, $queries);
+            return $this->getTotalFromGauges($tenant, $metric, $queries);
         }
 
         // Query both tables — event uses SUM, gauge uses argMax
-        $eventTotal = $this->getTotalFromEvents($metric, $queries);
-        $gaugeTotal = $this->getTotalFromGauges($metric, $queries);
+        $eventTotal = $this->getTotalFromEvents($tenant, $metric, $queries);
+        $gaugeTotal = $this->getTotalFromGauges($tenant, $metric, $queries);
 
         if ($eventTotal > 0 && $gaugeTotal > 0) {
             throw new Exception(
@@ -2931,10 +2894,10 @@ class ClickHouse extends SQL
      * @return int
      * @throws Exception
      */
-    private function getTotalFromEvents(string $metric, array $queries): int
+    private function getTotalFromEvents(string $tenant, string $metric, array $queries): int
     {
         $queries[] = Query::equal('metric', [$metric]);
-        return $this->routedSum($queries, 'getTotal');
+        return $this->routedSum($tenant, $queries, 'getTotal');
     }
 
     /**
@@ -2946,7 +2909,7 @@ class ClickHouse extends SQL
      * @return int
      * @throws Exception
      */
-    private function getTotalFromGauges(string $metric, array $queries): int
+    private function getTotalFromGauges(string $tenant, string $metric, array $queries): int
     {
         $queries[] = Query::equal('metric', [$metric]);
 
@@ -2956,7 +2919,7 @@ class ClickHouse extends SQL
         $tableName = $this->getGaugesTableName();
         $fromTable = $this->buildTableReference($tableName);
 
-        $parsed = $this->parseQueries($queries, Usage::TYPE_GAUGE);
+        $parsed = $this->parseQueries($tenant, $queries, Usage::TYPE_GAUGE);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
         $sql = "
@@ -2998,8 +2961,6 @@ class ClickHouse extends SQL
 
         $this->setOperationContext('getTotalBatch()');
 
-        $queries = $this->scopeToTenant($tenant, $queries);
-
         // Initialize all metrics to 0
         $totals = \array_fill_keys($metrics, 0);
 
@@ -3028,7 +2989,7 @@ class ClickHouse extends SQL
             }
             $metricInClause = implode(', ', $metricPlaceholders);
 
-            $parsed = $this->parseQueries($queries, $queryType);
+            $parsed = $this->parseQueries($tenant, $queries, $queryType);
             $params = array_merge($metricParams, $parsed['params']);
 
             $whereData = $this->buildWhereClause($parsed['filters'], $params);
@@ -3086,10 +3047,11 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Build WHERE clause from filters with optional tenant filtering.
+     * Build a WHERE clause from already-parsed filters.
      *
-     * Tenant scoping is threaded in as a normal query filter (see
-     * scopeToTenant()), so it arrives here already folded into $filters.
+     * Tenant scoping is baked into parseQueries(), so by the time filters
+     * reach here they are already tenant-scoped — there is no separate step
+     * to forget.
      *
      * @param array<string> $filters
      * @param array<string, mixed> $params
@@ -3317,13 +3279,24 @@ class ClickHouse extends SQL
     /**
      * Parse Query objects into SQL clauses.
      *
+     * Tenant scoping is baked in here rather than left to callers: in
+     * shared-tables mode a `tenant = …` filter is prepended before parsing,
+     * so there is no way to produce a WHERE clause that isn't tenant-scoped.
+     * Every read/delete path funnels through this method, which is why it
+     * takes the tenant as a required first argument.
+     *
+     * @param string $tenant Tenant scope (shared-tables mode)
      * @param array<Query> $queries
      * @param string $type 'event' or 'gauge' — used for attribute validation
      * @return array{filters: array<int, string>, params: array<string, mixed>, orderBy?: array<string>, orderAttributes?: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, cursor?: array<string, mixed>, cursorDirection?: string}
      * @throws Exception
      */
-    private function parseQueries(array $queries, string $type = 'event'): array
+    private function parseQueries(string $tenant, array $queries, string $type = 'event'): array
     {
+        if ($this->sharedTables) {
+            array_unshift($queries, Query::equal('tenant', [$tenant]));
+        }
+
         $filters = [];
         $params = [];
         $orderBy = [];
@@ -3711,11 +3684,6 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('purge()');
 
-        // Tenant scopes the delete, but the daily-table forwarding decision
-        // (below) must reason about the caller's own filters — so keep the
-        // unscoped queries around and only fold the tenant into the WHERE.
-        $scopedQueries = $this->scopeToTenant($tenant, $queries);
-
         $typesToPurge = [];
         if ($type === Usage::TYPE_EVENT || $type === null) {
             $typesToPurge[] = Usage::TYPE_EVENT;
@@ -3728,7 +3696,7 @@ class ClickHouse extends SQL
             $tableName = $this->getTableForType($purgeType);
             $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($tableName);
 
-            $parsed = $this->parseQueries($scopedQueries, $purgeType);
+            $parsed = $this->parseQueries($tenant, $queries, $purgeType);
             $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
             $whereClause = $whereData['clause'];
             $params = $whereData['params'];
@@ -3828,14 +3796,13 @@ class ClickHouse extends SQL
             return;
         }
 
-        // Scope the delete to the tenant only after the compatibility decision,
-        // so the tenant filter never makes an otherwise-imprecise purge look
-        // safe to forward to the rollup.
-        $dailyQueries = $this->scopeToTenant($tenant, $dailyQueries);
-
+        // parseQueries() folds the tenant into the WHERE. The compatibility
+        // decision above deliberately runs on the caller's tenant-free filters,
+        // so the tenant scope can never make an imprecise purge look safe to
+        // forward to the rollup.
         $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());
 
-        $parsed = $this->parseQueries($dailyQueries, Usage::TYPE_EVENT);
+        $parsed = $this->parseQueries($tenant, $dailyQueries, Usage::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
         $whereClause = $whereData['clause'];
 

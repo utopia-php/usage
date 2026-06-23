@@ -227,7 +227,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         $reflection = new ReflectionClass($this->adapter);
         $sumFromTable = $reflection->getMethod('sumFromTable');
         $sumFromTable->setAccessible(true);
-        $result = $sumFromTable->invoke($this->adapter, [
+        $result = $sumFromTable->invoke($this->adapter, '1', [
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
