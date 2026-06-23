@@ -17,10 +17,16 @@ class Tenant
 
     /**
      * @param  Usage  $usage  The underlying (tenant-agnostic) Usage instance
-     * @param  string  $tenant  Tenant this view is scoped to
+     * @param  string  $tenant  Tenant this view is scoped to (non-empty)
      */
     public function __construct(Usage $usage, string $tenant)
     {
+        // Reject '' at construction: an empty scope would silently read/write
+        // the empty tenant in shared-tables mode. ("0" is a valid id.)
+        if ($tenant === '') {
+            throw new \InvalidArgumentException('Tenant cannot be empty');
+        }
+
         $this->usage = $usage;
         $this->tenant = $tenant;
     }

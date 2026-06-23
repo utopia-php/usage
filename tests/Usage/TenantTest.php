@@ -132,6 +132,13 @@ class TenantTest extends TestCase
         $this->tenant = new Tenant(new Usage($this->adapter), 'p1');
     }
 
+    public function testEmptyTenantThrows(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Tenant cannot be empty');
+        new Tenant(new Usage($this->adapter), '');
+    }
+
     public function testAddBatchStampsBoundTenantOntoEveryMetric(): void
     {
         $this->tenant->addBatch([
