@@ -5,7 +5,6 @@ namespace Utopia\Tests\Usage;
 use PHPUnit\Framework\TestCase;
 use Utopia\Usage\Accumulator;
 use Utopia\Usage\Adapter;
-use Utopia\Usage\Usage;
 
 /**
  * Records addBatch() calls so the Accumulator can be tested without a backend.
@@ -86,7 +85,7 @@ class RecordingAdapter extends Adapter
         return 0;
     }
 
-    public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
+    public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = Adapter::TYPE_EVENT): int
     {
         return 0;
     }
@@ -122,14 +121,14 @@ class AccumulatorTest extends TestCase
     protected function setUp(): void
     {
         $this->adapter = new RecordingAdapter();
-        $this->accumulator = new Accumulator(new Usage($this->adapter));
+        $this->accumulator = new Accumulator($this->adapter);
     }
 
     public function testEventsSumByKey(): void
     {
-        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT);
-        $this->accumulator->collect('t1', 'requests', 20, Usage::TYPE_EVENT);
-        $this->accumulator->collect('t1', 'requests', 30, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'requests', 10, Adapter::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'requests', 20, Adapter::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'requests', 30, Adapter::TYPE_EVENT);
 
         // Same metric + tags = 1 entry, values summed
         $this->assertEquals(1, $this->accumulator->count());
@@ -137,14 +136,14 @@ class AccumulatorTest extends TestCase
         $this->assertTrue($this->accumulator->flush());
 
         $this->assertCount(1, $this->adapter->batches);
-        $this->assertEquals(Usage::TYPE_EVENT, $this->adapter->batches[0]['type']);
+        $this->assertEquals(Adapter::TYPE_EVENT, $this->adapter->batches[0]['type']);
         $this->assertEquals(60, $this->adapter->batches[0]['metrics'][0]['value']);
     }
 
     public function testTagsPartitionEntries(): void
     {
-        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT, ['region' => 'us']);
-        $this->accumulator->collect('t1', 'requests', 20, Usage::TYPE_EVENT, ['region' => 'eu']);
+        $this->accumulator->collect('t1', 'requests', 10, Adapter::TYPE_EVENT, ['region' => 'us']);
+        $this->accumulator->collect('t1', 'requests', 20, Adapter::TYPE_EVENT, ['region' => 'eu']);
 
         // Distinct tags = distinct entries
         $this->assertEquals(2, $this->accumulator->count());
@@ -153,8 +152,8 @@ class AccumulatorTest extends TestCase
     public function testTenantPartitionsEntries(): void
     {
         // Same metric + tags but different tenants must not collapse
-        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT);
-        $this->accumulator->collect('t2', 'requests', 20, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'requests', 10, Adapter::TYPE_EVENT);
+        $this->accumulator->collect('t2', 'requests', 20, Adapter::TYPE_EVENT);
 
         $this->assertEquals(2, $this->accumulator->count());
 
@@ -167,30 +166,30 @@ class AccumulatorTest extends TestCase
 
     public function testGaugesUseLastWriteWins(): void
     {
-        $this->accumulator->collect('t1', 'storage', 100, Usage::TYPE_GAUGE);
-        $this->accumulator->collect('t1', 'storage', 200, Usage::TYPE_GAUGE);
-        $this->accumulator->collect('t1', 'storage', 300, Usage::TYPE_GAUGE);
+        $this->accumulator->collect('t1', 'storage', 100, Adapter::TYPE_GAUGE);
+        $this->accumulator->collect('t1', 'storage', 200, Adapter::TYPE_GAUGE);
+        $this->accumulator->collect('t1', 'storage', 300, Adapter::TYPE_GAUGE);
 
         $this->assertEquals(1, $this->accumulator->count());
 
         $this->assertTrue($this->accumulator->flush());
 
-        $this->assertEquals(Usage::TYPE_GAUGE, $this->adapter->batches[0]['type']);
+        $this->assertEquals(Adapter::TYPE_GAUGE, $this->adapter->batches[0]['type']);
         $this->assertEquals(300, $this->adapter->batches[0]['metrics'][0]['value']);
     }
 
     public function testFlushSeparatesEventsAndGauges(): void
     {
-        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT);
-        $this->accumulator->collect('t1', 'storage', 100, Usage::TYPE_GAUGE);
+        $this->accumulator->collect('t1', 'requests', 10, Adapter::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'storage', 100, Adapter::TYPE_GAUGE);
 
         $this->assertTrue($this->accumulator->flush());
 
         // One batch per type
         $this->assertCount(2, $this->adapter->batches);
         $types = [$this->adapter->batches[0]['type'], $this->adapter->batches[1]['type']];
-        $this->assertContains(Usage::TYPE_EVENT, $types);
-        $this->assertContains(Usage::TYPE_GAUGE, $types);
+        $this->assertContains(Adapter::TYPE_EVENT, $types);
+        $this->assertContains(Adapter::TYPE_GAUGE, $types);
 
         // Buffer cleared on success
         $this->assertEquals(0, $this->accumulator->count());
@@ -198,7 +197,7 @@ class AccumulatorTest extends TestCase
 
     public function testFailedFlushRetainsBuffer(): void
     {
-        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'requests', 10, Adapter::TYPE_EVENT);
 
         $this->adapter->succeed = false;
         $this->assertFalse($this->accumulator->flush());
@@ -233,13 +232,13 @@ class AccumulatorTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Tenant cannot be empty');
-        $this->accumulator->collect('', 'requests', 10, Usage::TYPE_EVENT);
+        $this->accumulator->collect('', 'requests', 10, Adapter::TYPE_EVENT);
     }
 
     public function testTenantZeroIsAccepted(): void
     {
         // "0" is a valid tenant id even though empty("0") is true in PHP
-        $this->accumulator->collect('0', 'requests', 10, Usage::TYPE_EVENT);
+        $this->accumulator->collect('0', 'requests', 10, Adapter::TYPE_EVENT);
 
         $this->assertEquals(1, $this->accumulator->count());
 
@@ -251,14 +250,14 @@ class AccumulatorTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Metric name cannot be empty');
-        $this->accumulator->collect('t1', '', 10, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', '', 10, Adapter::TYPE_EVENT);
     }
 
     public function testKeyDistinguishesAmbiguousTenantMetricSplits(): void
     {
         // tenant "a" + metric "b:c" must not collide with tenant "a:b" + metric "c"
-        $this->accumulator->collect('a', 'b:c', 10, Usage::TYPE_EVENT);
-        $this->accumulator->collect('a:b', 'c', 20, Usage::TYPE_EVENT);
+        $this->accumulator->collect('a', 'b:c', 10, Adapter::TYPE_EVENT);
+        $this->accumulator->collect('a:b', 'c', 20, Adapter::TYPE_EVENT);
 
         $this->assertEquals(2, $this->accumulator->count());
     }
@@ -266,8 +265,8 @@ class AccumulatorTest extends TestCase
     public function testTagOrderDoesNotSplitEntries(): void
     {
         // Same logical tags in different insertion order must sum into one entry
-        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT, ['teamId' => 't', 'resourceId' => 'r']);
-        $this->accumulator->collect('t1', 'requests', 20, Usage::TYPE_EVENT, ['resourceId' => 'r', 'teamId' => 't']);
+        $this->accumulator->collect('t1', 'requests', 10, Adapter::TYPE_EVENT, ['teamId' => 't', 'resourceId' => 'r']);
+        $this->accumulator->collect('t1', 'requests', 20, Adapter::TYPE_EVENT, ['resourceId' => 'r', 'teamId' => 't']);
 
         $this->assertEquals(1, $this->accumulator->count());
 
@@ -279,7 +278,7 @@ class AccumulatorTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Value cannot be negative');
-        $this->accumulator->collect('t1', 'requests', -1, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'requests', -1, Adapter::TYPE_EVENT);
     }
 
     public function testInvalidTypeThrows(): void

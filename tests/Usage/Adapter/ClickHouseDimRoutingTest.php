@@ -8,7 +8,7 @@ use ReflectionClass;
 use Utopia\Query\Query;
 use Utopia\Tests\Usage\Adapter\ClickHouseTestCase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
-use Utopia\Usage\Usage;
+use Utopia\Usage\Adapter;
 use Utopia\Usage\UsageQuery;
 
 /**
@@ -20,7 +20,7 @@ use Utopia\Usage\UsageQuery;
  */
 class ClickHouseDimRoutingTest extends ClickHouseTestCase
 {
-    private Usage $usage;
+    private Adapter $usage;
 
     private ClickHouseAdapter $adapter;
 
@@ -38,7 +38,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
             sharedTables: true,
         );
-        $this->usage = new Usage($this->adapter);
+        $this->usage = $this->adapter;
         $this->usage->setup();
         $this->usage->purge('1');
 
@@ -48,7 +48,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         $this->seedHistoricalRow($this->metric, 40, '-3 days', ['path' => '/v1/c', 'method' => 'POST', 'status' => '500', 'service' => 'functions', 'country' => 'fr']);
         $this->usage->addBatch([
             ['tenant' => '1', 'metric' => $this->metric, 'value' => 5, 'tags' => ['path' => '/v1/a', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']],
-        ], Usage::TYPE_EVENT);
+        ], Adapter::TYPE_EVENT);
     }
 
     protected function tearDown(): void
@@ -118,7 +118,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $rolled = $this->usage->find('1', $queries, Usage::TYPE_EVENT);
+        $rolled = $this->usage->find('1', $queries, Adapter::TYPE_EVENT);
 
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
         $this->assertProjectionUsed($queryId, $expectedProjection);
@@ -137,7 +137,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], Usage::TYPE_EVENT);
+        ], Adapter::TYPE_EVENT);
 
         $this->assertNoProjectionUsed($queryId);
     }
@@ -158,7 +158,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             Query::equal('resource', ['function']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], Usage::TYPE_EVENT);
+        ], Adapter::TYPE_EVENT);
 
         $this->assertNoProjectionUsed($queryId);
     }
@@ -180,7 +180,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], Usage::TYPE_EVENT);
+        ], Adapter::TYPE_EVENT);
 
         $this->assertProjectionUsed($queryId, 'p_by_path');
     }
@@ -198,7 +198,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
             Query::limit(50),
-        ], Usage::TYPE_EVENT);
+        ], Adapter::TYPE_EVENT);
 
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
         // Projections are derived in the same write transaction as the
@@ -210,7 +210,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
     /**
      * @param array<Query|UsageQuery> $queries
      */
-    private function routeFor(array $queries, string $type = Usage::TYPE_EVENT): string
+    private function routeFor(array $queries, string $type = Adapter::TYPE_EVENT): string
     {
         $reflection = new ReflectionClass($this->adapter);
         $extract = $reflection->getMethod('extractRoutingPlan');
@@ -231,7 +231,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], 'value', Usage::TYPE_EVENT);
+        ], 'value', Adapter::TYPE_EVENT);
         return is_int($result) ? $result : 0;
     }
 

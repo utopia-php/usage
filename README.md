@@ -33,12 +33,13 @@ composer require utopia-php/usage
 ```php
 <?php
 
-use Utopia\Usage\Usage;
+use Utopia\Usage\Adapter;
 use Utopia\Usage\Adapter\ClickHouse;
 
 // Configuration is fixed at construction. The adapter is fully stateless —
-// the tenant is passed explicitly on every call (see below).
-$adapter = new ClickHouse(
+// the tenant is passed explicitly on every call (see below). The adapter is
+// the entry point; there is no separate facade to wrap it in.
+$usage = new ClickHouse(
     host: 'clickhouse-server',
     username: 'default',
     password: '',
@@ -48,7 +49,6 @@ $adapter = new ClickHouse(
     sharedTables: true,
 );
 
-$usage = new Usage($adapter);
 $usage->setup(); // Creates events, gauges, and daily MV tables
 ```
 
@@ -57,19 +57,17 @@ $usage->setup(); // Creates events, gauges, and daily MV tables
 ```php
 <?php
 
-use Utopia\Usage\Usage;
 use Utopia\Usage\Adapter\Database as DatabaseAdapter;
 
-$adapter = new DatabaseAdapter($database); // Utopia\Database\Database instance
-$usage = new Usage($adapter);
+$usage = new DatabaseAdapter($database); // Utopia\Database\Database instance
 $usage->setup();
 ```
 
 ## Multi-tenancy
 
-`Usage` is stateless: every query/mutation takes the tenant as its first
+The adapter is stateless: every query/mutation takes the tenant as its first
 argument, and `addBatch` carries a `tenant` on each metric row (so one batch can
-span tenants). This makes a single `Usage` instance safe to share across
+span tenants). This makes a single adapter instance safe to share across
 tenants and coroutines.
 
 ```php
@@ -77,12 +75,12 @@ $usage->getTotal('project_123', 'bandwidth');           // read for one tenant
 $usage->addBatch([
     ['tenant' => 'project_123', 'metric' => 'bandwidth', 'value' => 5000, 'tags' => []],
     ['tenant' => 'project_456', 'metric' => 'bandwidth', 'value' => 2000, 'tags' => []],
-], Usage::TYPE_EVENT);
+], Adapter::TYPE_EVENT);
 ```
 
 Callers that only ever touch one tenant can bind it once with the `Tenant`
-decorator, which forwards to `Usage` with the tenant pre-filled (and stamps it
-onto every `addBatch` row):
+decorator, which forwards to the adapter with the tenant pre-filled (and stamps
+it onto every `addBatch` row):
 
 ```php
 use Utopia\Usage\Tenant;
@@ -91,7 +89,7 @@ $tenant = new Tenant($usage, 'project_123');
 $tenant->getTotal('bandwidth');                          // no tenant argument
 $tenant->addBatch([
     ['metric' => 'bandwidth', 'value' => 5000, 'tags' => []], // tenant stamped automatically
-], Usage::TYPE_EVENT);
+], Adapter::TYPE_EVENT);
 ```
 
 ## Metric Types
@@ -114,7 +112,7 @@ use Utopia\Usage\Accumulator;
 $accumulator = new Accumulator($usage);
 
 // Collect events — tenant first; values accumulate in-memory (summed per tenant+metric)
-$accumulator->collect('project_123', 'bandwidth', 5000, Usage::TYPE_EVENT, [
+$accumulator->collect('project_123', 'bandwidth', 5000, Adapter::TYPE_EVENT, [
     'path' => '/v1/storage/files',
     'method' => 'POST',
     'status' => '201',
@@ -149,8 +147,8 @@ Gauge-specific columns (see `Metric::GAUGE_COLUMNS`): `teamId`,
 
 ```php
 // Collect gauges — last value wins per tenant+metric in buffer
-$accumulator->collect('project_123', 'users', 1500, Usage::TYPE_GAUGE);
-$accumulator->collect('project_123', 'storage.size', 1048576, Usage::TYPE_GAUGE, [
+$accumulator->collect('project_123', 'users', 1500, Adapter::TYPE_GAUGE);
+$accumulator->collect('project_123', 'storage.size', 1048576, Adapter::TYPE_GAUGE, [
     'teamId' => 'team_x',
     'teamInternalId' => '7',
     'resourceId' => 'abc123',
@@ -178,11 +176,11 @@ if ($accumulator->count() >= 5000 || $accumulator->elapsedSeconds() >= 10) {
 $usage->addBatch([
     ['tenant' => 'project_123', 'metric' => 'requests', 'value' => 100, 'tags' => ['path' => '/v1/users', 'method' => 'GET']],
     ['tenant' => 'project_123', 'metric' => 'bandwidth', 'value' => 50000, 'tags' => ['country' => 'DE', 'region' => 'fra']],
-], Usage::TYPE_EVENT);
+], Adapter::TYPE_EVENT);
 
 $usage->addBatch([
     ['tenant' => 'project_123', 'metric' => 'users', 'value' => 42, 'tags' => ['teamId' => 'team_x']],
-], Usage::TYPE_GAUGE);
+], Adapter::TYPE_GAUGE);
 ```
 
 ## Querying Metrics
@@ -199,12 +197,12 @@ $metrics = $usage->find('project_123', [
     Query::greaterThanEqual('time', '2026-01-01'),
     Query::orderDesc('time'),
     Query::limit(100),
-], Usage::TYPE_EVENT);
+], Adapter::TYPE_EVENT);
 
 // Find gauges
 $gauges = $usage->find('project_123', [
     Query::equal('metric', ['users', 'storage.size']),
-], Usage::TYPE_GAUGE);
+], Adapter::TYPE_GAUGE);
 
 // Query both tables (type = null)
 $all = $usage->find('project_123', [
@@ -218,14 +216,14 @@ $all = $usage->find('project_123', [
 // Get total for a single metric (SUM for events, latest for gauges)
 $total = $usage->getTotal('project_123', 'bandwidth', [
     Query::greaterThanEqual('time', '2026-03-01'),
-], Usage::TYPE_EVENT);
+], Adapter::TYPE_EVENT);
 
 // Batch totals — single query with GROUP BY
 $totals = $usage->getTotalBatch(
     'project_123',
     ['bandwidth', 'executions', 'requests'],
     [Query::greaterThanEqual('time', '2026-03-01')],
-    Usage::TYPE_EVENT
+    Adapter::TYPE_EVENT
 );
 ```
 
@@ -241,7 +239,7 @@ $series = $usage->getTimeSeries(
     startDate: '2026-03-01',
     endDate: '2026-04-01',
     zeroFill: true,        // Fill gaps with zeros
-    type: Usage::TYPE_EVENT
+    type: Adapter::TYPE_EVENT
 );
 
 // Returns: ['bandwidth' => ['total' => 5000000, 'data' => [['value' => 100, 'date' => '...'], ...]]]
@@ -280,10 +278,10 @@ $rows = $usage->findDaily('project_123', [
 // Purge all event metrics older than 90 days
 $usage->purge('project_123', [
     Query::lessThan('time', '2026-01-01'),
-], Usage::TYPE_EVENT);
+], Adapter::TYPE_EVENT);
 
 // Purge all gauge metrics
-$usage->purge('project_123', [], Usage::TYPE_GAUGE);
+$usage->purge('project_123', [], Adapter::TYPE_GAUGE);
 ```
 
 ## Architecture

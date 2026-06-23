@@ -13,7 +13,6 @@ use Utopia\Psr7\Method;
 use Utopia\Psr7\Request\Factory as RequestFactory;
 use Utopia\Query\Query;
 use Utopia\Usage\Metric;
-use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 use Utopia\Validator\Hostname;
 
@@ -417,7 +416,7 @@ class ClickHouse extends SQL
      */
     private function getTableForType(string $type): string
     {
-        return $type === Usage::TYPE_GAUGE ? $this->getGaugesTableName() : $this->getEventsTableName();
+        return $type === self::TYPE_GAUGE ? $this->getGaugesTableName() : $this->getEventsTableName();
     }
 
     /**
@@ -1031,7 +1030,7 @@ class ClickHouse extends SQL
      */
     private function validateGroupByAttribute(string $attribute, string $type): bool
     {
-        $allowed = $type === Usage::TYPE_GAUGE ? Metric::GAUGE_COLUMNS : Metric::EVENT_COLUMNS;
+        $allowed = $type === self::TYPE_GAUGE ? Metric::GAUGE_COLUMNS : Metric::EVENT_COLUMNS;
 
         if (in_array($attribute, $allowed, true)) {
             return true;
@@ -1203,9 +1202,7 @@ class ClickHouse extends SQL
             throw new Exception($prefix . 'Value cannot be negative');
         }
 
-        if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
-            throw new \InvalidArgumentException($prefix . "Invalid type '{$type}'. Allowed: " . Usage::TYPE_EVENT . ', ' . Usage::TYPE_GAUGE);
-        }
+        self::assertType($type, $prefix);
     }
 
     /**
@@ -1378,11 +1375,11 @@ class ClickHouse extends SQL
         // up to 2N rows. Slice the merged result back down to the user's
         // requested limit. Tables whose schema doesn't support every filter
         // attribute (e.g. `path` on a gauge query) are skipped.
-        $events = $this->queriesMatchType($queries, Usage::TYPE_EVENT)
-            ? $this->findFromTable($tenant, $queries, Usage::TYPE_EVENT)
+        $events = $this->queriesMatchType($queries, self::TYPE_EVENT)
+            ? $this->findFromTable($tenant, $queries, self::TYPE_EVENT)
             : [];
-        $gauges = $this->queriesMatchType($queries, Usage::TYPE_GAUGE)
-            ? $this->findFromTable($tenant, $queries, Usage::TYPE_GAUGE)
+        $gauges = $this->queriesMatchType($queries, self::TYPE_GAUGE)
+            ? $this->findFromTable($tenant, $queries, self::TYPE_GAUGE)
             : [];
 
         $merged = array_merge($events, $gauges);
@@ -1526,7 +1523,7 @@ class ClickHouse extends SQL
         $hasInterval = isset($parsed['groupByInterval']);
 
         // Choose aggregation function based on metric type
-        $valueExpr = $type === Usage::TYPE_GAUGE
+        $valueExpr = $type === self::TYPE_GAUGE
             ? 'argMax(value, time) as value'
             : 'SUM(value) as value';
 
@@ -1689,11 +1686,11 @@ class ClickHouse extends SQL
         // capped at $max, so naively summing them could yield up to 2*$max.
         // Cap the combined total at $max in PHP to honour the contract.
         // Skip a table when its schema can't satisfy every filter attribute.
-        $events = $this->queriesMatchType($queries, Usage::TYPE_EVENT)
-            ? $this->countFromTable($tenant, $queries, Usage::TYPE_EVENT, $max)
+        $events = $this->queriesMatchType($queries, self::TYPE_EVENT)
+            ? $this->countFromTable($tenant, $queries, self::TYPE_EVENT, $max)
             : 0;
-        $gauges = $this->queriesMatchType($queries, Usage::TYPE_GAUGE)
-            ? $this->countFromTable($tenant, $queries, Usage::TYPE_GAUGE, $max)
+        $gauges = $this->queriesMatchType($queries, self::TYPE_GAUGE)
+            ? $this->countFromTable($tenant, $queries, self::TYPE_GAUGE, $max)
             : 0;
 
         $total = $events + $gauges;
@@ -1764,11 +1761,12 @@ class ClickHouse extends SQL
      * @return int
      * @throws Exception
      */
-    public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
+    public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = self::TYPE_EVENT): int
     {
+        self::assertType($type);
         $this->setOperationContext('sum()');
 
-        if ($type === Usage::TYPE_EVENT && $attribute === 'value') {
+        if ($type === self::TYPE_EVENT && $attribute === 'value') {
             return $this->routedSum($tenant, $queries, 'sum');
         }
 
@@ -1799,7 +1797,7 @@ class ClickHouse extends SQL
             return $total;
         }
 
-        return $this->sumFromTable($tenant, $queries, 'value', Usage::TYPE_EVENT);
+        return $this->sumFromTable($tenant, $queries, 'value', self::TYPE_EVENT);
     }
 
     /**
@@ -2356,7 +2354,7 @@ class ClickHouse extends SQL
         }
 
         try {
-            $rawTotal = $this->sumFromTable($tenant, $queries, 'value', Usage::TYPE_EVENT);
+            $rawTotal = $this->sumFromTable($tenant, $queries, 'value', self::TYPE_EVENT);
         } catch (Throwable $e) {
             return;
         }
@@ -2396,9 +2394,9 @@ class ClickHouse extends SQL
         $eventsTable = $this->buildTableReference($this->getEventsTableName());
 
         $split = $this->splitTimeQueries($queries);
-        $parsed = $this->parseQueries($tenant, $queries, Usage::TYPE_EVENT);
+        $parsed = $this->parseQueries($tenant, $queries, self::TYPE_EVENT);
         $dailyParsed = $this->prefixParsedParams(
-            $this->parseQueries($tenant, $split['nonTime'], Usage::TYPE_EVENT),
+            $this->parseQueries($tenant, $split['nonTime'], self::TYPE_EVENT),
             'd_'
         );
 
@@ -2491,7 +2489,7 @@ class ClickHouse extends SQL
                 $this->validateDailyAttributeName($attr);
             }
         }
-        $parsed = $this->parseQueries($tenant, $queries, Usage::TYPE_EVENT);
+        $parsed = $this->parseQueries($tenant, $queries, self::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
         $groupByColumns = $this->sharedTables ? ['tenant'] : [];
@@ -2516,7 +2514,7 @@ class ClickHouse extends SQL
 
         $sql = "SELECT {$selectColumns} FROM {$fromTable}{$whereData['clause']} GROUP BY {$groupBySql}{$orderClause}{$limitClause}{$offsetClause} FORMAT JSON";
 
-        return $this->parseResults($this->query($sql, $whereData['params']), Usage::TYPE_EVENT);
+        return $this->parseResults($this->query($sql, $whereData['params']), self::TYPE_EVENT);
     }
 
     /**
@@ -2553,7 +2551,7 @@ class ClickHouse extends SQL
                 $this->validateDailyAttributeName($attr);
             }
         }
-        $parsed = $this->parseQueries($tenant, $queries, Usage::TYPE_EVENT);
+        $parsed = $this->parseQueries($tenant, $queries, self::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
         $sql = "SELECT sum({$escapedAttribute}) as total FROM {$fromTable}{$whereData['clause']} FORMAT JSON";
@@ -2601,7 +2599,7 @@ class ClickHouse extends SQL
         }
         $metricInClause = implode(', ', $metricPlaceholders);
 
-        $parsed = $this->parseQueries($tenant, $queries, Usage::TYPE_EVENT);
+        $parsed = $this->parseQueries($tenant, $queries, self::TYPE_EVENT);
         $params = array_merge($metricParams, $parsed['params']);
 
         $whereData = $this->buildWhereClause($parsed['filters'], $params);
@@ -2668,11 +2666,11 @@ class ClickHouse extends SQL
         }
 
         $typesToQuery = [];
-        if ($type === Usage::TYPE_EVENT || $type === null) {
-            $typesToQuery[] = Usage::TYPE_EVENT;
+        if ($type === self::TYPE_EVENT || $type === null) {
+            $typesToQuery[] = self::TYPE_EVENT;
         }
-        if ($type === Usage::TYPE_GAUGE || $type === null) {
-            $typesToQuery[] = Usage::TYPE_GAUGE;
+        if ($type === self::TYPE_GAUGE || $type === null) {
+            $typesToQuery[] = self::TYPE_GAUGE;
         }
 
         foreach ($typesToQuery as $queryType) {
@@ -2758,7 +2756,7 @@ class ClickHouse extends SQL
             $additionalWhere = ' AND ' . implode(' AND ', $additionalFilters);
         }
 
-        $valueExpr = $type === Usage::TYPE_EVENT
+        $valueExpr = $type === self::TYPE_EVENT
             ? 'SUM(value) as agg_value'
             : 'argMax(value, time) as agg_value';
 
@@ -2868,11 +2866,11 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('getTotal()');
 
-        if ($type === Usage::TYPE_EVENT) {
+        if ($type === self::TYPE_EVENT) {
             return $this->getTotalFromEvents($tenant, $metric, $queries);
         }
 
-        if ($type === Usage::TYPE_GAUGE) {
+        if ($type === self::TYPE_GAUGE) {
             return $this->getTotalFromGauges($tenant, $metric, $queries);
         }
 
@@ -2924,7 +2922,7 @@ class ClickHouse extends SQL
         $tableName = $this->getGaugesTableName();
         $fromTable = $this->buildTableReference($tableName);
 
-        $parsed = $this->parseQueries($tenant, $queries, Usage::TYPE_GAUGE);
+        $parsed = $this->parseQueries($tenant, $queries, self::TYPE_GAUGE);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
 
         $sql = "
@@ -2973,11 +2971,11 @@ class ClickHouse extends SQL
         $contributingType = [];
 
         $typesToQuery = [];
-        if ($type === Usage::TYPE_EVENT || $type === null) {
-            $typesToQuery[] = Usage::TYPE_EVENT;
+        if ($type === self::TYPE_EVENT || $type === null) {
+            $typesToQuery[] = self::TYPE_EVENT;
         }
-        if ($type === Usage::TYPE_GAUGE || $type === null) {
-            $typesToQuery[] = Usage::TYPE_GAUGE;
+        if ($type === self::TYPE_GAUGE || $type === null) {
+            $typesToQuery[] = self::TYPE_GAUGE;
         }
 
         foreach ($typesToQuery as $queryType) {
@@ -3006,7 +3004,7 @@ class ClickHouse extends SQL
                 ? $whereClause . ' AND ' . $metricFilter
                 : ' WHERE ' . $metricFilter;
 
-            $valueExpr = $queryType === Usage::TYPE_EVENT
+            $valueExpr = $queryType === self::TYPE_EVENT
                 ? 'SUM(value) as agg_val'
                 : 'argMax(value, time) as agg_val';
 
@@ -3696,11 +3694,11 @@ class ClickHouse extends SQL
         $this->setOperationContext('purge()');
 
         $typesToPurge = [];
-        if ($type === Usage::TYPE_EVENT || $type === null) {
-            $typesToPurge[] = Usage::TYPE_EVENT;
+        if ($type === self::TYPE_EVENT || $type === null) {
+            $typesToPurge[] = self::TYPE_EVENT;
         }
-        if ($type === Usage::TYPE_GAUGE || $type === null) {
-            $typesToPurge[] = Usage::TYPE_GAUGE;
+        if ($type === self::TYPE_GAUGE || $type === null) {
+            $typesToPurge[] = self::TYPE_GAUGE;
         }
 
         foreach ($typesToPurge as $purgeType) {
@@ -3719,7 +3717,7 @@ class ClickHouse extends SQL
             $sql = "DELETE FROM {$escapedTable}{$whereClause}";
             $this->query($sql, $params);
 
-            if ($purgeType === Usage::TYPE_EVENT) {
+            if ($purgeType === self::TYPE_EVENT) {
                 $this->purgeDaily($tenant, $queries);
             }
         }
@@ -3813,7 +3811,7 @@ class ClickHouse extends SQL
         // forward to the rollup.
         $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());
 
-        $parsed = $this->parseQueries($tenant, $dailyQueries, Usage::TYPE_EVENT);
+        $parsed = $this->parseQueries($tenant, $dailyQueries, self::TYPE_EVENT);
         $whereData = $this->buildWhereClause($parsed['filters'], $parsed['params']);
         $whereClause = $whereData['clause'];
 

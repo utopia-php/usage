@@ -4,6 +4,25 @@ namespace Utopia\Usage;
 
 abstract class Adapter
 {
+    public const TYPE_EVENT = 'event';
+    public const TYPE_GAUGE = 'gauge';
+
+    /**
+     * Assert that $type is a valid metric type, throwing otherwise.
+     *
+     * Single source of truth for the event/gauge guard shared by the adapters
+     * and the Accumulator. $prefix lets batch validators add positional context
+     * (e.g. "Metric #3: ") to the message.
+     *
+     * @throws \InvalidArgumentException
+     */
+    public static function assertType(string $type, string $prefix = ''): void
+    {
+        if ($type !== self::TYPE_EVENT && $type !== self::TYPE_GAUGE) {
+            throw new \InvalidArgumentException($prefix . "Invalid type '{$type}'. Allowed: " . self::TYPE_EVENT . ', ' . self::TYPE_GAUGE);
+        }
+    }
+
     /**
      * Get adapter name
      */
@@ -130,7 +149,7 @@ abstract class Adapter
      * @param string $type Metric type: 'event' or 'gauge'
      * @return int
      */
-    abstract public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int;
+    abstract public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = self::TYPE_EVENT): int;
 
     /**
      * Find event metrics from the pre-aggregated daily table.

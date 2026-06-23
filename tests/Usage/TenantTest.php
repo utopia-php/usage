@@ -5,7 +5,6 @@ namespace Utopia\Tests\Usage;
 use PHPUnit\Framework\TestCase;
 use Utopia\Usage\Adapter;
 use Utopia\Usage\Tenant;
-use Utopia\Usage\Usage;
 
 /**
  * Records the tenant passed to each method so the Tenant decorator can be
@@ -89,7 +88,7 @@ class TenantRecordingAdapter extends Adapter
         return 0;
     }
 
-    public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
+    public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = Adapter::TYPE_EVENT): int
     {
         $this->lastTenant = $tenant;
         return 0;
@@ -129,14 +128,14 @@ class TenantTest extends TestCase
     protected function setUp(): void
     {
         $this->adapter = new TenantRecordingAdapter();
-        $this->tenant = new Tenant(new Usage($this->adapter), 'p1');
+        $this->tenant = new Tenant($this->adapter, 'p1');
     }
 
     public function testEmptyTenantThrows(): void
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Tenant cannot be empty');
-        new Tenant(new Usage($this->adapter), '');
+        new Tenant($this->adapter, '');
     }
 
     public function testAddBatchStampsBoundTenantOntoEveryMetric(): void
@@ -144,7 +143,7 @@ class TenantTest extends TestCase
         $this->tenant->addBatch([
             ['metric' => 'requests', 'value' => 10, 'tags' => []],
             ['metric' => 'bandwidth', 'value' => 20, 'tags' => []],
-        ], Usage::TYPE_EVENT);
+        ], Adapter::TYPE_EVENT);
 
         $this->assertEquals('p1', $this->adapter->lastMetrics[0]['tenant']);
         $this->assertEquals('p1', $this->adapter->lastMetrics[1]['tenant']);
@@ -152,31 +151,31 @@ class TenantTest extends TestCase
 
     public function testFindForwardsBoundTenant(): void
     {
-        $this->tenant->find([], Usage::TYPE_EVENT);
+        $this->tenant->find([], Adapter::TYPE_EVENT);
         $this->assertEquals('p1', $this->adapter->lastTenant);
     }
 
     public function testCountForwardsBoundTenant(): void
     {
-        $this->tenant->count([], Usage::TYPE_EVENT);
+        $this->tenant->count([], Adapter::TYPE_EVENT);
         $this->assertEquals('p1', $this->adapter->lastTenant);
     }
 
     public function testSumForwardsBoundTenant(): void
     {
-        $this->tenant->sum([], 'value', Usage::TYPE_EVENT);
+        $this->tenant->sum([], 'value', Adapter::TYPE_EVENT);
         $this->assertEquals('p1', $this->adapter->lastTenant);
     }
 
     public function testGetTotalForwardsBoundTenant(): void
     {
-        $this->tenant->getTotal('requests', [], Usage::TYPE_EVENT);
+        $this->tenant->getTotal('requests', [], Adapter::TYPE_EVENT);
         $this->assertEquals('p1', $this->adapter->lastTenant);
     }
 
     public function testGetTotalBatchForwardsBoundTenant(): void
     {
-        $this->tenant->getTotalBatch(['requests'], [], Usage::TYPE_EVENT);
+        $this->tenant->getTotalBatch(['requests'], [], Adapter::TYPE_EVENT);
         $this->assertEquals('p1', $this->adapter->lastTenant);
     }
 
@@ -188,7 +187,7 @@ class TenantTest extends TestCase
 
     public function testPurgeForwardsBoundTenant(): void
     {
-        $this->tenant->purge([], Usage::TYPE_EVENT);
+        $this->tenant->purge([], Adapter::TYPE_EVENT);
         $this->assertEquals('p1', $this->adapter->lastTenant);
     }
 

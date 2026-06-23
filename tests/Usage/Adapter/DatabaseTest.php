@@ -11,7 +11,7 @@ use Utopia\Database\Database;
 use Utopia\Database\Exception\Duplicate;
 use Utopia\Tests\Usage\UsageBase;
 use Utopia\Usage\Adapter\Database as AdapterDatabase;
-use Utopia\Usage\Usage;
+use Utopia\Usage\Adapter;
 
 class DatabaseTest extends TestCase
 {
@@ -36,7 +36,7 @@ class DatabaseTest extends TestCase
         $this->database->setDatabase('utopiaTests');
         $this->database->setNamespace('utopia_usage');
 
-        $this->usage = new Usage(new AdapterDatabase($this->database));
+        $this->usage = new AdapterDatabase($this->database);
 
         // Create database if missing
         try {
@@ -64,7 +64,7 @@ class DatabaseTest extends TestCase
             $this->markTestSkipped('pdo_mysql extension is not installed');
         }
 
-        $this->usage->purge('1', [], Usage::TYPE_EVENT);
+        $this->usage->purge('1', [], Adapter::TYPE_EVENT);
 
         $this->assertTrue($this->usage->addBatch([
             [
@@ -89,11 +89,11 @@ class DatabaseTest extends TestCase
                     'deviceName' => 'smartphone',
                 ],
             ],
-        ], Usage::TYPE_EVENT));
+        ], Adapter::TYPE_EVENT));
 
         $results = $this->usage->find('1', [
             \Utopia\Query\Query::equal('metric', ['event-cols-db']),
-        ], Usage::TYPE_EVENT);
+        ], Adapter::TYPE_EVENT);
 
         $this->assertCount(1, $results);
         $metric = $results[0];
@@ -119,7 +119,7 @@ class DatabaseTest extends TestCase
             $this->markTestSkipped('pdo_mysql extension is not installed');
         }
 
-        $this->usage->purge('1', [], Usage::TYPE_GAUGE);
+        $this->usage->purge('1', [], Adapter::TYPE_GAUGE);
 
         $this->assertTrue($this->usage->addBatch([
             [
@@ -133,11 +133,11 @@ class DatabaseTest extends TestCase
                     'resourceInternalId' => '42',
                 ],
             ],
-        ], Usage::TYPE_GAUGE));
+        ], Adapter::TYPE_GAUGE));
 
         $results = $this->usage->find('1', [
             \Utopia\Query\Query::equal('metric', ['gauge-cols-db']),
-        ], Usage::TYPE_GAUGE);
+        ], Adapter::TYPE_GAUGE);
 
         $this->assertCount(1, $results);
         $metric = $results[0];
@@ -157,7 +157,7 @@ class DatabaseTest extends TestCase
         $this->expectExceptionMessageMatches("/Unknown column 'bogus'/");
         $this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'x', 'value' => 1, 'tags' => ['bogus' => 'v']],
-        ], Usage::TYPE_EVENT);
+        ], Adapter::TYPE_EVENT);
     }
 
     public function testCountryAndRegionLowercased(): void
@@ -166,14 +166,14 @@ class DatabaseTest extends TestCase
             $this->markTestSkipped('pdo_mysql extension is not installed');
         }
 
-        $this->usage->purge('1', [], Usage::TYPE_EVENT);
+        $this->usage->purge('1', [], Adapter::TYPE_EVENT);
         $this->assertTrue($this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'lc-db', 'value' => 1, 'tags' => ['country' => 'US', 'region' => 'FR']],
-        ], Usage::TYPE_EVENT));
+        ], Adapter::TYPE_EVENT));
 
         $results = $this->usage->find('1', [
             \Utopia\Query\Query::equal('metric', ['lc-db']),
-        ], Usage::TYPE_EVENT);
+        ], Adapter::TYPE_EVENT);
 
         $this->assertCount(1, $results);
         $this->assertSame('us', $results[0]->getCountry());
@@ -186,14 +186,14 @@ class DatabaseTest extends TestCase
             $this->markTestSkipped('pdo_mysql extension is not installed');
         }
 
-        $this->usage->purge('1', [], Usage::TYPE_EVENT);
+        $this->usage->purge('1', [], Adapter::TYPE_EVENT);
         $this->assertTrue($this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'empty-db', 'value' => 1, 'tags' => ['osName' => '']],
-        ], Usage::TYPE_EVENT));
+        ], Adapter::TYPE_EVENT));
 
         $results = $this->usage->find('1', [
             \Utopia\Query\Query::equal('metric', ['empty-db']),
-        ], Usage::TYPE_EVENT);
+        ], Adapter::TYPE_EVENT);
 
         $this->assertCount(1, $results);
         $this->assertNull($results[0]->getOsName());
@@ -204,7 +204,7 @@ class DatabaseTest extends TestCase
      */
     public function testHealthCheck(): void
     {
-        $adapter = $this->usage->getAdapter();
+        $adapter = $this->usage;
 
         $health = $adapter->healthCheck();
 

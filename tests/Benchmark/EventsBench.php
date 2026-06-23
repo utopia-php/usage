@@ -5,7 +5,7 @@ namespace Utopia\Tests\Benchmark;
 use DateTime;
 use DateTimeZone;
 use Utopia\Query\Query;
-use Utopia\Usage\Usage;
+use Utopia\Usage\Adapter;
 use Utopia\Usage\UsageQuery;
 
 class EventsBench extends BenchmarkBase
@@ -29,7 +29,7 @@ class EventsBench extends BenchmarkBase
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $start),
                 Query::lessThanEqual('time', $end),
-            ], 'value', Usage::TYPE_EVENT);
+            ], 'value', Adapter::TYPE_EVENT);
         });
 
         $this->runBench('bench_events_timeseries_30d_1h', function (string $queryId) use ($start, $end): void {
@@ -40,7 +40,7 @@ class EventsBench extends BenchmarkBase
                 Query::greaterThanEqual('time', $start),
                 Query::lessThanEqual('time', $end),
                 Query::limit(5000),
-            ], Usage::TYPE_EVENT);
+            ], Adapter::TYPE_EVENT);
         });
 
         $this->runBench('bench_events_count_max_5k', function (string $queryId) use ($start, $end): void {
@@ -49,7 +49,7 @@ class EventsBench extends BenchmarkBase
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $start),
                 Query::lessThanEqual('time', $end),
-            ], Usage::TYPE_EVENT, 5000);
+            ], Adapter::TYPE_EVENT, 5000);
         });
 
         $this->runBench('bench_insert_10k', function (string $queryId): void {
@@ -68,7 +68,7 @@ class EventsBench extends BenchmarkBase
                 ];
             }
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->addBatch($batch, Usage::TYPE_EVENT);
+            $this->usage->addBatch($batch, Adapter::TYPE_EVENT);
         }, 3);
 
         $this->runBench('bench_events_topN_path_30d', function (string $queryId) use ($start, $end): void {
@@ -79,7 +79,7 @@ class EventsBench extends BenchmarkBase
                 Query::greaterThanEqual('time', $start),
                 Query::lessThanEqual('time', $end),
                 Query::limit(500),
-            ], Usage::TYPE_EVENT);
+            ], Adapter::TYPE_EVENT);
         });
 
         $this->runBench('bench_events_topN_country_30d', function (string $queryId) use ($start, $end): void {
@@ -90,7 +90,7 @@ class EventsBench extends BenchmarkBase
                 Query::greaterThanEqual('time', $start),
                 Query::lessThanEqual('time', $end),
                 Query::limit(200),
-            ], Usage::TYPE_EVENT);
+            ], Adapter::TYPE_EVENT);
         });
 
         $this->runBench('bench_events_topN_service_30d', function (string $queryId) use ($start, $end): void {
@@ -101,7 +101,7 @@ class EventsBench extends BenchmarkBase
                 Query::greaterThanEqual('time', $start),
                 Query::lessThanEqual('time', $end),
                 Query::limit(200),
-            ], Usage::TYPE_EVENT);
+            ], Adapter::TYPE_EVENT);
         });
 
         $todayStart = (new DateTime('today', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
@@ -114,7 +114,7 @@ class EventsBench extends BenchmarkBase
                 Query::greaterThanEqual('time', $todayStart),
                 Query::lessThanEqual('time', $todayEnd),
                 Query::limit(500),
-            ], Usage::TYPE_EVENT);
+            ], Adapter::TYPE_EVENT);
         });
 
         $this->runBench('bench_events_topN_path_30d_filtered_resource', function (string $queryId) use ($start, $end): void {
@@ -126,7 +126,7 @@ class EventsBench extends BenchmarkBase
                 Query::greaterThanEqual('time', $start),
                 Query::lessThanEqual('time', $end),
                 Query::limit(500),
-            ], Usage::TYPE_EVENT);
+            ], Adapter::TYPE_EVENT);
         });
 
         $this->runBench('bench_events_topN_path_country', function (string $queryId) use ($start, $end): void {
@@ -138,7 +138,7 @@ class EventsBench extends BenchmarkBase
                 Query::greaterThanEqual('time', $start),
                 Query::lessThanEqual('time', $end),
                 Query::limit(500),
-            ], Usage::TYPE_EVENT);
+            ], Adapter::TYPE_EVENT);
         });
 
         $this->runBench('bench_insert_with_projections', function (string $queryId): void {
@@ -158,7 +158,7 @@ class EventsBench extends BenchmarkBase
                 ];
             }
             $this->adapter->setNextQueryId($queryId);
-            $this->usage->addBatch($batch, Usage::TYPE_EVENT);
+            $this->usage->addBatch($batch, Adapter::TYPE_EVENT);
         }, 3);
 
         $this->assertNotEmpty($this->results, 'Benchmark scenarios must record results');
