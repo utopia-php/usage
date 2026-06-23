@@ -236,6 +236,17 @@ class AccumulatorTest extends TestCase
         $this->accumulator->collect('', 'requests', 10, Usage::TYPE_EVENT);
     }
 
+    public function testTenantZeroIsAccepted(): void
+    {
+        // "0" is a valid tenant id even though empty("0") is true in PHP
+        $this->accumulator->collect('0', 'requests', 10, Usage::TYPE_EVENT);
+
+        $this->assertEquals(1, $this->accumulator->count());
+
+        $this->assertTrue($this->accumulator->flush());
+        $this->assertEquals('0', $this->adapter->batches[0]['metrics'][0]['tenant']);
+    }
+
     public function testEmptyMetricNameThrows(): void
     {
         $this->expectException(\InvalidArgumentException::class);

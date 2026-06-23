@@ -53,10 +53,12 @@ class Accumulator
      */
     public function collect(string $tenant, string $metric, int $value, string $type, array $tags = []): self
     {
-        if (empty($tenant)) {
+        // Compare against '' rather than empty(): the string "0" is a valid
+        // tenant/metric id but empty("0") is true in PHP.
+        if ($tenant === '') {
             throw new \InvalidArgumentException('Tenant cannot be empty');
         }
-        if (empty($metric)) {
+        if ($metric === '') {
             throw new \InvalidArgumentException('Metric name cannot be empty');
         }
         if ($value < 0) {
