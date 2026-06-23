@@ -17,7 +17,16 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
 
     protected function setUp(): void
     {
-        $this->adapter = $this->makeAdapter('utopia_usage_schema');
+        $this->adapter = new ClickHouseAdapter(
+            getenv('CLICKHOUSE_HOST') ?: 'clickhouse',
+            getenv('CLICKHOUSE_USER') ?: 'default',
+            getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse',
+            (int) (getenv('CLICKHOUSE_PORT') ?: 8123),
+            (bool) (getenv('CLICKHOUSE_SECURE') ?: false),
+            namespace: 'utopia_usage_schema',
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+            sharedTables: true,
+        );
         $usage = new Usage($this->adapter);
         $usage->setup();
     }
@@ -102,7 +111,16 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
 
     public function testSetupBackfillsServiceResourceOnLegacyGaugesTable(): void
     {
-        $legacyAdapter = $this->makeAdapter('utopia_usage_schema_legacy_gauge');
+        $legacyAdapter = new ClickHouseAdapter(
+            getenv('CLICKHOUSE_HOST') ?: 'clickhouse',
+            getenv('CLICKHOUSE_USER') ?: 'default',
+            getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse',
+            (int) (getenv('CLICKHOUSE_PORT') ?: 8123),
+            (bool) (getenv('CLICKHOUSE_SECURE') ?: false),
+            namespace: 'utopia_usage_schema_legacy_gauge',
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+            sharedTables: true,
+        );
         $database = $this->databaseName($legacyAdapter);
         $gaugesTable = $this->resolveTableName($legacyAdapter, 'getGaugesTableName');
         $fullName = "`{$database}`.`{$gaugesTable}`";

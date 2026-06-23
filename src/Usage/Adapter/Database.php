@@ -122,7 +122,10 @@ class Database extends SQL
      * Database adapter uses a single collection for both types. The $type parameter
      * is stored as a field in each document for query-time differentiation.
      *
-     * @param array<array{metric: string, value: int, tags?: array<string,mixed>}> $metrics
+     * Each metric carries its own `tenant` (shared-tables mode), so a single
+     * batch may span multiple tenants.
+     *
+     * @param array<array{tenant: string, metric: string, value: int, tags?: array<string,mixed>}> $metrics
      * @param string $type Metric type: 'event' or 'gauge'
      * @param int $batchSize
      * @return bool
@@ -131,7 +134,7 @@ class Database extends SQL
     public function addBatch(array $metrics, string $type, int $batchSize = 1000): bool
     {
         $this->db->getAuthorization()->skip(function () use ($metrics, $type, $batchSize) {
-            $documents = [];
+            $entries = [];
             foreach ($metrics as $metric) {
                 if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
                     throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: event, gauge");
@@ -155,12 +158,13 @@ class Database extends SQL
                     'time' => (new \DateTime())->format('Y-m-d H:i:s.v'),
                 ], $columns);
 
-                $documents[] = new Document($docData);
+                $entries[] = ['tenant' => $metric['tenant'], 'doc' => new Document($docData)];
             }
 
-            foreach (array_chunk($documents, max(1, $batchSize)) as $chunk) {
-                foreach ($chunk as $doc) {
-                    $this->db->createDocument($this->collection, $doc);
+            foreach (array_chunk($entries, max(1, $batchSize)) as $chunk) {
+                foreach ($chunk as $entry) {
+                    $this->setDbTenant($entry['tenant']);
+                    $this->db->createDocument($this->collection, $entry['doc']);
                 }
             }
         });
@@ -173,6 +177,7 @@ class Database extends SQL
      *
      * Stub implementation for Database adapter.
      *
+     * @param string $tenant
      * @param array<string> $metrics
      * @param string $interval
      * @param string $startDate
@@ -182,7 +187,7 @@ class Database extends SQL
      * @param string|null $type
      * @return array<string, array{total: float, data: array<array{value: float, date: string}>}>
      */
-    public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
+    public function getTimeSeries(string $tenant, array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
     {
         // Stub: Database adapter time series not yet implemented
         $output = [];
@@ -197,12 +202,13 @@ class Database extends SQL
      *
      * Returns SUM for event metrics, latest value for gauge metrics.
      *
+     * @param string $tenant
      * @param string $metric
      * @param array<Query> $queries
      * @param string|null $type
      * @return int
      */
-    public function getTotal(string $metric, array $queries = [], ?string $type = null): int
+    public function getTotal(string $tenant, string $metric, array $queries = [], ?string $type = null): int
     {
         $allQueries = array_merge($queries, [
             Query::equal('metric', [$metric]),
@@ -217,7 +223,7 @@ class Database extends SQL
                 Query::limit(1),
             ]);
             /** @var array<Metric> $gaugeResults */
-            $gaugeResults = $this->find($gaugeQueries, $type);
+            $gaugeResults = $this->find($tenant, $gaugeQueries, $type);
             if (empty($gaugeResults)) {
                 return 0;
             }
@@ -225,7 +231,7 @@ class Database extends SQL
         }
 
         /** @var array<Metric> $results */
-        $results = $this->find($allQueries, $type);
+        $results = $this->find($tenant, $allQueries, $type);
 
         if (empty($results)) {
             return 0;
@@ -280,12 +286,13 @@ class Database extends SQL
     /**
      * Get totals for multiple metrics.
      *
+     * @param string $tenant
      * @param array<string> $metrics
      * @param array<Query> $queries
      * @param string|null $type
      * @return array<string, int>
      */
-    public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
+    public function getTotalBatch(string $tenant, array $metrics, array $queries = [], ?string $type = null): array
     {
         if (empty($metrics)) {
             return [];
@@ -294,7 +301,7 @@ class Database extends SQL
         $totals = \array_fill_keys($metrics, 0);
 
         foreach ($metrics as $metric) {
-            $totals[$metric] = $this->getTotal($metric, $queries, $type);
+            $totals[$metric] = $this->getTotal($tenant, $metric, $queries, $type);
         }
 
         return $totals;
@@ -305,15 +312,16 @@ class Database extends SQL
      *
      * Events-only by default — summing gauges is semantically meaningless.
      *
+     * @param string $tenant
      * @param array<Query> $queries
      * @param string $attribute
      * @param string $type 'event' or 'gauge'
      * @return int
      */
-    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
+    public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
     {
         /** @var array<Metric> $results */
-        $results = $this->find($queries, $type);
+        $results = $this->find($tenant, $queries, $type);
 
         $sum = 0;
         foreach ($results as $result) {
@@ -326,26 +334,28 @@ class Database extends SQL
     /**
      * Find from daily table — Database adapter falls back to regular find for events.
      *
+     * @param string $tenant
      * @param array<Query> $queries
      * @return array<Metric>
      */
-    public function findDaily(array $queries = []): array
+    public function findDaily(string $tenant, array $queries = []): array
     {
-        return $this->find($queries, Usage::TYPE_EVENT);
+        return $this->find($tenant, $queries, Usage::TYPE_EVENT);
     }
 
     /**
      * Sum multiple metrics from daily table — falls back to individual sumDaily calls.
      *
+     * @param string $tenant
      * @param array<\Utopia\Query\Query> $queries
      * @return array<string, int>
      */
-    public function sumDailyBatch(array $metrics, array $queries = []): array
+    public function sumDailyBatch(string $tenant, array $metrics, array $queries = []): array
     {
         $totals = \array_fill_keys($metrics, 0);
         foreach ($metrics as $metric) {
             $metricQueries = array_merge($queries, [Query::equal('metric', [$metric])]);
-            $totals[$metric] = $this->sumDaily($metricQueries);
+            $totals[$metric] = $this->sumDaily($tenant, $metricQueries);
         }
         return $totals;
     }
@@ -353,13 +363,14 @@ class Database extends SQL
     /**
      * Sum from daily table — Database adapter falls back to regular sum for events.
      *
+     * @param string $tenant
      * @param array<Query> $queries
      * @param string $attribute
      * @return int
      */
-    public function sumDaily(array $queries = [], string $attribute = 'value'): int
+    public function sumDaily(string $tenant, array $queries = [], string $attribute = 'value'): int
     {
-        return $this->sum($queries, $attribute, Usage::TYPE_EVENT);
+        return $this->sum($tenant, $queries, $attribute, Usage::TYPE_EVENT);
     }
 
     /**
@@ -520,11 +531,13 @@ class Database extends SQL
     }
 
     /**
+     * @param string $tenant
      * @param array<Query> $queries
      * @param string|null $type
      */
-    public function purge(array $queries = [], ?string $type = null): bool
+    public function purge(string $tenant, array $queries = [], ?string $type = null): bool
     {
+        $this->setDbTenant($tenant);
         $queries = $this->withTypeFilter($queries, $type);
 
         $this->db->getAuthorization()->skip(function () use ($queries) {
@@ -553,12 +566,14 @@ class Database extends SQL
      * so callers can isolate event vs gauge rows. When $type is null both
      * are returned (caller distinguishes via Metric::getType()).
      *
+     * @param string $tenant
      * @param array<Query> $queries
      * @param string|null $type
      * @return array<Metric>
      */
-    public function find(array $queries = [], ?string $type = null): array
+    public function find(string $tenant, array $queries = [], ?string $type = null): array
     {
+        $this->setDbTenant($tenant);
         $queries = $this->withTypeFilter($queries, $type);
 
         /** @var array<Document> $result */
@@ -580,13 +595,15 @@ class Database extends SQL
      * utopia-php/database accepts a `$max` argument that pushes the cap
      * down into the underlying SQL.
      *
+     * @param string $tenant
      * @param array<Query> $queries
      * @param string|null $type
      * @param int|null $max Optional upper bound (inclusive) for the count
      * @return int
      */
-    public function count(array $queries = [], ?string $type = null, ?int $max = null): int
+    public function count(string $tenant, array $queries = [], ?string $type = null, ?int $max = null): int
     {
+        $this->setDbTenant($tenant);
         $queries = $this->withTypeFilter($queries, $type);
 
         /** @var int $count */
@@ -623,17 +640,18 @@ class Database extends SQL
     }
 
     /**
-     * Set the tenant ID for multi-tenant support.
+     * Scope the underlying Utopia\Database instance to a tenant for the next
+     * operation. The Database adapter requires a numeric tenant ID.
      *
-     * Tenant is the one piece of configuration that changes over an
-     * instance's lifetime (a single adapter serves many tenants across
-     * requests), so it stays a mutable setter. Namespace and shared-tables
-     * mode are configured directly on the injected Utopia\Database instance.
+     * The adapter takes ownership of the injected db's tenant: every call
+     * sets it and none restores it (Utopia\Database has no per-call tenant —
+     * only the mutable instance tenant — and save/restore around each call is
+     * its own footgun). Hand this adapter a db dedicated to usage, not one
+     * whose tenant other code depends on between calls.
      *
      * @param string|null $tenant
-     * @return self
      */
-    public function setTenant(?string $tenant): self
+    private function setDbTenant(?string $tenant): void
     {
         if ($tenant !== null && !is_numeric($tenant)) {
             throw new \InvalidArgumentException(
@@ -642,6 +660,5 @@ class Database extends SQL
         }
 
         $this->db->setTenant($tenant !== null ? (int) $tenant : null);
-        return $this;
     }
 }

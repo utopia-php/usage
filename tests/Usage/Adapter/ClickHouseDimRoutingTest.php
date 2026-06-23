@@ -28,23 +28,32 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
     protected function setUp(): void
     {
-        $this->adapter = $this->makeAdapter('utopia_usage_dim_routing');
+        $this->adapter = new ClickHouseAdapter(
+            getenv('CLICKHOUSE_HOST') ?: 'clickhouse',
+            getenv('CLICKHOUSE_USER') ?: 'default',
+            getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse',
+            (int) (getenv('CLICKHOUSE_PORT') ?: 8123),
+            (bool) (getenv('CLICKHOUSE_SECURE') ?: false),
+            namespace: 'utopia_usage_dim_routing',
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+            sharedTables: true,
+        );
         $this->usage = new Usage($this->adapter);
         $this->usage->setup();
-        $this->usage->purge();
+        $this->usage->purge('1');
 
         $this->seedHistoricalRow($this->metric, 10, '-5 days', ['path' => '/v1/a', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']);
         $this->seedHistoricalRow($this->metric, 20, '-4 days', ['path' => '/v1/a', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']);
         $this->seedHistoricalRow($this->metric, 30, '-3 days', ['path' => '/v1/b', 'method' => 'POST', 'status' => '201', 'service' => 'databases', 'country' => 'de']);
         $this->seedHistoricalRow($this->metric, 40, '-3 days', ['path' => '/v1/c', 'method' => 'POST', 'status' => '500', 'service' => 'functions', 'country' => 'fr']);
         $this->usage->addBatch([
-            ['metric' => $this->metric, 'value' => 5, 'tags' => ['path' => '/v1/a', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']],
+            ['tenant' => '1', 'metric' => $this->metric, 'value' => 5, 'tags' => ['path' => '/v1/a', 'method' => 'GET', 'status' => '200', 'service' => 'storage', 'country' => 'us']],
         ], Usage::TYPE_EVENT);
     }
 
     protected function tearDown(): void
     {
-        $this->usage->purge();
+        $this->usage->purge('1');
     }
 
     /**
@@ -109,7 +118,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $rolled = $this->usage->find($queries, Usage::TYPE_EVENT);
+        $rolled = $this->usage->find('1', $queries, Usage::TYPE_EVENT);
 
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
         $this->assertProjectionUsed($queryId, $expectedProjection);
@@ -122,7 +131,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $this->usage->find([
+        $this->usage->find('1', [
             UsageQuery::groupBy('path'),
             UsageQuery::groupBy('country'),
             Query::equal('metric', [$this->metric]),
@@ -143,7 +152,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $this->usage->find([
+        $this->usage->find('1', [
             UsageQuery::groupBy('path'),
             Query::equal('metric', [$this->metric]),
             Query::equal('resource', ['function']),
@@ -165,7 +174,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $this->usage->find([
+        $this->usage->find('1', [
             UsageQuery::groupByInterval('time', '1h'),
             UsageQuery::groupBy('path'),
             Query::equal('metric', [$this->metric]),
@@ -183,7 +192,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $rolled = $this->usage->find([
+        $rolled = $this->usage->find('1', [
             UsageQuery::groupBy('path'),
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
@@ -218,7 +227,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         $reflection = new ReflectionClass($this->adapter);
         $sumFromTable = $reflection->getMethod('sumFromTable');
         $sumFromTable->setAccessible(true);
-        $result = $sumFromTable->invoke($this->adapter, [
+        $result = $sumFromTable->invoke($this->adapter, '1', [
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
