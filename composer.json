@@ -19,6 +19,7 @@
     "minimum-stability": "stable",
     "require": {
         "php": ">=8.4",
+        "psr/http-client": "^1.0",
         "utopia-php/client": "^0.1|^0.2",
         "utopia-php/database": "5.*|6.0.*",
         "utopia-php/query": "0.1.*"
