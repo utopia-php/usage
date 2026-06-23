@@ -11,7 +11,7 @@ use Utopia\Database\Database;
 use Utopia\Database\Exception\Duplicate;
 use Utopia\Tests\Usage\UsageBase;
 use Utopia\Usage\Adapter\Database as AdapterDatabase;
-use Utopia\Usage\Adapter;
+use Utopia\Usage\Usage;
 
 class DatabaseTest extends TestCase
 {
@@ -64,7 +64,7 @@ class DatabaseTest extends TestCase
             $this->markTestSkipped('pdo_mysql extension is not installed');
         }
 
-        $this->usage->purge('1', [], Adapter::TYPE_EVENT);
+        $this->usage->purge('1', [], Usage::TYPE_EVENT);
 
         $this->assertTrue($this->usage->addBatch([
             [
@@ -89,11 +89,11 @@ class DatabaseTest extends TestCase
                     'deviceName' => 'smartphone',
                 ],
             ],
-        ], Adapter::TYPE_EVENT));
+        ], Usage::TYPE_EVENT));
 
         $results = $this->usage->find('1', [
             \Utopia\Query\Query::equal('metric', ['event-cols-db']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         $this->assertCount(1, $results);
         $metric = $results[0];
@@ -119,7 +119,7 @@ class DatabaseTest extends TestCase
             $this->markTestSkipped('pdo_mysql extension is not installed');
         }
 
-        $this->usage->purge('1', [], Adapter::TYPE_GAUGE);
+        $this->usage->purge('1', [], Usage::TYPE_GAUGE);
 
         $this->assertTrue($this->usage->addBatch([
             [
@@ -133,11 +133,11 @@ class DatabaseTest extends TestCase
                     'resourceInternalId' => '42',
                 ],
             ],
-        ], Adapter::TYPE_GAUGE));
+        ], Usage::TYPE_GAUGE));
 
         $results = $this->usage->find('1', [
             \Utopia\Query\Query::equal('metric', ['gauge-cols-db']),
-        ], Adapter::TYPE_GAUGE);
+        ], Usage::TYPE_GAUGE);
 
         $this->assertCount(1, $results);
         $metric = $results[0];
@@ -157,7 +157,7 @@ class DatabaseTest extends TestCase
         $this->expectExceptionMessageMatches("/Unknown column 'bogus'/");
         $this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'x', 'value' => 1, 'tags' => ['bogus' => 'v']],
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
     }
 
     public function testCountryAndRegionLowercased(): void
@@ -166,14 +166,14 @@ class DatabaseTest extends TestCase
             $this->markTestSkipped('pdo_mysql extension is not installed');
         }
 
-        $this->usage->purge('1', [], Adapter::TYPE_EVENT);
+        $this->usage->purge('1', [], Usage::TYPE_EVENT);
         $this->assertTrue($this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'lc-db', 'value' => 1, 'tags' => ['country' => 'US', 'region' => 'FR']],
-        ], Adapter::TYPE_EVENT));
+        ], Usage::TYPE_EVENT));
 
         $results = $this->usage->find('1', [
             \Utopia\Query\Query::equal('metric', ['lc-db']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         $this->assertCount(1, $results);
         $this->assertSame('us', $results[0]->getCountry());
@@ -186,14 +186,14 @@ class DatabaseTest extends TestCase
             $this->markTestSkipped('pdo_mysql extension is not installed');
         }
 
-        $this->usage->purge('1', [], Adapter::TYPE_EVENT);
+        $this->usage->purge('1', [], Usage::TYPE_EVENT);
         $this->assertTrue($this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'empty-db', 'value' => 1, 'tags' => ['osName' => '']],
-        ], Adapter::TYPE_EVENT));
+        ], Usage::TYPE_EVENT));
 
         $results = $this->usage->find('1', [
             \Utopia\Query\Query::equal('metric', ['empty-db']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         $this->assertCount(1, $results);
         $this->assertNull($results[0]->getOsName());

@@ -2,7 +2,7 @@
 
 namespace Utopia\Tests\Benchmark;
 
-use Utopia\Usage\Adapter;
+use Utopia\Usage\Usage;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use RuntimeException;
@@ -22,7 +22,7 @@ use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
  */
 abstract class BenchmarkBase extends TestCase
 {
-    protected Adapter $usage;
+    protected Usage $usage;
 
     protected ClickHouseAdapter $adapter;
 

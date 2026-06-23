@@ -3,12 +3,12 @@
 namespace Utopia\Tests\Usage;
 
 use Utopia\Query\Query;
-use Utopia\Usage\Adapter;
+use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 
 trait UsageBase
 {
-    protected Adapter $usage;
+    protected Usage $usage;
 
     abstract protected function initializeUsage(): void;
 
@@ -30,12 +30,12 @@ trait UsageBase
             ['tenant' => '1', 'metric' => 'requests', 'value' => 100, 'tags' => ['region' => 'us-east', 'path' => '/v1/storage', 'method' => 'GET', 'status' => '200', 'resource' => 'project', 'resourceId' => 'p1']],
             ['tenant' => '1', 'metric' => 'requests', 'value' => 150, 'tags' => ['region' => 'us-west', 'path' => '/v1/databases', 'method' => 'POST', 'status' => '201', 'resource' => 'database', 'resourceId' => 'db1']],
             ['tenant' => '1', 'metric' => 'bandwidth', 'value' => 5000, 'tags' => ['region' => 'us-east', 'path' => '/v1/storage/files', 'method' => 'POST', 'status' => '201', 'resource' => 'bucket', 'resourceId' => 'b1']],
-        ], Adapter::TYPE_EVENT));
+        ], Usage::TYPE_EVENT));
 
         // Gauges: point-in-time snapshots
         $this->assertTrue($this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'storage', 'value' => 10000, 'tags' => ['resourceId' => 'p1']],
-        ], Adapter::TYPE_GAUGE));
+        ], Usage::TYPE_GAUGE));
     }
 
     public function testAddBatchEvent(): void
@@ -46,11 +46,11 @@ trait UsageBase
         $this->assertTrue($this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'add-metric', 'value' => 10, 'tags' => []],
             ['tenant' => '1', 'metric' => 'add-metric', 'value' => 5, 'tags' => []],
-        ], Adapter::TYPE_EVENT));
+        ], Usage::TYPE_EVENT));
 
         $sum = $this->usage->sum('1', [
             Query::equal('metric', ['add-metric']),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertEquals(15, $sum);
     }
 
@@ -62,10 +62,10 @@ trait UsageBase
         $this->assertTrue($this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'gauge-metric', 'value' => 100, 'tags' => []],
             ['tenant' => '1', 'metric' => 'gauge-metric', 'value' => 200, 'tags' => []],
-        ], Adapter::TYPE_GAUGE));
+        ], Usage::TYPE_GAUGE));
 
         // getTotal for gauge returns latest value (argMax)
-        $total = $this->usage->getTotal('1', 'gauge-metric', [], Adapter::TYPE_GAUGE);
+        $total = $this->usage->getTotal('1', 'gauge-metric', [], Usage::TYPE_GAUGE);
         $this->assertGreaterThanOrEqual(100, $total);
     }
 
@@ -79,11 +79,11 @@ trait UsageBase
             ['tenant' => '1', 'metric' => 'batch-bandwidth', 'value' => 3000, 'tags' => ['region' => 'eu-west']],
         ];
 
-        $this->assertTrue($this->usage->addBatch($metrics, Adapter::TYPE_EVENT, 2));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_EVENT, 2));
 
         $results = $this->usage->find('1', [
             Query::equal('metric', ['batch-requests']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
     }
 
@@ -91,7 +91,7 @@ trait UsageBase
     {
         $results = $this->usage->find('1', [
             Query::equal('metric', ['requests']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
     }
 
@@ -103,7 +103,7 @@ trait UsageBase
         $results = $this->usage->find('1', [
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(0, count($results));
     }
 
@@ -111,7 +111,7 @@ trait UsageBase
     {
         $count = $this->usage->count('1', [
             Query::equal('metric', ['requests']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, $count);
     }
 
@@ -119,23 +119,23 @@ trait UsageBase
     {
         $sum = $this->usage->sum('1', [
             Query::equal('metric', ['requests']),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertEquals(250, $sum); // 100 + 150
     }
 
     public function testGetTotal(): void
     {
-        $total = $this->usage->getTotal('1', 'requests', [], Adapter::TYPE_EVENT);
+        $total = $this->usage->getTotal('1', 'requests', [], Usage::TYPE_EVENT);
         $this->assertEquals(250, $total); // event: SUM
 
-        $total = $this->usage->getTotal('1', 'storage', [], Adapter::TYPE_GAUGE);
+        $total = $this->usage->getTotal('1', 'storage', [], Usage::TYPE_GAUGE);
         $this->assertEquals(10000, $total); // gauge: argMax (latest)
     }
 
     public function testGetTotalBatch(): void
     {
         // Event metrics batch
-        $totals = $this->usage->getTotalBatch('1', ['requests', 'bandwidth'], [], Adapter::TYPE_EVENT);
+        $totals = $this->usage->getTotalBatch('1', ['requests', 'bandwidth'], [], Usage::TYPE_EVENT);
 
         $this->assertArrayHasKey('requests', $totals);
         $this->assertArrayHasKey('bandwidth', $totals);
@@ -144,13 +144,13 @@ trait UsageBase
         $this->assertEquals(5000, $totals['bandwidth']);
 
         // Gauge metrics batch
-        $gaugeTotals = $this->usage->getTotalBatch('1', ['storage'], [], Adapter::TYPE_GAUGE);
+        $gaugeTotals = $this->usage->getTotalBatch('1', ['storage'], [], Usage::TYPE_GAUGE);
         $this->assertEquals(10000, $gaugeTotals['storage']);
     }
 
     public function testGetTotalBatchWithMissingMetric(): void
     {
-        $totals = $this->usage->getTotalBatch('1', ['requests', 'nonexistent-metric'], [], Adapter::TYPE_EVENT);
+        $totals = $this->usage->getTotalBatch('1', ['requests', 'nonexistent-metric'], [], Usage::TYPE_EVENT);
 
         $this->assertEquals(250, $totals['requests']);
         $this->assertEquals(0, $totals['nonexistent-metric']);
@@ -175,7 +175,7 @@ trait UsageBase
             $end,
             [],
             true,
-            Adapter::TYPE_EVENT,
+            Usage::TYPE_EVENT,
         );
 
         $this->assertArrayHasKey('requests', $results);
@@ -197,7 +197,7 @@ trait UsageBase
             $end,
             [],
             true,
-            Adapter::TYPE_EVENT,
+            Usage::TYPE_EVENT,
         );
 
         $this->assertArrayHasKey('requests', $results);
@@ -209,7 +209,7 @@ trait UsageBase
         // Test equal query with array of values (IN clause)
         $results = $this->usage->find('1', [
             Query::equal('metric', ['requests', 'bandwidth']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         // Should find all metrics matching either 'requests' or 'bandwidth'
         $this->assertGreaterThanOrEqual(2, count($results));
@@ -220,7 +220,7 @@ trait UsageBase
         // Test contains query with multiple values from events
         $results = $this->usage->find('1', [
             Query::contains('metric', ['requests', 'bandwidth']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         // Should find all metrics matching either 'requests' or 'bandwidth'
         $this->assertGreaterThanOrEqual(2, count($results));
@@ -231,7 +231,7 @@ trait UsageBase
         $now = (new \DateTime())->format('Y-m-d\TH:i:s');
         $results = $this->usage->find('1', [
             Query::lessThanEqual('time', $now),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         $this->assertGreaterThanOrEqual(0, count($results));
     }
@@ -241,7 +241,7 @@ trait UsageBase
         $past = (new \DateTime())->modify('-24 hours')->format('Y-m-d\TH:i:s');
         $results = $this->usage->find('1', [
             Query::greaterThanEqual('time', $past),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         $this->assertGreaterThanOrEqual(0, count($results));
     }
@@ -252,16 +252,16 @@ trait UsageBase
 
         $this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'purge-test', 'value' => 999, 'tags' => []],
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         sleep(2);
 
-        $status = $this->usage->purge('1', [], Adapter::TYPE_EVENT);
+        $status = $this->usage->purge('1', [], Usage::TYPE_EVENT);
         $this->assertTrue($status);
 
         $results = $this->usage->find('1', [
             Query::equal('metric', ['purge-test']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
         $this->assertEquals(0, count($results));
     }
 
@@ -272,24 +272,24 @@ trait UsageBase
         $this->assertTrue($this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'purge-keep', 'value' => 10, 'tags' => []],
             ['tenant' => '1', 'metric' => 'purge-remove', 'value' => 20, 'tags' => []],
-        ], Adapter::TYPE_EVENT));
+        ], Usage::TYPE_EVENT));
 
         // Purge only the 'purge-remove' metric
         $status = $this->usage->purge('1', [
             Query::equal('metric', ['purge-remove']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
         $this->assertTrue($status);
 
         // 'purge-remove' should be gone
         $sum = $this->usage->sum('1', [
             Query::equal('metric', ['purge-remove']),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertEquals(0, $sum);
 
         // 'purge-keep' should still exist
         $sum = $this->usage->sum('1', [
             Query::equal('metric', ['purge-keep']),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
         $this->assertEquals(10, $sum);
     }
 
@@ -298,7 +298,7 @@ trait UsageBase
         $results = $this->usage->find('1', [
             Query::equal('metric', ['requests']),
             Query::limit(1),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         $this->assertEquals(1, count($results));
 
@@ -306,14 +306,14 @@ trait UsageBase
             Query::equal('metric', ['requests']),
             Query::limit(1),
             Query::offset(1),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         $this->assertLessThanOrEqual(1, count($results2));
     }
 
     public function testEmptyBatch(): void
     {
-        $this->assertTrue($this->usage->addBatch([], Adapter::TYPE_EVENT));
+        $this->assertTrue($this->usage->addBatch([], Usage::TYPE_EVENT));
     }
 
     public function testAddBatchWithTags(): void
@@ -324,11 +324,11 @@ trait UsageBase
             ['tenant' => '1', 'metric' => 'tagged', 'value' => 15, 'tags' => ['region' => 'eu-west']],
         ];
 
-        $this->assertTrue($this->usage->addBatch($metrics, Adapter::TYPE_EVENT));
+        $this->assertTrue($this->usage->addBatch($metrics, Usage::TYPE_EVENT));
 
         $results = $this->usage->find('1', [
             Query::equal('metric', ['tagged']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
     }
 
@@ -343,7 +343,7 @@ trait UsageBase
             ['tenant' => '1', 'metric' => 'gbi-requests', 'value' => 100, 'tags' => []],
             ['tenant' => '1', 'metric' => 'gbi-requests', 'value' => 50, 'tags' => []],
             ['tenant' => '1', 'metric' => 'gbi-bandwidth', 'value' => 3000, 'tags' => []],
-        ], Adapter::TYPE_EVENT));
+        ], Usage::TYPE_EVENT));
 
         $start = (clone $now)->modify('-1 hour')->format('Y-m-d\TH:i:s');
         $end = (clone $now)->modify('+1 hour')->format('Y-m-d\TH:i:s');
@@ -353,7 +353,7 @@ trait UsageBase
             Query::equal('metric', ['gbi-requests']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         $this->assertGreaterThanOrEqual(1, count($results));
 
@@ -376,7 +376,7 @@ trait UsageBase
         $this->assertTrue($this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'gbi-daily', 'value' => 200, 'tags' => []],
             ['tenant' => '1', 'metric' => 'gbi-daily', 'value' => 300, 'tags' => []],
-        ], Adapter::TYPE_EVENT));
+        ], Usage::TYPE_EVENT));
 
         $start = (new \DateTime())->modify('-1 day')->format('Y-m-d\TH:i:s');
         $end = (new \DateTime())->modify('+1 day')->format('Y-m-d\TH:i:s');
@@ -386,7 +386,7 @@ trait UsageBase
             Query::equal('metric', ['gbi-daily']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         $this->assertGreaterThanOrEqual(1, count($results));
 
@@ -407,7 +407,7 @@ trait UsageBase
             ['tenant' => '1', 'metric' => 'gbi-storage', 'value' => 1000, 'tags' => []],
             ['tenant' => '1', 'metric' => 'gbi-storage', 'value' => 2000, 'tags' => []],
             ['tenant' => '1', 'metric' => 'gbi-storage', 'value' => 3000, 'tags' => []],
-        ], Adapter::TYPE_GAUGE));
+        ], Usage::TYPE_GAUGE));
 
         $start = (new \DateTime())->modify('-1 hour')->format('Y-m-d\TH:i:s');
         $end = (new \DateTime())->modify('+1 hour')->format('Y-m-d\TH:i:s');
@@ -417,7 +417,7 @@ trait UsageBase
             Query::equal('metric', ['gbi-storage']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], Adapter::TYPE_GAUGE);
+        ], Usage::TYPE_GAUGE);
 
         $this->assertGreaterThanOrEqual(1, count($results));
 
@@ -441,7 +441,7 @@ trait UsageBase
         $this->assertTrue($this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'gbi-limit', 'value' => 10, 'tags' => []],
             ['tenant' => '1', 'metric' => 'gbi-limit', 'value' => 20, 'tags' => []],
-        ], Adapter::TYPE_EVENT));
+        ], Usage::TYPE_EVENT));
 
         $start = (new \DateTime())->modify('-1 hour')->format('Y-m-d\TH:i:s');
         $end = (new \DateTime())->modify('+1 hour')->format('Y-m-d\TH:i:s');
@@ -452,7 +452,7 @@ trait UsageBase
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
             Query::limit(10),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         $this->assertGreaterThanOrEqual(1, count($results));
     }
@@ -466,7 +466,7 @@ trait UsageBase
             UsageQuery::groupByInterval('time', '1h'),
             UsageQuery::groupBy('not_a_column'),
             Query::equal('metric', ['gbi-requests']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
     }
 
     public function testGroupByWithoutGroupByIntervalReturnsDimOnlyAggregate(): void
@@ -477,7 +477,7 @@ trait UsageBase
         $rows = $this->usage->find('1', [
             UsageQuery::groupBy('service'),
             Query::equal('metric', ['gbi-requests']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         foreach ($rows as $row) {
             $this->assertArrayNotHasKey('time', $row->getArrayCopy());

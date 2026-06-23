@@ -7,7 +7,7 @@ use DateTimeZone;
 use Utopia\Query\Query;
 use Utopia\Tests\Usage\Adapter\ClickHouseTestCase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
-use Utopia\Usage\Adapter;
+use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 
 /**
@@ -18,7 +18,7 @@ use Utopia\Usage\UsageQuery;
  */
 class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
 {
-    private Adapter $usage;
+    private Usage $usage;
 
     private ClickHouseAdapter $adapter;
 
@@ -47,7 +47,7 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
 
         $this->usage->addBatch([
             ['tenant' => '1', 'metric' => $this->metric, 'value' => 999, 'tags' => ['service' => 'storage', 'resource' => 'file', 'resourceId' => 'f1']],
-        ], Adapter::TYPE_GAUGE);
+        ], Usage::TYPE_GAUGE);
     }
 
     protected function tearDown(): void
@@ -118,7 +118,7 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
-        $this->usage->find('1', $queries, Adapter::TYPE_GAUGE);
+        $this->usage->find('1', $queries, Usage::TYPE_GAUGE);
 
         $this->assertProjectionUsed($queryId, $expectedProjection);
     }
@@ -138,7 +138,7 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], Adapter::TYPE_GAUGE);
+        ], Usage::TYPE_GAUGE);
 
         $this->assertProjectionUsed($queryId, 'p_by_service');
     }
@@ -156,7 +156,7 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
             Query::equal('resourceId', ['x']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], Adapter::TYPE_GAUGE);
+        ], Usage::TYPE_GAUGE);
 
         $this->assertNoProjectionUsed($queryId);
     }
@@ -172,7 +172,7 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], Adapter::TYPE_GAUGE);
+        ], Usage::TYPE_GAUGE);
 
         $this->assertNoProjectionUsed($queryId);
     }
@@ -190,7 +190,7 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
             Query::limit(50),
-        ], Adapter::TYPE_GAUGE);
+        ], Usage::TYPE_GAUGE);
 
         $this->assertProjectionUsed($queryId, 'p_by_service');
     }

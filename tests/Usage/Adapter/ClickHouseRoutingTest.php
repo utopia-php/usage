@@ -9,12 +9,12 @@ use ReflectionClass;
 use Utopia\Query\Query;
 use Utopia\Tests\Usage\Adapter\ClickHouseTestCase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
-use Utopia\Usage\Adapter;
+use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 
 class ClickHouseRoutingTest extends ClickHouseTestCase
 {
-    private Adapter $usage;
+    private Usage $usage;
 
     private ClickHouseAdapter $adapter;
 
@@ -38,7 +38,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $this->seedHistoricalRow('routed.metric', 200, '-3 days', ['path' => '/v1/b']);
         $this->assertTrue($this->usage->addBatch([
             ['tenant' => '1', 'metric' => 'routed.metric', 'value' => 50, 'tags' => ['path' => '/v1/c']],
-        ], Adapter::TYPE_EVENT));
+        ], Usage::TYPE_EVENT));
     }
 
     protected function tearDown(): void
@@ -87,7 +87,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
@@ -110,7 +110,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
@@ -134,7 +134,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
@@ -154,7 +154,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
@@ -175,7 +175,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
             Query::equal('metric', ['routed.metric']),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
@@ -195,7 +195,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
             Query::equal('path', ['/v1/a']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
@@ -214,7 +214,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
             Query::equal('country', ['us']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
@@ -235,7 +235,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
             Query::equal('metric', [$metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
@@ -255,7 +255,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
@@ -277,7 +277,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
             Query::greaterThanEqual('time', $startTighter),
             Query::lessThanEqual('time', $endLoose),
             Query::lessThanEqual('time', $endTighter),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
@@ -295,7 +295,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $this->usage->sum('1', [
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
@@ -311,7 +311,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
                 Query::equal('metric', ['routed.metric']),
                 Query::greaterThanEqual('time', 'not-a-date'),
                 Query::lessThanEqual('time', 'not-a-date-either'),
-            ], 'value', Adapter::TYPE_EVENT);
+            ], 'value', Usage::TYPE_EVENT);
         } catch (Exception $e) {
         }
 
@@ -346,14 +346,14 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         // DELETE WHERE 1=1 and wipe both metrics' daily rows.
         $this->usage->purge('1', [
             Query::equal('path', ['/v1/remove']),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         $this->adapter->clearRouteLog();
         $keepSum = $this->usage->sum('1', [
             Query::equal('metric', ['purge.keep']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
 
         $this->assertSame(100, $keepSum, 'unrelated daily rows must survive a narrow purge');
     }
@@ -380,7 +380,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
         $this->usage->purge('1', [
             Query::equal('value', [10]),
-        ], Adapter::TYPE_EVENT);
+        ], Usage::TYPE_EVENT);
 
         // value is raw-only, so the routed sum stays on raw — it
         // sees the still-present rows. The point of this test is the
@@ -403,7 +403,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
             Query::equal('metric', [$metric]),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
-        ], 'value', Adapter::TYPE_EVENT);
+        ], 'value', Usage::TYPE_EVENT);
         $this->adapter->clearRouteLog();
         return is_int($result) ? $result : 0;
     }

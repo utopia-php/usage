@@ -3,23 +3,23 @@
 namespace Utopia\Usage;
 
 /**
- * Tenant-scoped view over an Adapter.
+ * Tenant-scoped view over a Usage instance.
  *
  * Binds a tenant once at construction and forwards every query/mutation to the
- * underlying Adapter with that tenant pre-filled — so callers that only ever
+ * underlying Usage with that tenant pre-filled — so callers that only ever
  * touch one tenant don't repeat it on every call.
  */
 class Tenant
 {
-    private Adapter $adapter;
+    private Usage $usage;
 
     private string $tenant;
 
     /**
-     * @param  Adapter  $adapter  The underlying (tenant-agnostic) adapter
+     * @param  Usage  $usage  The underlying (tenant-agnostic) Usage instance
      * @param  string  $tenant  Tenant this view is scoped to (non-empty)
      */
-    public function __construct(Adapter $adapter, string $tenant)
+    public function __construct(Usage $usage, string $tenant)
     {
         // Reject '' at construction: an empty scope would silently read/write
         // the empty tenant in shared-tables mode. ("0" is a valid id.)
@@ -27,7 +27,7 @@ class Tenant
             throw new \InvalidArgumentException('Tenant cannot be empty');
         }
 
-        $this->adapter = $adapter;
+        $this->usage = $usage;
         $this->tenant = $tenant;
     }
 
@@ -47,7 +47,7 @@ class Tenant
         }
         unset($metric);
 
-        return $this->adapter->addBatch($metrics, $type, $batchSize);
+        return $this->usage->addBatch($metrics, $type, $batchSize);
     }
 
     /**
@@ -58,7 +58,7 @@ class Tenant
      */
     public function getTimeSeries(array $metrics, string $interval, string $startDate, string $endDate, array $queries = [], bool $zeroFill = true, ?string $type = null): array
     {
-        return $this->adapter->getTimeSeries($this->tenant, $metrics, $interval, $startDate, $endDate, $queries, $zeroFill, $type);
+        return $this->usage->getTimeSeries($this->tenant, $metrics, $interval, $startDate, $endDate, $queries, $zeroFill, $type);
     }
 
     /**
@@ -67,7 +67,7 @@ class Tenant
      */
     public function getTotal(string $metric, array $queries = [], ?string $type = null): int
     {
-        return $this->adapter->getTotal($this->tenant, $metric, $queries, $type);
+        return $this->usage->getTotal($this->tenant, $metric, $queries, $type);
     }
 
     /**
@@ -78,7 +78,7 @@ class Tenant
      */
     public function getTotalBatch(array $metrics, array $queries = [], ?string $type = null): array
     {
-        return $this->adapter->getTotalBatch($this->tenant, $metrics, $queries, $type);
+        return $this->usage->getTotalBatch($this->tenant, $metrics, $queries, $type);
     }
 
     /**
@@ -87,7 +87,7 @@ class Tenant
      */
     public function purge(array $queries = [], ?string $type = null): bool
     {
-        return $this->adapter->purge($this->tenant, $queries, $type);
+        return $this->usage->purge($this->tenant, $queries, $type);
     }
 
     /**
@@ -97,7 +97,7 @@ class Tenant
      */
     public function find(array $queries = [], ?string $type = null): array
     {
-        return $this->adapter->find($this->tenant, $queries, $type);
+        return $this->usage->find($this->tenant, $queries, $type);
     }
 
     /**
@@ -106,16 +106,16 @@ class Tenant
      */
     public function count(array $queries = [], ?string $type = null, ?int $max = null): int
     {
-        return $this->adapter->count($this->tenant, $queries, $type, $max);
+        return $this->usage->count($this->tenant, $queries, $type, $max);
     }
 
     /**
      * @param array<\Utopia\Query\Query> $queries
      * @throws \Exception
      */
-    public function sum(array $queries = [], string $attribute = 'value', string $type = Adapter::TYPE_EVENT): int
+    public function sum(array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
     {
-        return $this->adapter->sum($this->tenant, $queries, $attribute, $type);
+        return $this->usage->sum($this->tenant, $queries, $attribute, $type);
     }
 
     /**
@@ -125,7 +125,7 @@ class Tenant
      */
     public function findDaily(array $queries = []): array
     {
-        return $this->adapter->findDaily($this->tenant, $queries);
+        return $this->usage->findDaily($this->tenant, $queries);
     }
 
     /**
@@ -134,7 +134,7 @@ class Tenant
      */
     public function sumDaily(array $queries = [], string $attribute = 'value'): int
     {
-        return $this->adapter->sumDaily($this->tenant, $queries, $attribute);
+        return $this->usage->sumDaily($this->tenant, $queries, $attribute);
     }
 
     /**
@@ -145,6 +145,6 @@ class Tenant
      */
     public function sumDailyBatch(array $metrics, array $queries = []): array
     {
-        return $this->adapter->sumDailyBatch($this->tenant, $metrics, $queries);
+        return $this->usage->sumDailyBatch($this->tenant, $metrics, $queries);
     }
 }

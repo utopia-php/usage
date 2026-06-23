@@ -4,7 +4,7 @@ namespace Utopia\Tests\Benchmark;
 
 use DateTime;
 use Utopia\Query\Query;
-use Utopia\Usage\Adapter;
+use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 
 class GaugesBench extends BenchmarkBase
@@ -34,7 +34,7 @@ class GaugesBench extends BenchmarkBase
                     Query::greaterThanEqual('time', $start30d),
                     Query::lessThanEqual('time', $endPartial),
                 ],
-                Adapter::TYPE_GAUGE
+                Usage::TYPE_GAUGE
             );
         });
 
@@ -46,7 +46,7 @@ class GaugesBench extends BenchmarkBase
                 Query::greaterThanEqual('time', $start30d),
                 Query::lessThanEqual('time', $endClosed),
                 Query::limit(10),
-            ], Adapter::TYPE_GAUGE);
+            ], Usage::TYPE_GAUGE);
         });
 
         $this->runBench('bench_gauges_topN_resource_30d', function (string $queryId) use ($start30d, $endClosed): void {
@@ -57,7 +57,7 @@ class GaugesBench extends BenchmarkBase
                 Query::greaterThanEqual('time', $start30d),
                 Query::lessThanEqual('time', $endClosed),
                 Query::limit(10),
-            ], Adapter::TYPE_GAUGE);
+            ], Usage::TYPE_GAUGE);
         });
 
         $this->runBench('bench_gauges_topN_service_today_partial', function (string $queryId) use ($start30d, $endPartial): void {
@@ -68,7 +68,7 @@ class GaugesBench extends BenchmarkBase
                 Query::greaterThanEqual('time', $start30d),
                 Query::lessThanEqual('time', $endPartial),
                 Query::limit(10),
-            ], Adapter::TYPE_GAUGE);
+            ], Usage::TYPE_GAUGE);
         });
 
         $this->assertNotEmpty($this->results, 'Benchmark scenarios must record results');

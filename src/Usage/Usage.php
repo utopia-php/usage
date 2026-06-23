@@ -2,7 +2,7 @@
 
 namespace Utopia\Usage;
 
-abstract class Adapter
+abstract class Usage
 {
     public const TYPE_EVENT = 'event';
     public const TYPE_GAUGE = 'gauge';

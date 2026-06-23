@@ -5,7 +5,7 @@ namespace Utopia\Usage;
 /**
  * In-memory metric accumulator.
  *
- * Buffers collect() calls and flushes them to an Adapter in batches.
+ * Buffers collect() calls and flushes them to a Usage instance in batches.
  * Events are summed per metric+tags; gauges use last-write-wins.
  *
  * The accumulator exposes raw signals — count() and elapsedSeconds() — so
@@ -13,7 +13,7 @@ namespace Utopia\Usage;
  */
 class Accumulator
 {
-    private Adapter $adapter;
+    private Usage $usage;
 
     /**
      * In-memory buffer for metrics.
@@ -29,11 +29,11 @@ class Accumulator
     private float $flushedAt;
 
     /**
-     * @param  Adapter  $adapter  The adapter to flush buffered metrics to
+     * @param  Usage  $usage  The Usage instance to flush buffered metrics to
      */
-    public function __construct(Adapter $adapter)
+    public function __construct(Usage $usage)
     {
-        $this->adapter = $adapter;
+        $this->usage = $usage;
         $this->flushedAt = microtime(true);
     }
 
@@ -64,7 +64,7 @@ class Accumulator
         if ($value < 0) {
             throw new \InvalidArgumentException('Value cannot be negative');
         }
-        Adapter::assertType($type);
+        Usage::assertType($type);
 
         // Hash the full identity so distinct (tenant, metric, type, tags)
         // tuples never collide on the key — a raw `:`-join would let
@@ -74,7 +74,7 @@ class Accumulator
         ksort($canonicalTags);
         $key = md5(json_encode([$tenant, $metric, $type, $canonicalTags], JSON_THROW_ON_ERROR));
 
-        if ($type === Adapter::TYPE_EVENT && isset($this->buffer[$key])) {
+        if ($type === Usage::TYPE_EVENT && isset($this->buffer[$key])) {
             // Additive: sum values for the same tenant + metric + tags combination
             $this->buffer[$key]['value'] += $value;
         } else {
@@ -121,7 +121,7 @@ class Accumulator
         $gauges = [];
 
         foreach ($this->buffer as $key => $entry) {
-            if ($entry['type'] === Adapter::TYPE_EVENT) {
+            if ($entry['type'] === Usage::TYPE_EVENT) {
                 $events[] = $entry;
                 $eventKeys[] = $key;
             } else {
@@ -134,7 +134,7 @@ class Accumulator
 
         // Flush events — clear buffer entries only on success.
         if (!empty($events)) {
-            if ($this->adapter->addBatch($events, Adapter::TYPE_EVENT)) {
+            if ($this->usage->addBatch($events, Usage::TYPE_EVENT)) {
                 foreach ($eventKeys as $key) {
                     unset($this->buffer[$key]);
                 }
@@ -145,7 +145,7 @@ class Accumulator
 
         // Flush gauges — clear buffer entries only on success.
         if (!empty($gauges)) {
-            if ($this->adapter->addBatch($gauges, Adapter::TYPE_GAUGE)) {
+            if ($this->usage->addBatch($gauges, Usage::TYPE_GAUGE)) {
                 foreach ($gaugeKeys as $key) {
                     unset($this->buffer[$key]);
                 }
