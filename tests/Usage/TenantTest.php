@@ -3,15 +3,14 @@
 namespace Utopia\Tests\Usage;
 
 use PHPUnit\Framework\TestCase;
-use Utopia\Usage\Adapter;
-use Utopia\Usage\Tenant;
 use Utopia\Usage\Usage;
+use Utopia\Usage\Tenant;
 
 /**
  * Records the tenant passed to each method so the Tenant decorator can be
  * tested without a backend.
  */
-class TenantRecordingAdapter extends Adapter
+class TenantRecordingAdapter extends Usage
 {
     public ?string $lastTenant = null;
 
@@ -129,14 +128,14 @@ class TenantTest extends TestCase
     protected function setUp(): void
     {
         $this->adapter = new TenantRecordingAdapter();
-        $this->tenant = new Tenant(new Usage($this->adapter), 'p1');
+        $this->tenant = new Tenant($this->adapter, 'p1');
     }
 
     public function testEmptyTenantThrows(): void
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Tenant cannot be empty');
-        new Tenant(new Usage($this->adapter), '');
+        new Tenant($this->adapter, '');
     }
 
     public function testAddBatchStampsBoundTenantOntoEveryMetric(): void

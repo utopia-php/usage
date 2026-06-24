@@ -32,7 +32,7 @@ class ClickHouseTest extends TestCase
             database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
         );
 
-        $this->usage = new Usage($adapter);
+        $this->usage = $adapter;
         $this->usage->setup();
     }
 
@@ -55,7 +55,7 @@ class ClickHouseTest extends TestCase
             sharedTables: true,
         );
 
-        $usage = new Usage($adapter);
+        $usage = $adapter;
         $usage->setup();
         $usage->purge('2');
 
@@ -687,7 +687,7 @@ class ClickHouseTest extends TestCase
      */
     public function testHealthCheck(): void
     {
-        $adapter = $this->usage->getAdapter();
+        $adapter = $this->usage;
 
         $health = $adapter->healthCheck();
 
@@ -763,7 +763,7 @@ class ClickHouseTest extends TestCase
             database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
         );
 
-        $usage = new Usage($adapter);
+        $usage = $adapter;
         $usage->setup();
 
         // Connection reuse is always on (the transport client holds the cURL
@@ -808,7 +808,7 @@ class ClickHouseTest extends TestCase
             database: 'nonexistent_db_for_testing_errors_12345',
         );
 
-        $usage = new Usage($adapter);
+        $usage = $adapter;
 
         try {
             // This should fail because database doesn't exist
@@ -859,7 +859,7 @@ class ClickHouseTest extends TestCase
         $this->assertTrue($stats['async_insert_wait']);
 
         // Verify it works with async inserts enabled
-        $usage = new Usage($adapter);
+        $usage = $adapter;
         $usage->setup();
         $usage->purge('1');
 

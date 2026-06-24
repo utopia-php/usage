@@ -4,7 +4,6 @@ namespace Utopia\Tests\Adapter;
 
 use Utopia\Tests\Usage\Adapter\ClickHouseTestCase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
-use Utopia\Usage\Usage;
 
 /**
  * Asserts the events / gauges / daily / dim-rollup tables emerge from
@@ -27,7 +26,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
             database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
             sharedTables: true,
         );
-        $usage = new Usage($this->adapter);
+        $usage = $this->adapter;
         $usage->setup();
     }
 
@@ -72,7 +71,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $this->queryRaw($this->adapter, "DROP TABLE IF EXISTS {$mvName}");
         $this->queryRaw($this->adapter, "DROP TABLE IF EXISTS {$fullName}");
 
-        $usage = new Usage($this->adapter);
+        $usage = $this->adapter;
         $usage->setup();
 
         $ddl = $this->showCreate($dailyTable);
@@ -144,7 +143,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
             SETTINGS allow_nullable_key = 1
         ");
 
-        $usage = new Usage($legacyAdapter);
+        $usage = $legacyAdapter;
         $usage->setup();
 
         $rawString = $this->queryRaw($legacyAdapter, "SHOW CREATE TABLE {$fullName} FORMAT JSON");

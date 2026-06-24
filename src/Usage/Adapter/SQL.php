@@ -2,7 +2,7 @@
 
 namespace Utopia\Usage\Adapter;
 
-use Utopia\Usage\Adapter;
+use Utopia\Usage\Usage;
 use Utopia\Usage\Metric;
 use Utopia\Database\Document;
 
@@ -12,7 +12,7 @@ use Utopia\Database\Document;
  * This is an abstract base class for SQL-based adapters (Database, ClickHouse, etc.)
  * It provides common functionality and references schema definitions from the Metric class.
  */
-abstract class SQL extends Adapter
+abstract class SQL extends Usage
 {
     public const COLLECTION = 'usage';
 

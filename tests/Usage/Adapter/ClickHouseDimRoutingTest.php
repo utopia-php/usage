@@ -38,7 +38,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
             sharedTables: true,
         );
-        $this->usage = new Usage($this->adapter);
+        $this->usage = $this->adapter;
         $this->usage->setup();
         $this->usage->purge('1');
 

@@ -2,12 +2,12 @@
 
 namespace Utopia\Tests\Benchmark;
 
+use Utopia\Usage\Usage;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use RuntimeException;
 use Throwable;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
-use Utopia\Usage\Usage;
 
 /**
  * Base class for ClickHouse benchmarks.
@@ -66,7 +66,7 @@ abstract class BenchmarkBase extends TestCase
             sharedTables: true,
         );
 
-        $this->usage = new Usage($this->adapter);
+        $this->usage = $this->adapter;
         $this->usage->setup();
 
         $rowsEnv = getenv('BENCH_ROWS');

@@ -4,7 +4,6 @@ namespace Utopia\Tests\Usage;
 
 use PHPUnit\Framework\TestCase;
 use Utopia\Usage\Accumulator;
-use Utopia\Usage\Adapter;
 use Utopia\Usage\Usage;
 
 /**
@@ -12,7 +11,7 @@ use Utopia\Usage\Usage;
  * addBatch() returns whatever $succeed is set to, letting tests drive the
  * partial-failure path.
  */
-class RecordingAdapter extends Adapter
+class RecordingAdapter extends Usage
 {
     /** @var array<array{metrics: array<int, array<string, mixed>>, type: string}> */
     public array $batches = [];
@@ -122,7 +121,7 @@ class AccumulatorTest extends TestCase
     protected function setUp(): void
     {
         $this->adapter = new RecordingAdapter();
-        $this->accumulator = new Accumulator(new Usage($this->adapter));
+        $this->accumulator = new Accumulator($this->adapter);
     }
 
     public function testEventsSumByKey(): void

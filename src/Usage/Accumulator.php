@@ -64,9 +64,7 @@ class Accumulator
         if ($value < 0) {
             throw new \InvalidArgumentException('Value cannot be negative');
         }
-        if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
-            throw new \InvalidArgumentException("Invalid metric type '{$type}'. Allowed: " . Usage::TYPE_EVENT . ', ' . Usage::TYPE_GAUGE);
-        }
+        Usage::assertType($type);
 
         // Hash the full identity so distinct (tenant, metric, type, tags)
         // tuples never collide on the key — a raw `:`-join would let

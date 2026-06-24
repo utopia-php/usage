@@ -7,7 +7,6 @@ use Utopia\Database\Document;
 use Utopia\Database\Exception\Duplicate as DuplicateException;
 use Utopia\Database\Query as DatabaseQuery;
 use Utopia\Usage\Metric;
-use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 use Utopia\Query\Query;
 
@@ -133,13 +132,11 @@ class Database extends SQL
      */
     public function addBatch(array $metrics, string $type, int $batchSize = 1000): bool
     {
+        self::assertType($type);
+
         $this->db->getAuthorization()->skip(function () use ($metrics, $type, $batchSize) {
             $entries = [];
             foreach ($metrics as $metric) {
-                if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
-                    throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: event, gauge");
-                }
-
                 if ($metric['value'] < 0) {
                     throw new \InvalidArgumentException('Value cannot be negative');
                 }
@@ -214,7 +211,7 @@ class Database extends SQL
             Query::equal('metric', [$metric]),
         ]);
 
-        if ($type === Usage::TYPE_GAUGE) {
+        if ($type === self::TYPE_GAUGE) {
             // For gauge, return the most recent value by time. find() does
             // not guarantee any ordering, so we explicitly sort + limit
             // here instead of relying on insertion order.
@@ -237,7 +234,7 @@ class Database extends SQL
             return 0;
         }
 
-        if ($type === Usage::TYPE_EVENT) {
+        if ($type === self::TYPE_EVENT) {
             // For events, SUM all values
             $sum = 0;
             foreach ($results as $result) {
@@ -250,7 +247,7 @@ class Database extends SQL
         $eventResults = [];
         $gaugeResults = [];
         foreach ($results as $result) {
-            if ($result->getType() === Usage::TYPE_GAUGE) {
+            if ($result->getType() === self::TYPE_GAUGE) {
                 $gaugeResults[] = $result;
             } else {
                 $eventResults[] = $result;
@@ -318,7 +315,7 @@ class Database extends SQL
      * @param string $type 'event' or 'gauge'
      * @return int
      */
-    public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = Usage::TYPE_EVENT): int
+    public function sum(string $tenant, array $queries = [], string $attribute = 'value', string $type = self::TYPE_EVENT): int
     {
         /** @var array<Metric> $results */
         $results = $this->find($tenant, $queries, $type);
@@ -340,7 +337,7 @@ class Database extends SQL
      */
     public function findDaily(string $tenant, array $queries = []): array
     {
-        return $this->find($tenant, $queries, Usage::TYPE_EVENT);
+        return $this->find($tenant, $queries, self::TYPE_EVENT);
     }
 
     /**
@@ -370,7 +367,7 @@ class Database extends SQL
      */
     public function sumDaily(string $tenant, array $queries = [], string $attribute = 'value'): int
     {
-        return $this->sum($tenant, $queries, $attribute, Usage::TYPE_EVENT);
+        return $this->sum($tenant, $queries, $attribute, self::TYPE_EVENT);
     }
 
     /**
@@ -632,9 +629,7 @@ class Database extends SQL
             return $queries;
         }
 
-        if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
-            throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: " . Usage::TYPE_EVENT . ', ' . Usage::TYPE_GAUGE);
-        }
+        self::assertType($type);
 
         return array_merge($queries, [Query::equal('type', [$type])]);
     }

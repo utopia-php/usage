@@ -37,8 +37,9 @@ use Utopia\Usage\Usage;
 use Utopia\Usage\Adapter\ClickHouse;
 
 // Configuration is fixed at construction. The adapter is fully stateless —
-// the tenant is passed explicitly on every call (see below).
-$adapter = new ClickHouse(
+// the tenant is passed explicitly on every call (see below). The adapter is
+// the entry point; there is no separate facade to wrap it in.
+$usage = new ClickHouse(
     host: 'clickhouse-server',
     username: 'default',
     password: '',
@@ -48,7 +49,6 @@ $adapter = new ClickHouse(
     sharedTables: true,
 );
 
-$usage = new Usage($adapter);
 $usage->setup(); // Creates events, gauges, and daily MV tables
 ```
 
@@ -57,19 +57,17 @@ $usage->setup(); // Creates events, gauges, and daily MV tables
 ```php
 <?php
 
-use Utopia\Usage\Usage;
 use Utopia\Usage\Adapter\Database as DatabaseAdapter;
 
-$adapter = new DatabaseAdapter($database); // Utopia\Database\Database instance
-$usage = new Usage($adapter);
+$usage = new DatabaseAdapter($database); // Utopia\Database\Database instance
 $usage->setup();
 ```
 
 ## Multi-tenancy
 
-`Usage` is stateless: every query/mutation takes the tenant as its first
+The adapter is stateless: every query/mutation takes the tenant as its first
 argument, and `addBatch` carries a `tenant` on each metric row (so one batch can
-span tenants). This makes a single `Usage` instance safe to share across
+span tenants). This makes a single adapter instance safe to share across
 tenants and coroutines.
 
 ```php
@@ -81,8 +79,8 @@ $usage->addBatch([
 ```
 
 Callers that only ever touch one tenant can bind it once with the `Tenant`
-decorator, which forwards to `Usage` with the tenant pre-filled (and stamps it
-onto every `addBatch` row):
+decorator, which forwards to the adapter with the tenant pre-filled (and stamps
+it onto every `addBatch` row):
 
 ```php
 use Utopia\Usage\Tenant;
@@ -355,7 +353,7 @@ $usage->purge('project_123', [], Usage::TYPE_GAUGE);
 
 ### Creating Custom Adapters
 
-Extend `Utopia\Usage\Adapter` and implement:
+Extend `Utopia\Usage\Usage` and implement:
 
 - `getName()`, `setup()`, `healthCheck()`
 - `addBatch(array $metrics, string $type, int $batchSize): bool` (each metric carries its own `tenant`)

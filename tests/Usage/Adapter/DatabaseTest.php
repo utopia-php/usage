@@ -36,7 +36,7 @@ class DatabaseTest extends TestCase
         $this->database->setDatabase('utopiaTests');
         $this->database->setNamespace('utopia_usage');
 
-        $this->usage = new Usage(new AdapterDatabase($this->database));
+        $this->usage = new AdapterDatabase($this->database);
 
         // Create database if missing
         try {
@@ -204,7 +204,7 @@ class DatabaseTest extends TestCase
      */
     public function testHealthCheck(): void
     {
-        $adapter = $this->usage->getAdapter();
+        $adapter = $this->usage;
 
         $health = $adapter->healthCheck();
 
