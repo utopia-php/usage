@@ -682,6 +682,7 @@ class ClickHouse extends SQL
         ['name' => 'p_by_path', 'dims' => ['path']],
         ['name' => 'p_by_country', 'dims' => ['country']],
         ['name' => 'p_by_service', 'dims' => ['service']],
+        ['name' => 'p_by_resourceType', 'dims' => ['resourceType']],
     ];
 
     /**
@@ -695,8 +696,10 @@ class ClickHouse extends SQL
     private const GAUGE_PROJECTIONS = [
         ['name' => 'p_by_service', 'dims' => ['service']],
         ['name' => 'p_by_resource', 'dims' => ['resource']],
+        ['name' => 'p_by_resourceType', 'dims' => ['resourceType']],
         ['name' => 'p_by_resourceId', 'dims' => ['resourceId']],
         ['name' => 'p_by_resource_resourceId', 'dims' => ['resource', 'resourceId']],
+        ['name' => 'p_by_resourceType_resource', 'dims' => ['resourceType', 'resource']],
     ];
 
     /**
@@ -741,6 +744,7 @@ class ClickHouse extends SQL
         );
 
         $this->ensureGaugeDimColumns();
+        $this->ensureEventDimColumns();
 
         // --- Per-dim projections on the events / gauges base tables ---
         $this->setLightweightMutationProjectionMode($this->getEventsTableName());
@@ -777,7 +781,7 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Backfill the service / resource columns on an existing gauges table.
+     * Backfill late-added dim columns on an existing gauges table.
      * setup() uses CREATE TABLE IF NOT EXISTS, so deployments that came up
      * before these columns were added never receive them — the gauge
      * projections would then fail because their SELECT references columns
@@ -790,7 +794,26 @@ class ClickHouse extends SQL
 
         $sql = "ALTER TABLE {$gaugesTable} "
             . 'ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String)), '
-            . 'ADD COLUMN IF NOT EXISTS resource LowCardinality(Nullable(String))';
+            . 'ADD COLUMN IF NOT EXISTS resource LowCardinality(Nullable(String)), '
+            . 'ADD COLUMN IF NOT EXISTS resourceType LowCardinality(Nullable(String))';
+
+        $this->query($sql);
+    }
+
+    /**
+     * Backfill late-added dim columns on an existing events table. Same
+     * reasoning as ensureGaugeDimColumns — CREATE TABLE IF NOT EXISTS won't
+     * pick up columns added to the schema after the table was first created,
+     * and a per-dim projection on `resourceType` cannot be materialized until
+     * the source column exists on the base table.
+     */
+    private function ensureEventDimColumns(): void
+    {
+        $eventsTable = $this->escapeIdentifier($this->database)
+            . '.' . $this->escapeIdentifier($this->getEventsTableName());
+
+        $sql = "ALTER TABLE {$eventsTable} "
+            . 'ADD COLUMN IF NOT EXISTS resourceType LowCardinality(Nullable(String))';
 
         $this->query($sql);
     }

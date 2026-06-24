@@ -25,6 +25,7 @@ use ArrayObject;
  *     'status' => '201',
  *     'service' => 'storage',
  *     'resource' => 'bucket',
+ *     'resourceType' => 'buckets',
  *     'resourceId' => 'abc123',
  *     'resourceInternalId' => '42',
  *     'teamId' => 'team_x',
@@ -51,7 +52,7 @@ class Metric extends ArrayObject
      */
     public const EVENT_COLUMNS = [
         'path', 'method', 'status',
-        'service', 'resource', 'resourceId', 'resourceInternalId',
+        'service', 'resource', 'resourceType', 'resourceId', 'resourceInternalId',
         'teamId', 'teamInternalId',
         'country', 'region', 'hostname',
         'osCode', 'osName', 'osVersion',
@@ -63,7 +64,7 @@ class Metric extends ArrayObject
     /**
      * Gauge-specific column names that are extracted from tags into dedicated columns.
      */
-    public const GAUGE_COLUMNS = ['service', 'resource', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
+    public const GAUGE_COLUMNS = ['service', 'resource', 'resourceType', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
 
     /**
      * Construct a new metric object.
@@ -79,7 +80,7 @@ class Metric extends ArrayObject
      * Event-only dimension columns (see EVENT_COLUMNS):
      * - path / method / status: HTTP shape
      * - service: API service segment (storage, databases, …)
-     * - resource / resourceId / resourceInternalId: resource identity
+     * - resource / resourceType / resourceId / resourceInternalId: resource identity (`resource` is singular like 'bucket', `resourceType` is plural like 'buckets')
      * - teamId / teamInternalId: owning team identity
      * - country / region / hostname: geographic + caller origin
      * - osCode / osName / osVersion: parsed user-agent OS fields
@@ -234,6 +235,19 @@ class Metric extends ArrayObject
     {
         $resourceId = $this->getAttribute('resourceId', null);
         return is_string($resourceId) ? $resourceId : null;
+    }
+
+    /**
+     * Get the API-level resource type the metric belongs to (e.g. 'functions',
+     * 'sites', 'buckets', 'databases'). Plural, contrast with `resource`
+     * which is the singular type of the row itself (e.g. 'deployment',
+     * 'function', 'bucket'). Low cardinality — useful as a group-by /
+     * filter dimension across a project's whole stats surface.
+     */
+    public function getResourceType(): ?string
+    {
+        $v = $this->getAttribute('resourceType', null);
+        return is_string($v) ? $v : null;
     }
 
     /**
@@ -611,6 +625,7 @@ class Metric extends ArrayObject
             $stringColumn('status', 16),
             $stringColumn('service', 256),
             $stringColumn('resource', 256),
+            $stringColumn('resourceType', 64),
             $stringColumn('resourceId', 255),
             $stringColumn('resourceInternalId', 255),
             $stringColumn('teamId', 255),
@@ -684,6 +699,7 @@ class Metric extends ArrayObject
             ],
             $stringColumn('service', 256),
             $stringColumn('resource', 256),
+            $stringColumn('resourceType', 64),
             $stringColumn('teamId', 255),
             $stringColumn('teamInternalId', 255),
             $stringColumn('resourceId', 255),
@@ -713,13 +729,13 @@ class Metric extends ArrayObject
     {
         $indexed = [
             'path', 'method', 'status',
-            'service', 'resource', 'resourceId', 'resourceInternalId',
+            'service', 'resource', 'resourceType', 'resourceId', 'resourceInternalId',
             'teamId', 'teamInternalId',
             'country', 'region', 'hostname',
             'osName', 'clientType', 'clientName', 'deviceName',
         ];
 
-        $setIndexed = ['status', 'method', 'country', 'service', 'clientType', 'osName'];
+        $setIndexed = ['status', 'method', 'country', 'service', 'resourceType', 'clientType', 'osName'];
 
         return array_map(
             static function (string $col) use ($setIndexed): array {
@@ -745,9 +761,9 @@ class Metric extends ArrayObject
      */
     public static function getGaugeIndexes(): array
     {
-        $indexed = ['service', 'resource', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'];
+        $indexed = ['service', 'resource', 'resourceType', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'];
 
-        $setIndexed = ['service', 'resource'];
+        $setIndexed = ['service', 'resource', 'resourceType'];
 
         return array_map(
             static fn (string $col): array => [
