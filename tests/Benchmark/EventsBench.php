@@ -117,12 +117,12 @@ class EventsBench extends BenchmarkBase
             ], Usage::TYPE_EVENT);
         });
 
-        $this->runBench('bench_events_topN_path_30d_filtered_resource', function (string $queryId) use ($start, $end): void {
+        $this->runBench('bench_events_topN_path_30d_filtered_resourceType', function (string $queryId) use ($start, $end): void {
             $this->adapter->setNextQueryId($queryId);
             $this->usage->find($this->tenant, [
                 UsageQuery::groupBy('path'),
                 Query::equal('metric', [$this->metric]),
-                Query::equal('resource', ['function']),
+                Query::equal('resourceType', ['function']),
                 Query::greaterThanEqual('time', $start),
                 Query::lessThanEqual('time', $end),
                 Query::limit(500),

@@ -235,7 +235,7 @@ class ClickHouseTest extends TestCase
                     'method' => 'POST',
                     'status' => '201',
                     'service' => 'storage',
-                    'resource' => 'bucket',
+                    'resourceType' => 'bucket',
                     'resourceId' => 'bucket123',
                     'resourceInternalId' => '42',
                     'teamId' => 'team_x',
@@ -272,7 +272,7 @@ class ClickHouseTest extends TestCase
         $this->assertEquals('POST', $metric->getMethod());
         $this->assertEquals('201', $metric->getStatus());
         $this->assertEquals('storage', $metric->getService());
-        $this->assertEquals('bucket', $metric->getResource());
+        $this->assertEquals('bucket', $metric->getResourceType());
         $this->assertEquals('bucket123', $metric->getResourceId());
         $this->assertEquals('42', $metric->getResourceInternalId());
         $this->assertEquals('team_x', $metric->getTeamId());
@@ -309,7 +309,7 @@ class ClickHouseTest extends TestCase
                 'value' => 500,
                 'tags' => [
                     'service' => 'storage',
-                    'resource' => 'file',
+                    'resourceType' => 'file',
                     'teamId' => 'team_x',
                     'teamInternalId' => '7',
                     'resourceId' => 'r1',
@@ -325,7 +325,7 @@ class ClickHouseTest extends TestCase
         $this->assertCount(1, $results);
         $metric = $results[0];
         $this->assertEquals('storage', $metric->getService());
-        $this->assertEquals('file', $metric->getResource());
+        $this->assertEquals('file', $metric->getResourceType());
         $this->assertEquals('team_x', $metric->getTeamId());
         $this->assertEquals('7', $metric->getTeamInternalId());
         $this->assertEquals('r1', $metric->getResourceId());
@@ -396,7 +396,7 @@ class ClickHouseTest extends TestCase
 
         $tags = [
             'path' => '/v1/x', 'method' => 'GET', 'status' => '200',
-            'service' => 'storage', 'resource' => 'bucket',
+            'service' => 'storage', 'resourceType' => 'bucket',
             'resourceId' => 'r1', 'resourceInternalId' => '42',
             'teamId' => 't1', 'teamInternalId' => '7',
             'country' => 'us', 'region' => 'fra', 'hostname' => 'h.example.com',
@@ -432,9 +432,9 @@ class ClickHouseTest extends TestCase
         $this->usage->purge('1', [], Usage::TYPE_EVENT);
 
         $this->assertTrue($this->usage->addBatch([
-            ['tenant' => '1', 'metric' => 'req', 'value' => 10, 'tags' => ['path' => '/v1/storage', 'method' => 'GET', 'status' => '200', 'resource' => 'project', 'resourceId' => 'p1']],
-            ['tenant' => '1', 'metric' => 'req', 'value' => 20, 'tags' => ['path' => '/v1/databases', 'method' => 'POST', 'status' => '201', 'resource' => 'database', 'resourceId' => 'db1']],
-            ['tenant' => '1', 'metric' => 'req', 'value' => 30, 'tags' => ['path' => '/v1/storage', 'method' => 'GET', 'status' => '404', 'resource' => 'project', 'resourceId' => 'p1']],
+            ['tenant' => '1', 'metric' => 'req', 'value' => 10, 'tags' => ['path' => '/v1/storage', 'method' => 'GET', 'status' => '200', 'resourceType' => 'project', 'resourceId' => 'p1']],
+            ['tenant' => '1', 'metric' => 'req', 'value' => 20, 'tags' => ['path' => '/v1/databases', 'method' => 'POST', 'status' => '201', 'resourceType' => 'database', 'resourceId' => 'db1']],
+            ['tenant' => '1', 'metric' => 'req', 'value' => 30, 'tags' => ['path' => '/v1/storage', 'method' => 'GET', 'status' => '404', 'resourceType' => 'project', 'resourceId' => 'p1']],
         ], Usage::TYPE_EVENT));
 
         // Filter by path
@@ -457,9 +457,9 @@ class ClickHouseTest extends TestCase
         $this->assertCount(1, $results);
         $this->assertEquals(30, $results[0]->getValue());
 
-        // Filter by resource
+        // Filter by resourceType
         $results = $this->usage->find('1', [
-            \Utopia\Query\Query::equal('resource', ['database']),
+            \Utopia\Query\Query::equal('resourceType', ['database']),
         ], Usage::TYPE_EVENT);
         $this->assertCount(1, $results);
 
@@ -493,7 +493,7 @@ class ClickHouseTest extends TestCase
         $this->assertNull($results[0]->getPath());
         $this->assertNull($results[0]->getMethod());
         $this->assertNull($results[0]->getStatus());
-        $this->assertNull($results[0]->getResource());
+        $this->assertNull($results[0]->getResourceType());
         $this->assertEquals('r1', $results[0]->getResourceId());
     }
 

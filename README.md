@@ -119,7 +119,7 @@ $accumulator->collect('project_123', 'bandwidth', 5000, Usage::TYPE_EVENT, [
     'method' => 'POST',
     'status' => '201',
     'service' => 'storage',
-    'resource' => 'bucket',
+    'resourceType' => 'bucket',
     'resourceId' => 'abc123',
     'resourceInternalId' => '42',
     'teamId' => 'team_x',

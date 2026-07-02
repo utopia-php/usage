@@ -27,9 +27,9 @@ trait UsageBase
     {
         // Events: additive metrics
         $this->assertTrue($this->usage->addBatch([
-            ['tenant' => '1', 'metric' => 'requests', 'value' => 100, 'tags' => ['region' => 'us-east', 'path' => '/v1/storage', 'method' => 'GET', 'status' => '200', 'resource' => 'project', 'resourceId' => 'p1']],
-            ['tenant' => '1', 'metric' => 'requests', 'value' => 150, 'tags' => ['region' => 'us-west', 'path' => '/v1/databases', 'method' => 'POST', 'status' => '201', 'resource' => 'database', 'resourceId' => 'db1']],
-            ['tenant' => '1', 'metric' => 'bandwidth', 'value' => 5000, 'tags' => ['region' => 'us-east', 'path' => '/v1/storage/files', 'method' => 'POST', 'status' => '201', 'resource' => 'bucket', 'resourceId' => 'b1']],
+            ['tenant' => '1', 'metric' => 'requests', 'value' => 100, 'tags' => ['region' => 'us-east', 'path' => '/v1/storage', 'method' => 'GET', 'status' => '200', 'resourceType' => 'project', 'resourceId' => 'p1']],
+            ['tenant' => '1', 'metric' => 'requests', 'value' => 150, 'tags' => ['region' => 'us-west', 'path' => '/v1/databases', 'method' => 'POST', 'status' => '201', 'resourceType' => 'database', 'resourceId' => 'db1']],
+            ['tenant' => '1', 'metric' => 'bandwidth', 'value' => 5000, 'tags' => ['region' => 'us-east', 'path' => '/v1/storage/files', 'method' => 'POST', 'status' => '201', 'resourceType' => 'bucket', 'resourceId' => 'b1']],
         ], Usage::TYPE_EVENT));
 
         // Gauges: point-in-time snapshots

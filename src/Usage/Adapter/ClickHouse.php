@@ -23,7 +23,7 @@ use Utopia\Validator\Hostname;
  * This adapter stores usage metrics in ClickHouse using HTTP interface.
  * Uses two separate tables:
  * - Events table (MergeTree): raw request events with metadata columns
- *   (path, method, status, resource, resourceId)
+ *   (path, method, status, resourceType, resourceId)
  * - Gauges table (MergeTree): simple resource snapshots (metric, value, time, tags)
  *
  * A SummingMergeTree materialized view pre-aggregates events by day for fast
@@ -694,9 +694,9 @@ class ClickHouse extends SQL
      */
     private const GAUGE_PROJECTIONS = [
         ['name' => 'p_by_service', 'dims' => ['service']],
-        ['name' => 'p_by_resource', 'dims' => ['resource']],
+        ['name' => 'p_by_resourceType', 'dims' => ['resourceType']],
         ['name' => 'p_by_resourceId', 'dims' => ['resourceId']],
-        ['name' => 'p_by_resource_resourceId', 'dims' => ['resource', 'resourceId']],
+        ['name' => 'p_by_resourceType_resourceId', 'dims' => ['resourceType', 'resourceId']],
     ];
 
     /**
@@ -777,7 +777,7 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Backfill the service / resource columns on an existing gauges table.
+     * Backfill the service / resourceType columns on an existing gauges table.
      * setup() uses CREATE TABLE IF NOT EXISTS, so deployments that came up
      * before these columns were added never receive them — the gauge
      * projections would then fail because their SELECT references columns
@@ -790,7 +790,7 @@ class ClickHouse extends SQL
 
         $sql = "ALTER TABLE {$gaugesTable} "
             . 'ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String)), '
-            . 'ADD COLUMN IF NOT EXISTS resource LowCardinality(Nullable(String))';
+            . 'ADD COLUMN IF NOT EXISTS resourceType LowCardinality(Nullable(String))';
 
         $this->query($sql);
     }
@@ -916,7 +916,7 @@ class ClickHouse extends SQL
             'metric String',
             'value Int64',
             "time DateTime64(3, 'UTC')",
-            'resource LowCardinality(Nullable(String))',
+            'resourceType LowCardinality(Nullable(String))',
             'resourceId Nullable(String)',
             'resourceInternalId Nullable(String)',
             'teamId Nullable(String)',
@@ -930,8 +930,8 @@ class ClickHouse extends SQL
         $columnDefs = implode(",\n                ", $columns);
 
         $dailyOrderBy = $this->sharedTables
-            ? '(tenant, metric, time, resource, resourceId, resourceInternalId, teamId, teamInternalId)'
-            : '(metric, time, resource, resourceId, resourceInternalId, teamId, teamInternalId)';
+            ? '(tenant, metric, time, resourceType, resourceId, resourceInternalId, teamId, teamInternalId)'
+            : '(metric, time, resourceType, resourceId, resourceInternalId, teamId, teamInternalId)';
 
         $createDailyTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDailyTable} (
@@ -961,7 +961,7 @@ class ClickHouse extends SQL
         $escapedDailyTable  = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyTableName);
         $escapedDailyMv     = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyMvName);
 
-        $dimensions = 'resource, resourceId, resourceInternalId, teamId, teamInternalId';
+        $dimensions = 'resourceType, resourceId, resourceInternalId, teamId, teamInternalId';
 
         if ($this->sharedTables) {
             $innerSelect  = "metric, tenant, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
@@ -1045,7 +1045,7 @@ class ClickHouse extends SQL
      */
     private const DAILY_COLUMNS = [
         'metric', 'value', 'time',
-        'resource', 'resourceId', 'resourceInternalId',
+        'resourceType', 'resourceId', 'resourceInternalId',
         'teamId', 'teamInternalId',
     ];
 
@@ -1122,7 +1122,7 @@ class ClickHouse extends SQL
         }
 
         $lowCardinality = [
-            'country', 'region', 'service', 'resource',
+            'country', 'region', 'service', 'resourceType',
             'osCode', 'osName', 'osVersion',
             'clientType', 'clientCode', 'clientName', 'clientVersion',
             'clientEngine', 'clientEngineVersion',
@@ -1257,7 +1257,7 @@ class ClickHouse extends SQL
     /**
      * Add metrics in batch (raw append to appropriate table).
      *
-     * For events: extracts path/method/status/resource/resourceId from tags into
+     * For events: extracts path/method/status/resourceType/resourceId from tags into
      * dedicated columns; remaining tags stay in the tags JSON column.
      * For gauges: simple metric/value/time/tags insert.
      *
@@ -2497,7 +2497,7 @@ class ClickHouse extends SQL
         $groupByColumns = $this->sharedTables ? ['tenant'] : [];
         $groupByColumns[] = 'metric';
         $groupByColumns[] = 'time';
-        foreach (['resource', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'] as $dim) {
+        foreach (['resourceType', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'] as $dim) {
             $groupByColumns[] = $dim;
         }
 

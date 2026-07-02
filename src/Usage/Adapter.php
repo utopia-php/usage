@@ -141,7 +141,7 @@ abstract class Adapter
      * the daily events table — gauges are never pre-aggregated.
      *
      * @param string $tenant Tenant scope (shared-tables mode)
-     * @param array<\Utopia\Query\Query> $queries  Filters (metric, time range, resource, etc.)
+     * @param array<\Utopia\Query\Query> $queries  Filters (metric, time range, resourceType, etc.)
      * @return array<Metric>
      */
     abstract public function findDaily(string $tenant, array $queries = []): array;
