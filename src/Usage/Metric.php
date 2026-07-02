@@ -53,7 +53,7 @@ class Metric extends ArrayObject
         'path', 'method', 'status',
         'service', 'resourceType', 'resourceId', 'resourceInternalId',
         'teamId', 'teamInternalId',
-        'country', 'region', 'hostname',
+        'country', 'region', 'hostname', 'ip',
         'osCode', 'osName', 'osVersion',
         'clientType', 'clientCode', 'clientName', 'clientVersion',
         'clientEngine', 'clientEngineVersion',
@@ -81,7 +81,7 @@ class Metric extends ArrayObject
      * - service: API service segment (storage, databases, …)
      * - resourceType / resourceId / resourceInternalId: resource identity
      * - teamId / teamInternalId: owning team identity
-     * - country / region / hostname: geographic + caller origin
+     * - country / region / hostname / ip: geographic + caller origin
      * - osCode / osName / osVersion: parsed user-agent OS fields
      * - clientType / clientCode / clientName / clientVersion: parsed client
      * - clientEngine / clientEngineVersion: parsed client engine
@@ -302,6 +302,18 @@ class Metric extends ArrayObject
     public function getHostname(): ?string
     {
         $v = $this->getAttribute('hostname', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get caller IP address (event metrics).
+     *
+     * Stored as-is. IPv4 dotted-decimal (up to 15 chars) or IPv6
+     * (up to 45 chars including v4-mapped forms).
+     */
+    public function getIp(): ?string
+    {
+        $v = $this->getAttribute('ip', null);
         return is_string($v) ? $v : null;
     }
 
@@ -618,6 +630,7 @@ class Metric extends ArrayObject
             $stringColumn('country', 2),
             $stringColumn('region', 64),
             $stringColumn('hostname', 255),
+            $stringColumn('ip', 45),
             $stringColumn('osCode', 256),
             $stringColumn('osName', 256),
             $stringColumn('osVersion', 255),
@@ -715,7 +728,7 @@ class Metric extends ArrayObject
             'path', 'method', 'status',
             'service', 'resourceType', 'resourceId', 'resourceInternalId',
             'teamId', 'teamInternalId',
-            'country', 'region', 'hostname',
+            'country', 'region', 'hostname', 'ip',
             'osName', 'clientType', 'clientName', 'deviceName',
         ];
 

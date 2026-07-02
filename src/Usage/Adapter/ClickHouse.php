@@ -1127,7 +1127,7 @@ class ClickHouse extends SQL
             'clientType', 'clientCode', 'clientName', 'clientVersion',
             'clientEngine', 'clientEngineVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
-            'hostname',
+            'hostname', 'ip',
         ];
 
         if (in_array($id, $lowCardinality, true)) {
