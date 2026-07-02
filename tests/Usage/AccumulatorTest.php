@@ -329,6 +329,25 @@ class AccumulatorTest extends TestCase
         $this->assertSame($earlier, $entry['time']);
     }
 
+    public function testEventCollectKeepsEarliestTimeOnOutOfOrderMerge(): void
+    {
+        // Out-of-order redelivery: the later time arrives FIRST, the earlier
+        // time second. The merged bucket must carry the earlier time so
+        // buckets never slide forward when late-arriving events fold in.
+        $later = new \DateTime('2026-04-15 12:05:00');
+        $earlier = new \DateTime('2026-04-15 12:00:00');
+
+        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT, [], $later);
+        $this->accumulator->collect('t1', 'requests', 5, Usage::TYPE_EVENT, [], $earlier);
+
+        $this->assertEquals(1, $this->accumulator->count());
+        $this->assertTrue($this->accumulator->flush());
+
+        $entry = $this->adapter->batches[0]['metrics'][0];
+        $this->assertEquals(15, $entry['value']);
+        $this->assertSame($earlier, $entry['time']);
+    }
+
     public function testGaugeCollectUsesLastWriteWinsForTime(): void
     {
         // Gauge collect() is last-write-wins on value; the queued time

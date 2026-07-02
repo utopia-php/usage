@@ -95,9 +95,10 @@ class Accumulator
         if ($type === Usage::TYPE_EVENT && isset($this->buffer[$key])) {
             // Additive: sum values for the same tenant + metric + tags combination.
             // Preserve the earliest queued time — later calls fold in without
-            // moving the bucket's timestamp forward.
+            // moving the bucket's timestamp forward, even when they arrive
+            // out of order (e.g. an earlier event redelivered after a later one).
             $this->buffer[$key]['value'] += $value;
-            if ($time !== null && !isset($this->buffer[$key]['time'])) {
+            if ($time !== null && (!isset($this->buffer[$key]['time']) || $time < $this->buffer[$key]['time'])) {
                 $this->buffer[$key]['time'] = $time;
             }
         } else {
