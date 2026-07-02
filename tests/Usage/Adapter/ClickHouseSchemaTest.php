@@ -218,6 +218,9 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         }
 
         $this->assertStringContainsString('`ip` LowCardinality(Nullable(String))', $ddl);
+        $this->assertStringContainsString('`path` Nullable(String)', $ddl);
+        $this->assertStringContainsString('`country` LowCardinality(Nullable(String))', $ddl);
+        $this->assertStringContainsString('`service` LowCardinality(Nullable(String))', $ddl);
     }
 
     private function showCreate(string $table): string

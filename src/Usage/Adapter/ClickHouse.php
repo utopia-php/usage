@@ -778,13 +778,7 @@ class ClickHouse extends SQL
         $this->query($sql);
     }
 
-    /**
-     * Backfill the service / resourceType columns on an existing gauges table.
-     * setup() uses CREATE TABLE IF NOT EXISTS, so deployments that came up
-     * before these columns were added never receive them — the gauge
-     * projections would then fail because their SELECT references columns
-     * the source table lacks.
-     */
+    /** Backfill dimension columns referenced by gauge projections on pre-existing tables. */
     private function ensureGaugeDimColumns(): void
     {
         $gaugesTable = $this->escapeIdentifier($this->database)
@@ -792,18 +786,22 @@ class ClickHouse extends SQL
 
         $sql = "ALTER TABLE {$gaugesTable} "
             . 'ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String)), '
-            . 'ADD COLUMN IF NOT EXISTS resourceType LowCardinality(Nullable(String))';
+            . 'ADD COLUMN IF NOT EXISTS resourceType LowCardinality(Nullable(String)), '
+            . 'ADD COLUMN IF NOT EXISTS resourceId Nullable(String)';
 
         $this->query($sql);
     }
 
-    /** Backfill the ip column on an existing events table (setup uses IF NOT EXISTS, so pre-existing tables never receive it). */
+    /** Backfill dimension columns referenced by event projections on pre-existing tables. */
     private function ensureEventDimColumns(): void
     {
         $eventsTable = $this->escapeIdentifier($this->database)
             . '.' . $this->escapeIdentifier($this->getEventsTableName());
 
         $sql = "ALTER TABLE {$eventsTable} "
+            . 'ADD COLUMN IF NOT EXISTS path Nullable(String), '
+            . 'ADD COLUMN IF NOT EXISTS country LowCardinality(Nullable(String)), '
+            . 'ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String)), '
             . 'ADD COLUMN IF NOT EXISTS ip LowCardinality(Nullable(String))';
 
         $this->query($sql);
