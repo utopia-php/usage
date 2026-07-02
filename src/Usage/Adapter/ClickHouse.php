@@ -778,33 +778,41 @@ class ClickHouse extends SQL
         $this->query($sql);
     }
 
-    /** Backfill dimension columns referenced by gauge projections on pre-existing tables. */
+    private const BASE_KEY_COLUMNS = ['id', 'metric', 'value', 'time', 'tenant'];
+
     private function ensureGaugeDimColumns(): void
     {
-        $gaugesTable = $this->escapeIdentifier($this->database)
-            . '.' . $this->escapeIdentifier($this->getGaugesTableName());
-
-        $sql = "ALTER TABLE {$gaugesTable} "
-            . 'ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String)), '
-            . 'ADD COLUMN IF NOT EXISTS resourceType LowCardinality(Nullable(String)), '
-            . 'ADD COLUMN IF NOT EXISTS resourceId Nullable(String)';
-
-        $this->query($sql);
+        $this->ensureDimColumns($this->getGaugesTableName(), Metric::GAUGE_COLUMNS, 'gauge');
     }
 
-    /** Backfill dimension columns referenced by event projections on pre-existing tables. */
     private function ensureEventDimColumns(): void
     {
-        $eventsTable = $this->escapeIdentifier($this->database)
-            . '.' . $this->escapeIdentifier($this->getEventsTableName());
+        $this->ensureDimColumns($this->getEventsTableName(), Metric::EVENT_COLUMNS, 'event');
+    }
 
-        $sql = "ALTER TABLE {$eventsTable} "
-            . 'ADD COLUMN IF NOT EXISTS path Nullable(String), '
-            . 'ADD COLUMN IF NOT EXISTS country LowCardinality(Nullable(String)), '
-            . 'ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String)), '
-            . 'ADD COLUMN IF NOT EXISTS ip LowCardinality(Nullable(String))';
+    /**
+     * @param array<int, string> $columns
+     */
+    private function ensureDimColumns(string $tableName, array $columns, string $type): void
+    {
+        $escapedTable = $this->escapeIdentifier($this->database)
+            . '.' . $this->escapeIdentifier($tableName);
 
-        $this->query($sql);
+        $adds = [];
+        foreach ($columns as $column) {
+            if (in_array($column, self::BASE_KEY_COLUMNS, true)) {
+                continue;
+            }
+            $adds[] = 'ADD COLUMN IF NOT EXISTS '
+                . $this->escapeIdentifier($column)
+                . ' ' . $this->getColumnType($column, $type);
+        }
+
+        if ($adds === []) {
+            return;
+        }
+
+        $this->query("ALTER TABLE {$escapedTable} " . implode(', ', $adds));
     }
 
     /**

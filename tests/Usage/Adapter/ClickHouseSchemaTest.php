@@ -4,6 +4,7 @@ namespace Utopia\Tests\Adapter;
 
 use Utopia\Tests\Usage\Adapter\ClickHouseTestCase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
+use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
 
 /**
@@ -132,10 +133,6 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
                 metric String,
                 value Int64,
                 time DateTime64(3),
-                resourceId Nullable(String),
-                resourceInternalId Nullable(String),
-                teamId Nullable(String),
-                teamInternalId Nullable(String),
                 tenant Nullable(String)
             )
             ENGINE = MergeTree()
@@ -147,18 +144,11 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $usage = new Usage($legacyAdapter);
         $usage->setup();
 
-        $rawString = $this->queryRaw($legacyAdapter, "SHOW CREATE TABLE {$fullName} FORMAT JSON");
-        $json = json_decode($rawString, true);
-        $ddl = '';
-        if (is_array($json) && isset($json['data']) && is_array($json['data']) && isset($json['data'][0]) && is_array($json['data'][0])) {
-            $statement = $json['data'][0]['statement'] ?? '';
-            if (is_string($statement)) {
-                $ddl = $statement;
-            }
-        }
+        $ddl = $this->showCreateFor($legacyAdapter, $fullName);
 
-        $this->assertStringContainsString('`service` LowCardinality(Nullable(String))', $ddl);
-        $this->assertStringContainsString('`resourceType` LowCardinality(Nullable(String))', $ddl);
+        foreach ($this->expectedDimAssertions(Metric::GAUGE_COLUMNS, 'gauge') as $expected) {
+            $this->assertStringContainsString($expected, $ddl);
+        }
     }
 
     public function testSetupBackfillsIpOnLegacyEventsTable(): void
@@ -190,12 +180,6 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
                 metric String,
                 value Int64,
                 time DateTime64(3, 'UTC'),
-                service LowCardinality(Nullable(String)),
-                resourceType LowCardinality(Nullable(String)),
-                resourceId Nullable(String),
-                resourceInternalId Nullable(String),
-                teamId Nullable(String),
-                teamInternalId Nullable(String),
                 tenant Nullable(String)
             )
             ENGINE = MergeTree()
@@ -207,20 +191,54 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $usage = new Usage($legacyAdapter);
         $usage->setup();
 
-        $rawString = $this->queryRaw($legacyAdapter, "SHOW CREATE TABLE {$fullName} FORMAT JSON");
+        $ddl = $this->showCreateFor($legacyAdapter, $fullName);
+
+        foreach ($this->expectedDimAssertions(Metric::EVENT_COLUMNS, 'event') as $expected) {
+            $this->assertStringContainsString($expected, $ddl);
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $columns
+     * @return array<int, string>
+     */
+    private function expectedDimAssertions(array $columns, string $type): array
+    {
+        $lowCardinality = [
+            'country', 'region', 'service', 'resourceType',
+            'osCode', 'osName', 'osVersion',
+            'clientType', 'clientCode', 'clientName', 'clientVersion',
+            'clientEngine', 'clientEngineVersion',
+            'deviceName', 'deviceBrand', 'deviceModel',
+            'hostname', 'ip',
+        ];
+
+        $baseKey = ['id', 'metric', 'value', 'time', 'tenant'];
+
+        $expected = [];
+        foreach ($columns as $column) {
+            if (in_array($column, $baseKey, true)) {
+                continue;
+            }
+            $suffix = in_array($column, $lowCardinality, true)
+                ? 'LowCardinality(Nullable(String))'
+                : 'Nullable(String)';
+            $expected[] = "`{$column}` {$suffix}";
+        }
+        return $expected;
+    }
+
+    private function showCreateFor(ClickHouseAdapter $adapter, string $fullName): string
+    {
+        $rawString = $this->queryRaw($adapter, "SHOW CREATE TABLE {$fullName} FORMAT JSON");
         $json = json_decode($rawString, true);
-        $ddl = '';
         if (is_array($json) && isset($json['data']) && is_array($json['data']) && isset($json['data'][0]) && is_array($json['data'][0])) {
             $statement = $json['data'][0]['statement'] ?? '';
             if (is_string($statement)) {
-                $ddl = $statement;
+                return $statement;
             }
         }
-
-        $this->assertStringContainsString('`ip` LowCardinality(Nullable(String))', $ddl);
-        $this->assertStringContainsString('`path` Nullable(String)', $ddl);
-        $this->assertStringContainsString('`country` LowCardinality(Nullable(String))', $ddl);
-        $this->assertStringContainsString('`service` LowCardinality(Nullable(String))', $ddl);
+        return '';
     }
 
     private function showCreate(string $table): string
