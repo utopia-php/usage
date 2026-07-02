@@ -64,7 +64,7 @@ class ClickHouse extends SQL
     protected string $namespace = '';
 
     /** @var int|null Retention in days; when set, setup() applies a TTL to the snapshot table. Null disables TTL. */
-    protected ?int $retention = null;
+    private ?int $retention = null;
 
     /** @var bool Whether to log queries for debugging */
     private bool $enableQueryLogging = false;
@@ -1116,6 +1116,14 @@ class ClickHouse extends SQL
                 "ALTER TABLE {$escapedSnapshotDatabaseAndTable} "
                 . "MODIFY TTL toDateTime(time) + INTERVAL {$this->retention} DAY "
                 . 'SETTINGS materialize_ttl_after_modify = 0'
+            );
+        } else {
+            // Disabling retention must actively strip any TTL a previous run
+            // applied; otherwise rows keep being purged despite retention being
+            // null. REMOVE TTL is a no-op on a table without a TTL, so this is
+            // safe to run unconditionally and keeps setup() idempotent.
+            $this->query(
+                "ALTER TABLE {$escapedSnapshotDatabaseAndTable} REMOVE TTL"
             );
         }
     }
