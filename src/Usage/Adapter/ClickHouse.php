@@ -63,6 +63,9 @@ class ClickHouse extends SQL
 
     protected string $namespace = '';
 
+    /** @var int|null Retention in days; when set, setup() applies a TTL to the snapshot table. Null disables TTL. */
+    protected ?int $retention = null;
+
     /** @var bool Whether to log queries for debugging */
     private bool $enableQueryLogging = false;
 
@@ -505,6 +508,35 @@ class ClickHouse extends SQL
     public function isSharedTables(): bool
     {
         return $this->sharedTables;
+    }
+
+    /**
+     * Set the retention window in days. When set, setup() applies a TTL to the
+     * snapshot table so rows older than the window are dropped by background
+     * merges. The aggregated table is left untouched. Pass null to disable
+     * (the default).
+     *
+     * @param int|null $days
+     * @return self
+     * @throws Exception If $days is not positive
+     */
+    public function setRetention(?int $days): self
+    {
+        if ($days !== null && $days < 1) {
+            throw new Exception('Retention must be a positive number of days');
+        }
+        $this->retention = $days;
+        return $this;
+    }
+
+    /**
+     * Get the retention window in days, or null when TTL is disabled.
+     *
+     * @return int|null
+     */
+    public function getRetention(): ?int
+    {
+        return $this->retention;
     }
 
     /**
@@ -1071,6 +1103,21 @@ class ClickHouse extends SQL
         ";
 
         $this->query($createCounterTableSql);
+
+        // Apply retention to the snapshot table only, as a separate idempotent
+        // ALTER. CREATE TABLE IF NOT EXISTS won't add a TTL to an existing
+        // table, and MODIFY TTL is a no-op when unchanged, so setup() stays
+        // re-runnable. The aggregated table is intentionally left untouched —
+        // it backs long-term usage/billing history. materialize_ttl_after_modify
+        // = 0 defers the purge to background merges rather than an immediate
+        // mutation.
+        if ($this->retention !== null) {
+            $this->query(
+                "ALTER TABLE {$escapedSnapshotDatabaseAndTable} "
+                . "MODIFY TTL toDateTime(time) + INTERVAL {$this->retention} DAY "
+                . 'SETTINGS materialize_ttl_after_modify = 0'
+            );
+        }
     }
 
     /**
