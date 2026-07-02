@@ -93,7 +93,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $ddl = $this->showCreate($this->resolveTableName($this->adapter, 'getGaugesTableName'));
 
         $this->assertStringContainsString('`service` LowCardinality(Nullable(String))', $ddl);
-        $this->assertStringContainsString('`resource` LowCardinality(Nullable(String))', $ddl);
+        $this->assertStringContainsString('`resourceType` LowCardinality(Nullable(String))', $ddl);
         $this->assertStringContainsString("`time` DateTime64(3, 'UTC') CODEC(Delta(4), LZ4)", $ddl);
         $this->assertStringContainsString('`resourceId` Nullable(String) CODEC(ZSTD(3))', $ddl);
         $this->assertStringContainsString('`teamId` Nullable(String) CODEC(ZSTD(3))', $ddl);
@@ -104,7 +104,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $ddl = $this->showCreate($this->resolveTableName($this->adapter, 'getGaugesTableName'));
 
         $this->assertStringContainsString('`index-service` service TYPE set(0)', $ddl);
-        $this->assertStringContainsString('`index-resource` resource TYPE set(0)', $ddl);
+        $this->assertStringContainsString('`index-resourceType` resourceType TYPE set(0)', $ddl);
         $this->assertStringContainsString('`index-resourceId` resourceId TYPE bloom_filter', $ddl);
         $this->assertStringContainsString('`index-teamId` teamId TYPE bloom_filter', $ddl);
     }
@@ -158,7 +158,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         }
 
         $this->assertStringContainsString('`service` LowCardinality(Nullable(String))', $ddl);
-        $this->assertStringContainsString('`resource` LowCardinality(Nullable(String))', $ddl);
+        $this->assertStringContainsString('`resourceType` LowCardinality(Nullable(String))', $ddl);
     }
 
     private function showCreate(string $table): string

@@ -2863,7 +2863,7 @@ class ClickHouse extends SQL
             $dt = new DateTime($point['date']);
             $key = $dt->format($format);
             // If multiple points in the same bucket, sum them
-            $existing[$key] = ($existing[$key] ?? 0) + $point['value'];
+            $existing[$key] = ($existing[$key] ?? 0.0) + $point['value'];
         }
 
         // Generate all time buckets in range
@@ -2876,7 +2876,7 @@ class ClickHouse extends SQL
         while ($current <= $end) {
             $key = $current->format($format);
             $result[] = [
-                'value' => $existing[$key] ?? 0,
+                'value' => $existing[$key] ?? 0.0,
                 'date' => $key,
             ];
             $current->modify($step);
