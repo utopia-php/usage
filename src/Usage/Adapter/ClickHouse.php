@@ -1296,9 +1296,6 @@ class ClickHouse extends SQL
 
                 $columns = Metric::extractColumns($tags, $type);
 
-                // Callers (e.g. Accumulator) can pin the row to the moment
-                // the metric was originally emitted rather than the flush
-                // moment. Missing / invalid time falls back to now().
                 $rawTime = $metricData['time'] ?? null;
                 $emittedAt = ($rawTime instanceof DateTime || is_string($rawTime))
                     ? $rawTime
@@ -2683,11 +2680,6 @@ class ClickHouse extends SQL
             $typesToQuery[] = Usage::TYPE_GAUGE;
         }
 
-        // Track which side produced rows for each metric so the fill pass
-        // can choose zero-fill (events) vs last-observation-carried-forward
-        // (gauges). Event and gauge tables enforce disjoint metric names
-        // at read time — see the eventTotal/gaugeTotal collision guard in
-        // getTotal() — so a single metric never straddles both branches.
         $metricTypes = [];
 
         foreach ($typesToQuery as $queryType) {
@@ -2718,11 +2710,6 @@ class ClickHouse extends SQL
             }
         }
 
-        // Fill gaps if requested. Events are additive → missing bucket
-        // means 0. Gauges are point-in-time state → a missing bucket
-        // between two snapshots should carry the previous value forward,
-        // otherwise a sub-hour interval read shows the metric collapsing
-        // to zero every time no snapshot happened to land in the bucket.
         if ($zeroFill) {
             foreach ($output as $metricName => &$metricData) {
                 $fillType = $metricTypes[$metricName] ?? $type ?? Usage::TYPE_EVENT;
@@ -2886,28 +2873,12 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Last-observation-carried-forward fill for gauge time series.
+     * Fill missing gauge buckets by carrying the last observation forward.
      *
-     * Gauges are point-in-time state, so a bucket with no snapshot is
-     * not "zero" — it's "same value as the most recent snapshot".
-     * Buckets before the first snapshot in the window fall back to 0
-     * (no earlier value has been observed in the requested window).
+     * Multiple points in the same bucket collapse to the most recent point's
+     * value (last-write-wins), matching argMax(value, time) on the write side.
      *
-     * A PHP-side LOCF pass is chosen over ClickHouse `WITH FILL ...
-     * INTERPOLATE` because getTimeSeriesFromTable() emits its result
-     * via `FORMAT JSON` after a plain GROUP BY / ORDER BY — the fill
-     * happens per (metric, bucket) row without a nested subquery — and
-     * because the outer merge step in getTimeSeries() already normalizes
-     * bucket keys, so the fill has to run in the same place regardless.
-     *
-     * Multiple points in the same bucket collapse to the most recent
-     * point's value (last-write-wins), matching argMax(value, time)
-     * semantics on the write side.
-     *
-     * @param array<array{value: float, date: string}> $data Existing data points
-     * @param string $interval '1h' or '1d'
-     * @param string $startDate Start datetime
-     * @param string $endDate End datetime
+     * @param array<array{value: float, date: string}> $data
      * @return array<array{value: float, date: string}>
      */
     private function locfFillTimeSeries(array $data, string $interval, string $startDate, string $endDate): array
@@ -2915,11 +2886,6 @@ class ClickHouse extends SQL
         $format = $interval === '1h' ? 'Y-m-d\TH:00:00+00:00' : 'Y-m-d\T00:00:00+00:00';
         $step = $interval === '1h' ? '+1 hour' : '+1 day';
 
-        // Bucket -> most-recent value in that bucket. Order data by
-        // date so a later row overwrites an earlier one in the same
-        // bucket; the query side already orders by bucket ASC but the
-        // outer merge may have concatenated per-type slices, so we sort
-        // here defensively.
         usort($data, fn (array $a, array $b): int => strcmp($a['date'], $b['date']));
 
         $existing = [];
@@ -2944,8 +2910,7 @@ class ClickHouse extends SQL
                 $seenAny = true;
             }
             $result[] = [
-                // Before the first observed bucket in the window: fall
-                // back to 0 rather than fabricating a value.
+                // Pre-window buckets fall back to 0 rather than fabricating a value.
                 'value' => $seenAny ? $lastValue : 0.0,
                 'date' => $key,
             ];

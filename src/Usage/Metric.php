@@ -307,9 +307,6 @@ class Metric extends ArrayObject
 
     /**
      * Get caller IP address (event metrics).
-     *
-     * Stored as-is. IPv4 dotted-decimal (up to 15 chars) or IPv6
-     * (up to 45 chars including v4-mapped forms).
      */
     public function getIp(): ?string
     {
