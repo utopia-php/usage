@@ -21,7 +21,12 @@ class Accumulator
      * use last-write-wins. Tenant is part of the key so metrics for different
      * tenants never collapse into one entry.
      *
-     * @var array<string, array{tenant: string, metric: string, value: int, type: string, tags: array<string, mixed>}>
+     * Each entry may carry the `time` at which the event was originally
+     * emitted; the adapter uses it when writing so buffered rows land at
+     * the queued moment rather than the flush moment. Missing time means
+     * the adapter picks now() on write.
+     *
+     * @var array<string, array{tenant: string, metric: string, value: int, type: string, tags: array<string, mixed>, time?: \DateTime}>
      */
     private array $buffer = [];
 
@@ -44,14 +49,25 @@ class Accumulator
      * For gauge type: last-write-wins semantics.
      * No period fan-out — raw timestamps are used.
      *
+     * When $time is provided, it is threaded through to the adapter so
+     * the row is written at the moment it was originally emitted rather
+     * than at the flush moment. When $time is null the adapter picks
+     * now() on write (unchanged behaviour).
+     *
+     * For events with the same (tenant, metric, tags) tuple, only the
+     * first non-null time survives — later calls sum values into the
+     * existing bucket and preserve the earliest queued time. Gauges use
+     * last-write-wins, so the most recently supplied time wins.
+     *
      * @param string $tenant Tenant scope (shared-tables mode)
      * @param string $metric Metric name
      * @param int $value Value
      * @param string $type Metric type: 'event' or 'gauge'
      * @param array<string,mixed> $tags Optional tags
+     * @param \DateTime|null $time Optional queued timestamp; null => now() on write
      * @return self
      */
-    public function collect(string $tenant, string $metric, int $value, string $type, array $tags = []): self
+    public function collect(string $tenant, string $metric, int $value, string $type, array $tags = [], ?\DateTime $time = null): self
     {
         // Compare against '' rather than empty(): the string "0" is a valid
         // tenant/metric id but empty("0") is true in PHP.
@@ -77,17 +93,26 @@ class Accumulator
         $key = md5(json_encode([$tenant, $metric, $type, $canonicalTags], JSON_THROW_ON_ERROR));
 
         if ($type === Usage::TYPE_EVENT && isset($this->buffer[$key])) {
-            // Additive: sum values for the same tenant + metric + tags combination
+            // Additive: sum values for the same tenant + metric + tags combination.
+            // Preserve the earliest queued time — later calls fold in without
+            // moving the bucket's timestamp forward.
             $this->buffer[$key]['value'] += $value;
+            if ($time !== null && !isset($this->buffer[$key]['time'])) {
+                $this->buffer[$key]['time'] = $time;
+            }
         } else {
             // New event entry, or gauge (last-write-wins)
-            $this->buffer[$key] = [
+            $entry = [
                 'tenant' => $tenant,
                 'metric' => $metric,
                 'value' => $value,
                 'type' => $type,
                 'tags' => $tags,
             ];
+            if ($time !== null) {
+                $entry['time'] = $time;
+            }
+            $this->buffer[$key] = $entry;
         }
 
         return $this;

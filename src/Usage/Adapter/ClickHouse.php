@@ -1296,11 +1296,19 @@ class ClickHouse extends SQL
 
                 $columns = Metric::extractColumns($tags, $type);
 
+                // Callers (e.g. Accumulator) can pin the row to the moment
+                // the metric was originally emitted rather than the flush
+                // moment. Missing / invalid time falls back to now().
+                $rawTime = $metricData['time'] ?? null;
+                $emittedAt = ($rawTime instanceof DateTime || is_string($rawTime))
+                    ? $rawTime
+                    : null;
+
                 $row = array_merge([
                     'id'     => $this->generateId(),
                     'metric' => $metric,
                     'value'  => $value,
-                    'time'   => $this->formatDateTime(null),
+                    'time'   => $this->formatDateTime($emittedAt),
                 ], $columns);
 
                 if ($this->sharedTables) {

@@ -287,4 +287,61 @@ class AccumulatorTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->accumulator->collect('t1', 'requests', 10, 'invalid');
     }
+
+    public function testCollectWithoutTimeOmitsField(): void
+    {
+        // Callers that don't set $time must not surface a null/empty time
+        // in the buffered entry — the adapter interprets "no time" as
+        // "use now() at write".
+        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT);
+
+        $this->assertTrue($this->accumulator->flush());
+        $this->assertArrayNotHasKey('time', $this->adapter->batches[0]['metrics'][0]);
+    }
+
+    public function testCollectThreadsQueuedTimeToBatch(): void
+    {
+        $emittedAt = new \DateTime('2026-04-15 12:34:56');
+        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT, [], $emittedAt);
+
+        $this->assertTrue($this->accumulator->flush());
+
+        $entry = $this->adapter->batches[0]['metrics'][0];
+        $this->assertArrayHasKey('time', $entry);
+        $this->assertSame($emittedAt, $entry['time']);
+    }
+
+    public function testEventCollectPreservesEarliestQueuedTime(): void
+    {
+        // Two collect() calls fold into one entry; the earliest queued
+        // time survives so buckets don't slide forward on late arrivals.
+        $earlier = new \DateTime('2026-04-15 12:00:00');
+        $later = new \DateTime('2026-04-15 12:05:00');
+
+        $this->accumulator->collect('t1', 'requests', 10, Usage::TYPE_EVENT, [], $earlier);
+        $this->accumulator->collect('t1', 'requests', 5, Usage::TYPE_EVENT, [], $later);
+
+        $this->assertEquals(1, $this->accumulator->count());
+        $this->assertTrue($this->accumulator->flush());
+
+        $entry = $this->adapter->batches[0]['metrics'][0];
+        $this->assertEquals(15, $entry['value']);
+        $this->assertSame($earlier, $entry['time']);
+    }
+
+    public function testGaugeCollectUsesLastWriteWinsForTime(): void
+    {
+        // Gauge collect() is last-write-wins on value; the queued time
+        // supplied on the last call wins alongside it.
+        $t1 = new \DateTime('2026-04-15 12:00:00');
+        $t2 = new \DateTime('2026-04-15 12:05:00');
+
+        $this->accumulator->collect('t1', 'storage', 100, Usage::TYPE_GAUGE, [], $t1);
+        $this->accumulator->collect('t1', 'storage', 200, Usage::TYPE_GAUGE, [], $t2);
+
+        $this->assertTrue($this->accumulator->flush());
+        $entry = $this->adapter->batches[0]['metrics'][0];
+        $this->assertEquals(200, $entry['value']);
+        $this->assertSame($t2, $entry['time']);
+    }
 }
