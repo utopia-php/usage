@@ -144,7 +144,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
     public function testFilterOnExtraColumnStillRoutesToProjectionWhenColumnPresent(): void
     {
-        // resource is a column on the events table but not in p_by_path's
+        // resourceType is a column on the events table but not in p_by_path's
         // projection; the optimizer cannot satisfy this query from the
         // projection and must scan the base table.
         $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
@@ -155,7 +155,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         $this->usage->find('1', [
             UsageQuery::groupBy('path'),
             Query::equal('metric', [$this->metric]),
-            Query::equal('resource', ['function']),
+            Query::equal('resourceType', ['function']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
         ], Usage::TYPE_EVENT);

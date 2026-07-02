@@ -24,7 +24,7 @@ use ArrayObject;
  *     'method' => 'POST',
  *     'status' => '201',
  *     'service' => 'storage',
- *     'resource' => 'bucket',
+ *     'resourceType' => 'bucket',
  *     'resourceId' => 'abc123',
  *     'resourceInternalId' => '42',
  *     'teamId' => 'team_x',
@@ -51,9 +51,9 @@ class Metric extends ArrayObject
      */
     public const EVENT_COLUMNS = [
         'path', 'method', 'status',
-        'service', 'resource', 'resourceId', 'resourceInternalId',
+        'service', 'resourceType', 'resourceId', 'resourceInternalId',
         'teamId', 'teamInternalId',
-        'country', 'region', 'hostname',
+        'country', 'region', 'hostname', 'ip',
         'osCode', 'osName', 'osVersion',
         'clientType', 'clientCode', 'clientName', 'clientVersion',
         'clientEngine', 'clientEngineVersion',
@@ -63,7 +63,7 @@ class Metric extends ArrayObject
     /**
      * Gauge-specific column names that are extracted from tags into dedicated columns.
      */
-    public const GAUGE_COLUMNS = ['service', 'resource', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
+    public const GAUGE_COLUMNS = ['service', 'resourceType', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
 
     /**
      * Construct a new metric object.
@@ -79,9 +79,9 @@ class Metric extends ArrayObject
      * Event-only dimension columns (see EVENT_COLUMNS):
      * - path / method / status: HTTP shape
      * - service: API service segment (storage, databases, …)
-     * - resource / resourceId / resourceInternalId: resource identity
+     * - resourceType / resourceId / resourceInternalId: resource identity
      * - teamId / teamInternalId: owning team identity
-     * - country / region / hostname: geographic + caller origin
+     * - country / region / hostname / ip: geographic + caller origin
      * - osCode / osName / osVersion: parsed user-agent OS fields
      * - clientType / clientCode / clientName / clientVersion: parsed client
      * - clientEngine / clientEngineVersion: parsed client engine
@@ -219,10 +219,10 @@ class Metric extends ArrayObject
      *
      * @return string|null The resource type, or null if not set
      */
-    public function getResource(): ?string
+    public function getResourceType(): ?string
     {
-        $resource = $this->getAttribute('resource', null);
-        return is_string($resource) ? $resource : null;
+        $resourceType = $this->getAttribute('resourceType', null);
+        return is_string($resourceType) ? $resourceType : null;
     }
 
     /**
@@ -302,6 +302,15 @@ class Metric extends ArrayObject
     public function getHostname(): ?string
     {
         $v = $this->getAttribute('hostname', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get caller IP address (event metrics).
+     */
+    public function getIp(): ?string
+    {
+        $v = $this->getAttribute('ip', null);
         return is_string($v) ? $v : null;
     }
 
@@ -561,7 +570,7 @@ class Metric extends ArrayObject
      *
      * Returns the attribute schema for the events table which stores
      * raw request events with metadata columns for path, method, status,
-     * resource, and resourceId.
+     * resourceType, and resourceId.
      *
      * @return array<int, array<string, mixed>>
      */
@@ -610,7 +619,7 @@ class Metric extends ArrayObject
             $stringColumn('method', 16),
             $stringColumn('status', 16),
             $stringColumn('service', 256),
-            $stringColumn('resource', 256),
+            $stringColumn('resourceType', 256),
             $stringColumn('resourceId', 255),
             $stringColumn('resourceInternalId', 255),
             $stringColumn('teamId', 255),
@@ -618,6 +627,7 @@ class Metric extends ArrayObject
             $stringColumn('country', 2),
             $stringColumn('region', 64),
             $stringColumn('hostname', 255),
+            $stringColumn('ip', 45),
             $stringColumn('osCode', 256),
             $stringColumn('osName', 256),
             $stringColumn('osVersion', 255),
@@ -683,7 +693,7 @@ class Metric extends ArrayObject
                 'filters' => ['datetime'],
             ],
             $stringColumn('service', 256),
-            $stringColumn('resource', 256),
+            $stringColumn('resourceType', 256),
             $stringColumn('teamId', 255),
             $stringColumn('teamInternalId', 255),
             $stringColumn('resourceId', 255),
@@ -713,9 +723,9 @@ class Metric extends ArrayObject
     {
         $indexed = [
             'path', 'method', 'status',
-            'service', 'resource', 'resourceId', 'resourceInternalId',
+            'service', 'resourceType', 'resourceId', 'resourceInternalId',
             'teamId', 'teamInternalId',
-            'country', 'region', 'hostname',
+            'country', 'region', 'hostname', 'ip',
             'osName', 'clientType', 'clientName', 'deviceName',
         ];
 
@@ -745,9 +755,9 @@ class Metric extends ArrayObject
      */
     public static function getGaugeIndexes(): array
     {
-        $indexed = ['service', 'resource', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'];
+        $indexed = ['service', 'resourceType', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'];
 
-        $setIndexed = ['service', 'resource'];
+        $setIndexed = ['service', 'resourceType'];
 
         return array_map(
             static fn (string $col): array => [

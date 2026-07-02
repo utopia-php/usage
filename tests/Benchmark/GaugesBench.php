@@ -49,10 +49,10 @@ class GaugesBench extends BenchmarkBase
             ], Usage::TYPE_GAUGE);
         });
 
-        $this->runBench('bench_gauges_topN_resource_30d', function (string $queryId) use ($start30d, $endClosed): void {
+        $this->runBench('bench_gauges_topN_resourceType_30d', function (string $queryId) use ($start30d, $endClosed): void {
             $this->adapter->setNextQueryId($queryId);
             $this->usage->find($this->tenant, [
-                UsageQuery::groupBy('resource'),
+                UsageQuery::groupBy('resourceType'),
                 Query::equal('metric', [$this->metric]),
                 Query::greaterThanEqual('time', $start30d),
                 Query::lessThanEqual('time', $endClosed),
@@ -75,7 +75,7 @@ class GaugesBench extends BenchmarkBase
 
         $expectedProjections = [
             'bench_gauges_topN_service_30d' => 'p_by_service',
-            'bench_gauges_topN_resource_30d' => 'p_by_resource',
+            'bench_gauges_topN_resourceType_30d' => 'p_by_resourceType',
             'bench_gauges_topN_service_today_partial' => 'p_by_service',
         ];
         foreach ($expectedProjections as $scenario => $projection) {

@@ -99,9 +99,9 @@ class MetricTest extends TestCase
             $indexed = array_merge($indexed, $attrs);
         }
         foreach ([
-            'path', 'method', 'status', 'service', 'resource',
+            'path', 'method', 'status', 'service', 'resourceType',
             'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId',
-            'country', 'region', 'hostname',
+            'country', 'region', 'hostname', 'ip',
             'osName', 'clientType', 'clientName', 'deviceName',
         ] as $col) {
             $this->assertContains($col, $indexed, "Event indexes missing {$col}");
@@ -143,7 +143,7 @@ class MetricTest extends TestCase
             'path' => '/v1/storage/files',
             'method' => 'POST',
             'status' => '201',
-            'resource' => 'bucket',
+            'resourceType' => 'bucket',
             'resourceId' => 'abc123',
             'region' => 'us',
         ];
@@ -310,7 +310,7 @@ class MetricTest extends TestCase
             'path' => '/v1/storage/files',
             'method' => 'POST',
             'status' => '201',
-            'resource' => 'bucket',
+            'resourceType' => 'bucket',
             'resourceId' => 'abc123',
         ];
 
@@ -323,7 +323,7 @@ class MetricTest extends TestCase
         $this->assertEquals('/v1/storage/files', $metric->getPath());
         $this->assertEquals('POST', $metric->getMethod());
         $this->assertEquals('201', $metric->getStatus());
-        $this->assertEquals('bucket', $metric->getResource());
+        $this->assertEquals('bucket', $metric->getResourceType());
         $this->assertEquals('abc123', $metric->getResourceId());
     }
 
@@ -399,7 +399,7 @@ class MetricTest extends TestCase
         $this->assertNull($metric->getPath());
         $this->assertNull($metric->getMethod());
         $this->assertNull($metric->getStatus());
-        $this->assertNull($metric->getResource());
+        $this->assertNull($metric->getResourceType());
         $this->assertNull($metric->getResourceId());
     }
 
@@ -412,13 +412,13 @@ class MetricTest extends TestCase
             'path' => '/v1/databases',
             'method' => 'GET',
             'status' => '200',
-            'resource' => 'database',
+            'resourceType' => 'database',
             'resourceId' => 'db123',
         ]);
         $this->assertEquals('/v1/databases', $metric->getPath());
         $this->assertEquals('GET', $metric->getMethod());
         $this->assertEquals('200', $metric->getStatus());
-        $this->assertEquals('database', $metric->getResource());
+        $this->assertEquals('database', $metric->getResourceType());
         $this->assertEquals('db123', $metric->getResourceId());
     }
 
@@ -606,9 +606,9 @@ class MetricTest extends TestCase
     {
         $expected = [
             'path', 'method', 'status',
-            'service', 'resource', 'resourceId', 'resourceInternalId',
+            'service', 'resourceType', 'resourceId', 'resourceInternalId',
             'teamId', 'teamInternalId',
-            'country', 'region', 'hostname',
+            'country', 'region', 'hostname', 'ip',
             'osCode', 'osName', 'osVersion',
             'clientType', 'clientCode', 'clientName', 'clientVersion',
             'clientEngine', 'clientEngineVersion',
@@ -622,7 +622,7 @@ class MetricTest extends TestCase
      */
     public function testGaugeColumnsConstant(): void
     {
-        $expected = ['service', 'resource', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
+        $expected = ['service', 'resourceType', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
         $this->assertSame($expected, Metric::GAUGE_COLUMNS);
     }
 
@@ -695,5 +695,36 @@ class MetricTest extends TestCase
     {
         $this->assertFalse(method_exists(Metric::class, 'getUserAgent'));
         $this->assertFalse(method_exists(Metric::class, 'getTags'));
+    }
+
+    /**
+     * The ip dimension is event-only and round-trips through the typed
+     * accessor.
+     */
+    public function testGetIpReturnsAddress(): void
+    {
+        $m = new Metric(['ip' => '203.0.113.42']);
+        $this->assertSame('203.0.113.42', $m->getIp());
+
+        $m6 = new Metric(['ip' => '2001:db8::1']);
+        $this->assertSame('2001:db8::1', $m6->getIp());
+
+        $missing = new Metric([]);
+        $this->assertNull($missing->getIp());
+    }
+
+    /**
+     * ip is event-only; the gauge column set must not include it.
+     */
+    public function testIpIsEventOnly(): void
+    {
+        $this->assertContains('ip', Metric::EVENT_COLUMNS);
+        $this->assertNotContains('ip', Metric::GAUGE_COLUMNS);
+
+        $eventIds = array_column(Metric::getEventSchema(), '$id');
+        $this->assertContains('ip', $eventIds);
+
+        $gaugeIds = array_column(Metric::getGaugeSchema(), '$id');
+        $this->assertNotContains('ip', $gaugeIds);
     }
 }

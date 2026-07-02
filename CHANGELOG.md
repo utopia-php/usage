@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased — resourceType rename + queued time + ip dim + gauge fill
+
+### Breaking
+
+- Renamed the `resource` dimension to `resourceType` across the
+  events, gauges, and events-daily tables. All Metric column
+  constants, schema definitions, indexes, projections
+  (`p_by_resource*` → `p_by_resourceType*`), materialized-view
+  dimension list, and the `Metric::getResource()` getter (now
+  `Metric::getResourceType()`) follow the new name. Callers must
+  rename the `resource` tag key on writes and any queries that
+  filter/group by the old name. A one-time ClickHouse column rename
+  plus data backfill is required for existing deployments; that
+  migration lives in the cloud repo, not in this library.
+
+### Added
+
+- `Accumulator::collect()` accepts an optional `\DateTime $time`
+  argument. When provided, the row is written at that moment; when
+  omitted the ClickHouse adapter still stamps `now()`. Events with
+  the same (tenant, metric, tags) fold into the earliest supplied
+  time; gauges follow last-write-wins on both value and time.
+- `Usage::addBatch()` payloads may carry a `time` field per row
+  (`DateTime|string`) — the ClickHouse adapter threads it through
+  `formatDateTime()`.
+- New event-only `ip` dimension in `Metric::EVENT_COLUMNS` and
+  `Metric::getEventSchema()`. Stored as
+  `LowCardinality(Nullable(String))` in ClickHouse, indexed with a
+  `bloom_filter`, size 45 chars (IPv6 max). Gauges are unchanged.
+  `Metric::getIp()` is a typed accessor. The base-table primary key
+  is intentionally not extended with `ip`.
+- Gauge time-series reads now carry the last observed value forward
+  across empty buckets inside the window (LOCF) instead of collapsing
+  to zero. Events keep zero-fill. Return shape is unchanged.
+
 ## 0.4.0 — Per-dimension ClickHouse projections and auto-routing
 
 This release accelerates grouped reads against the events and gauges

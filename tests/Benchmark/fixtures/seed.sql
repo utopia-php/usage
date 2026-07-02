@@ -10,10 +10,10 @@
 --   * 1000 distinct paths (api-style surface) — bounded but high-cardinality.
 --   * 6 HTTP methods, 6 status codes — bounded cross-product (~36 keys).
 --   * 30-day span, 1-minute resolution — matches expected production density.
---   * Country / service / resource cycled for routing-fallback tests.
+--   * Country / service / resourceType cycled for routing-fallback tests.
 INSERT INTO {TABLE}
             (id, metric, value, time, path, method, status, service, country,
-             region, hostname, resource, resourceId, tenant)
+             region, hostname, resourceType, resourceId, tenant)
 SELECT
     lower(hex(randomString(16))) AS id,
     '{METRIC}'                     AS metric,
@@ -38,7 +38,7 @@ SELECT
     concat('host-', toString(number % 10), '.example.com') AS hostname,
     [
       'project','bucket','database','function'
-    ][1 + (number % 4)]            AS resource,
+    ][1 + (number % 4)]            AS resourceType,
     concat('resource-', toString(number % 5000)) AS resourceId,
     '{TENANT}'                     AS tenant
 FROM numbers({ROWS});

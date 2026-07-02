@@ -235,7 +235,7 @@ class ClickHouseTest extends TestCase
                     'method' => 'POST',
                     'status' => '201',
                     'service' => 'storage',
-                    'resource' => 'bucket',
+                    'resourceType' => 'bucket',
                     'resourceId' => 'bucket123',
                     'resourceInternalId' => '42',
                     'teamId' => 'team_x',
@@ -272,7 +272,7 @@ class ClickHouseTest extends TestCase
         $this->assertEquals('POST', $metric->getMethod());
         $this->assertEquals('201', $metric->getStatus());
         $this->assertEquals('storage', $metric->getService());
-        $this->assertEquals('bucket', $metric->getResource());
+        $this->assertEquals('bucket', $metric->getResourceType());
         $this->assertEquals('bucket123', $metric->getResourceId());
         $this->assertEquals('42', $metric->getResourceInternalId());
         $this->assertEquals('team_x', $metric->getTeamId());
@@ -309,7 +309,7 @@ class ClickHouseTest extends TestCase
                 'value' => 500,
                 'tags' => [
                     'service' => 'storage',
-                    'resource' => 'file',
+                    'resourceType' => 'file',
                     'teamId' => 'team_x',
                     'teamInternalId' => '7',
                     'resourceId' => 'r1',
@@ -325,7 +325,7 @@ class ClickHouseTest extends TestCase
         $this->assertCount(1, $results);
         $metric = $results[0];
         $this->assertEquals('storage', $metric->getService());
-        $this->assertEquals('file', $metric->getResource());
+        $this->assertEquals('file', $metric->getResourceType());
         $this->assertEquals('team_x', $metric->getTeamId());
         $this->assertEquals('7', $metric->getTeamInternalId());
         $this->assertEquals('r1', $metric->getResourceId());
@@ -396,7 +396,7 @@ class ClickHouseTest extends TestCase
 
         $tags = [
             'path' => '/v1/x', 'method' => 'GET', 'status' => '200',
-            'service' => 'storage', 'resource' => 'bucket',
+            'service' => 'storage', 'resourceType' => 'bucket',
             'resourceId' => 'r1', 'resourceInternalId' => '42',
             'teamId' => 't1', 'teamInternalId' => '7',
             'country' => 'us', 'region' => 'fra', 'hostname' => 'h.example.com',
@@ -432,9 +432,9 @@ class ClickHouseTest extends TestCase
         $this->usage->purge('1', [], Usage::TYPE_EVENT);
 
         $this->assertTrue($this->usage->addBatch([
-            ['tenant' => '1', 'metric' => 'req', 'value' => 10, 'tags' => ['path' => '/v1/storage', 'method' => 'GET', 'status' => '200', 'resource' => 'project', 'resourceId' => 'p1']],
-            ['tenant' => '1', 'metric' => 'req', 'value' => 20, 'tags' => ['path' => '/v1/databases', 'method' => 'POST', 'status' => '201', 'resource' => 'database', 'resourceId' => 'db1']],
-            ['tenant' => '1', 'metric' => 'req', 'value' => 30, 'tags' => ['path' => '/v1/storage', 'method' => 'GET', 'status' => '404', 'resource' => 'project', 'resourceId' => 'p1']],
+            ['tenant' => '1', 'metric' => 'req', 'value' => 10, 'tags' => ['path' => '/v1/storage', 'method' => 'GET', 'status' => '200', 'resourceType' => 'project', 'resourceId' => 'p1']],
+            ['tenant' => '1', 'metric' => 'req', 'value' => 20, 'tags' => ['path' => '/v1/databases', 'method' => 'POST', 'status' => '201', 'resourceType' => 'database', 'resourceId' => 'db1']],
+            ['tenant' => '1', 'metric' => 'req', 'value' => 30, 'tags' => ['path' => '/v1/storage', 'method' => 'GET', 'status' => '404', 'resourceType' => 'project', 'resourceId' => 'p1']],
         ], Usage::TYPE_EVENT));
 
         // Filter by path
@@ -457,9 +457,9 @@ class ClickHouseTest extends TestCase
         $this->assertCount(1, $results);
         $this->assertEquals(30, $results[0]->getValue());
 
-        // Filter by resource
+        // Filter by resourceType
         $results = $this->usage->find('1', [
-            \Utopia\Query\Query::equal('resource', ['database']),
+            \Utopia\Query\Query::equal('resourceType', ['database']),
         ], Usage::TYPE_EVENT);
         $this->assertCount(1, $results);
 
@@ -493,7 +493,7 @@ class ClickHouseTest extends TestCase
         $this->assertNull($results[0]->getPath());
         $this->assertNull($results[0]->getMethod());
         $this->assertNull($results[0]->getStatus());
-        $this->assertNull($results[0]->getResource());
+        $this->assertNull($results[0]->getResourceType());
         $this->assertEquals('r1', $results[0]->getResourceId());
     }
 
@@ -1166,5 +1166,143 @@ class ClickHouseTest extends TestCase
         $this->usage->find('1', [
             new Query(Query::TYPE_EQUAL, 'metric', []),
         ], Usage::TYPE_EVENT);
+    }
+
+    /**
+     * Gauge getTimeSeries() carries the last-observed value forward
+     * across buckets that have no snapshot, instead of collapsing to
+     * zero. Two hourly snapshots six hours apart should backfill the
+     * middle buckets with the earlier snapshot's value; buckets after
+     * the last snapshot should stick at that snapshot's value; buckets
+     * before the first snapshot fall back to 0 (no observation yet).
+     */
+    public function testGaugeTimeSeriesFillsMissingBucketsWithLastKnownValue(): void
+    {
+        $this->usage->purge('1', [], Usage::TYPE_GAUGE);
+
+        $windowStart = (new \DateTime('2026-06-01 00:00:00'))->format('Y-m-d H:i:s');
+        $windowEnd = (new \DateTime('2026-06-01 10:00:00'))->format('Y-m-d H:i:s');
+
+        // Two snapshots inside the window: 02:00 -> 100, 08:00 -> 300.
+        // We ingest them with an explicit `time` so bucket alignment is
+        // deterministic. The addBatch payload accepts a `time` field
+        // when threaded through (see commit that adds queued-time on
+        // Accumulator::collect); this test exercises the same path.
+        $this->assertTrue($this->usage->addBatch([
+            [
+                'tenant' => '1',
+                'metric' => 'gauge-locf-fill',
+                'value' => 100,
+                'time' => new \DateTime('2026-06-01 02:00:00'),
+                'tags' => [],
+            ],
+            [
+                'tenant' => '1',
+                'metric' => 'gauge-locf-fill',
+                'value' => 300,
+                'time' => new \DateTime('2026-06-01 08:00:00'),
+                'tags' => [],
+            ],
+        ], Usage::TYPE_GAUGE));
+
+        $results = $this->usage->getTimeSeries(
+            '1',
+            ['gauge-locf-fill'],
+            '1h',
+            $windowStart,
+            $windowEnd,
+            [],
+            true,
+            Usage::TYPE_GAUGE,
+        );
+
+        $this->assertArrayHasKey('gauge-locf-fill', $results);
+        $data = $results['gauge-locf-fill']['data'];
+
+        $indexed = [];
+        foreach ($data as $point) {
+            $key = (new \DateTime($point['date']))->format('H');
+            $indexed[$key] = $point['value'];
+        }
+
+        $expected = [
+            // Pre-first-snapshot buckets fall back to 0.
+            '00' => 0.0,
+            '01' => 0.0,
+            // First snapshot lands at 02:00.
+            '02' => 100.0,
+            // 03..07 carry the 100 forward until the next snapshot.
+            '03' => 100.0,
+            '04' => 100.0,
+            '05' => 100.0,
+            '06' => 100.0,
+            '07' => 100.0,
+            // Second snapshot at 08:00 updates the value.
+            '08' => 300.0,
+            // Post-snapshot buckets stick at 300.
+            '09' => 300.0,
+            '10' => 300.0,
+        ];
+        foreach ($expected as $hour => $value) {
+            $actual = $indexed[$hour] ?? null;
+            $this->assertNotNull($actual, "missing bucket {$hour}:00");
+            $this->assertSame($value, $actual, "hour {$hour}:00 filled with wrong value");
+        }
+    }
+
+    /**
+     * Event getTimeSeries() must keep the classic zero-fill semantics:
+     * buckets with no additive activity remain 0, and are NOT carried
+     * forward from earlier buckets.
+     */
+    public function testEventTimeSeriesStillZeroFillsMissingBuckets(): void
+    {
+        $this->usage->purge('1', [], Usage::TYPE_EVENT);
+
+        $windowStart = (new \DateTime('2026-06-02 00:00:00'))->format('Y-m-d H:i:s');
+        $windowEnd = (new \DateTime('2026-06-02 04:00:00'))->format('Y-m-d H:i:s');
+
+        // Single event at 01:00 with value 50. Later buckets must be 0,
+        // not 50.
+        $this->assertTrue($this->usage->addBatch([
+            [
+                'tenant' => '1',
+                'metric' => 'event-zero-fill',
+                'value' => 50,
+                'time' => new \DateTime('2026-06-02 01:00:00'),
+                'tags' => [],
+            ],
+        ], Usage::TYPE_EVENT));
+
+        $results = $this->usage->getTimeSeries(
+            '1',
+            ['event-zero-fill'],
+            '1h',
+            $windowStart,
+            $windowEnd,
+            [],
+            true,
+            Usage::TYPE_EVENT,
+        );
+
+        $data = $results['event-zero-fill']['data'];
+        $indexed = [];
+        foreach ($data as $point) {
+            $key = (new \DateTime($point['date']))->format('H');
+            $indexed[$key] = $point['value'];
+        }
+
+        $expected = [
+            '00' => 0.0,
+            '01' => 50.0,
+            '02' => 0.0,
+            '03' => 0.0,
+            '04' => 0.0,
+        ];
+        foreach ($expected as $hour => $value) {
+            $actual = $indexed[$hour] ?? null;
+            $this->assertNotNull($actual, "missing bucket {$hour}:00");
+            $this->assertSame($value, $actual, "hour {$hour}:00 filled with wrong value");
+        }
     }
 }

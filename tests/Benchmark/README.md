@@ -77,7 +77,7 @@ Gauges (`GaugesBench`):
 |---|---|---|
 | `bench_gauges_latest_in_window` | gauge `getTotal` argMax | p50 < 50ms |
 | `bench_gauges_topN_service_30d` | closed-day gauge by_service AMT | p50 < 100ms |
-| `bench_gauges_topN_resource_30d` | closed-day gauge by_resource AMT | p50 < 100ms |
+| `bench_gauges_topN_resourceType_30d` | closed-day gauge by_resourceType AMT | p50 < 100ms |
 | `bench_gauges_topN_service_today_partial` | gauge by_service hybrid | p50 < 80ms |
 
 Budgets are guidance, not gates.

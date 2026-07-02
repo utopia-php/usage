@@ -12,7 +12,7 @@ use Utopia\Usage\UsageQuery;
 
 /**
  * Routing tests for the gauge per-dim projection slate (p_by_service,
- * p_by_resource). Each grouped scenario asserts (a) latest-per-group
+ * p_by_resourceType). Each grouped scenario asserts (a) latest-per-group
  * values match the raw scan, and (b) the optimizer picked the matching
  * argMaxState projection per `system.query_log.projections`.
  */
@@ -40,13 +40,13 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
         $this->usage->setup();
         $this->usage->purge('1');
 
-        $this->seedHistoricalRow($this->metric, 100, '-5 days', ['service' => 'storage', 'resource' => 'file', 'resourceId' => 'f1']);
-        $this->seedHistoricalRow($this->metric, 200, '-4 days', ['service' => 'storage', 'resource' => 'file', 'resourceId' => 'f2']);
-        $this->seedHistoricalRow($this->metric, 50, '-3 days', ['service' => 'databases', 'resource' => 'database', 'resourceId' => 'db1']);
-        $this->seedHistoricalRow($this->metric, 80, '-3 days', ['service' => 'functions', 'resource' => 'function', 'resourceId' => 'fn1']);
+        $this->seedHistoricalRow($this->metric, 100, '-5 days', ['service' => 'storage', 'resourceType' => 'file', 'resourceId' => 'f1']);
+        $this->seedHistoricalRow($this->metric, 200, '-4 days', ['service' => 'storage', 'resourceType' => 'file', 'resourceId' => 'f2']);
+        $this->seedHistoricalRow($this->metric, 50, '-3 days', ['service' => 'databases', 'resourceType' => 'database', 'resourceId' => 'db1']);
+        $this->seedHistoricalRow($this->metric, 80, '-3 days', ['service' => 'functions', 'resourceType' => 'function', 'resourceId' => 'fn1']);
 
         $this->usage->addBatch([
-            ['tenant' => '1', 'metric' => $this->metric, 'value' => 999, 'tags' => ['service' => 'storage', 'resource' => 'file', 'resourceId' => 'f1']],
+            ['tenant' => '1', 'metric' => $this->metric, 'value' => 999, 'tags' => ['service' => 'storage', 'resourceType' => 'file', 'resourceId' => 'f1']],
         ], Usage::TYPE_GAUGE);
     }
 
@@ -74,7 +74,7 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
             "'{$time}'",
             "'1'",
         ];
-        foreach (['service', 'resource'] as $tag) {
+        foreach (['service', 'resourceType'] as $tag) {
             if (isset($tags[$tag])) {
                 $cols[] = $tag;
                 $vals[] = "'" . addslashes($tags[$tag]) . "'";
@@ -91,10 +91,10 @@ class ClickHouseGaugeDimRoutingTest extends ClickHouseTestCase
     public static function topGaugesProjectionProvider(): array
     {
         return [
-            'by_service'             => [['service'], 'p_by_service'],
-            'by_resource'            => [['resource'], 'p_by_resource'],
-            'by_resourceId'          => [['resourceId'], 'p_by_resourceId'],
-            'by_resource_resourceId' => [['resource', 'resourceId'], 'p_by_resource_resourceId'],
+            'by_service'                 => [['service'], 'p_by_service'],
+            'by_resourceType'            => [['resourceType'], 'p_by_resourceType'],
+            'by_resourceId'              => [['resourceId'], 'p_by_resourceId'],
+            'by_resourceType_resourceId' => [['resourceType', 'resourceId'], 'p_by_resourceType_resourceId'],
         ];
     }
 

@@ -66,7 +66,7 @@ class Usage
      * Each metric carries its own `tenant` (shared-tables mode), so a single
      * batch may span multiple tenants.
      *
-     * @param array<array{tenant: string, metric: string, value: int, tags?: array<string,mixed>}> $metrics
+     * @param array<array{tenant: string, metric: string, value: int, tags?: array<string,mixed>, time?: \DateTime|string}> $metrics
      * @param string $type Metric type: 'event' or 'gauge'
      * @param int $batchSize Maximum number of metrics per INSERT statement
      * @return bool

@@ -23,7 +23,7 @@ use Utopia\Validator\Hostname;
  * This adapter stores usage metrics in ClickHouse using HTTP interface.
  * Uses two separate tables:
  * - Events table (MergeTree): raw request events with metadata columns
- *   (path, method, status, resource, resourceId)
+ *   (path, method, status, resourceType, resourceId)
  * - Gauges table (MergeTree): simple resource snapshots (metric, value, time, tags)
  *
  * A SummingMergeTree materialized view pre-aggregates events by day for fast
@@ -694,9 +694,9 @@ class ClickHouse extends SQL
      */
     private const GAUGE_PROJECTIONS = [
         ['name' => 'p_by_service', 'dims' => ['service']],
-        ['name' => 'p_by_resource', 'dims' => ['resource']],
+        ['name' => 'p_by_resourceType', 'dims' => ['resourceType']],
         ['name' => 'p_by_resourceId', 'dims' => ['resourceId']],
-        ['name' => 'p_by_resource_resourceId', 'dims' => ['resource', 'resourceId']],
+        ['name' => 'p_by_resourceType_resourceId', 'dims' => ['resourceType', 'resourceId']],
     ];
 
     /**
@@ -726,6 +726,8 @@ class ClickHouse extends SQL
             'event',
             $this->getEventIndexes()
         );
+
+        $this->ensureEventDimColumns();
 
         // --- Events daily table (SummingMergeTree) ---
         $this->createDailyTable();
@@ -776,23 +778,41 @@ class ClickHouse extends SQL
         $this->query($sql);
     }
 
-    /**
-     * Backfill the service / resource columns on an existing gauges table.
-     * setup() uses CREATE TABLE IF NOT EXISTS, so deployments that came up
-     * before these columns were added never receive them — the gauge
-     * projections would then fail because their SELECT references columns
-     * the source table lacks.
-     */
+    private const BASE_KEY_COLUMNS = ['id', 'metric', 'value', 'time', 'tenant'];
+
     private function ensureGaugeDimColumns(): void
     {
-        $gaugesTable = $this->escapeIdentifier($this->database)
-            . '.' . $this->escapeIdentifier($this->getGaugesTableName());
+        $this->ensureDimColumns($this->getGaugesTableName(), Metric::GAUGE_COLUMNS, 'gauge');
+    }
 
-        $sql = "ALTER TABLE {$gaugesTable} "
-            . 'ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String)), '
-            . 'ADD COLUMN IF NOT EXISTS resource LowCardinality(Nullable(String))';
+    private function ensureEventDimColumns(): void
+    {
+        $this->ensureDimColumns($this->getEventsTableName(), Metric::EVENT_COLUMNS, 'event');
+    }
 
-        $this->query($sql);
+    /**
+     * @param array<int, string> $columns
+     */
+    private function ensureDimColumns(string $tableName, array $columns, string $type): void
+    {
+        $escapedTable = $this->escapeIdentifier($this->database)
+            . '.' . $this->escapeIdentifier($tableName);
+
+        $adds = [];
+        foreach ($columns as $column) {
+            if (in_array($column, self::BASE_KEY_COLUMNS, true)) {
+                continue;
+            }
+            $adds[] = 'ADD COLUMN IF NOT EXISTS '
+                . $this->escapeIdentifier($column)
+                . ' ' . $this->getColumnType($column, $type);
+        }
+
+        if ($adds === []) {
+            return;
+        }
+
+        $this->query("ALTER TABLE {$escapedTable} " . implode(', ', $adds));
     }
 
     /**
@@ -916,7 +936,7 @@ class ClickHouse extends SQL
             'metric String',
             'value Int64',
             "time DateTime64(3, 'UTC')",
-            'resource LowCardinality(Nullable(String))',
+            'resourceType LowCardinality(Nullable(String))',
             'resourceId Nullable(String)',
             'resourceInternalId Nullable(String)',
             'teamId Nullable(String)',
@@ -930,8 +950,8 @@ class ClickHouse extends SQL
         $columnDefs = implode(",\n                ", $columns);
 
         $dailyOrderBy = $this->sharedTables
-            ? '(tenant, metric, time, resource, resourceId, resourceInternalId, teamId, teamInternalId)'
-            : '(metric, time, resource, resourceId, resourceInternalId, teamId, teamInternalId)';
+            ? '(tenant, metric, time, resourceType, resourceId, resourceInternalId, teamId, teamInternalId)'
+            : '(metric, time, resourceType, resourceId, resourceInternalId, teamId, teamInternalId)';
 
         $createDailyTableSql = "
             CREATE TABLE IF NOT EXISTS {$escapedDailyTable} (
@@ -961,7 +981,7 @@ class ClickHouse extends SQL
         $escapedDailyTable  = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyTableName);
         $escapedDailyMv     = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($dailyMvName);
 
-        $dimensions = 'resource, resourceId, resourceInternalId, teamId, teamInternalId';
+        $dimensions = 'resourceType, resourceId, resourceInternalId, teamId, teamInternalId';
 
         if ($this->sharedTables) {
             $innerSelect  = "metric, tenant, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
@@ -1045,7 +1065,7 @@ class ClickHouse extends SQL
      */
     private const DAILY_COLUMNS = [
         'metric', 'value', 'time',
-        'resource', 'resourceId', 'resourceInternalId',
+        'resourceType', 'resourceId', 'resourceInternalId',
         'teamId', 'teamInternalId',
     ];
 
@@ -1122,12 +1142,12 @@ class ClickHouse extends SQL
         }
 
         $lowCardinality = [
-            'country', 'region', 'service', 'resource',
+            'country', 'region', 'service', 'resourceType',
             'osCode', 'osName', 'osVersion',
             'clientType', 'clientCode', 'clientName', 'clientVersion',
             'clientEngine', 'clientEngineVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
-            'hostname',
+            'hostname', 'ip',
         ];
 
         if (in_array($id, $lowCardinality, true)) {
@@ -1257,7 +1277,7 @@ class ClickHouse extends SQL
     /**
      * Add metrics in batch (raw append to appropriate table).
      *
-     * For events: extracts path/method/status/resource/resourceId from tags into
+     * For events: extracts path/method/status/resourceType/resourceId from tags into
      * dedicated columns; remaining tags stay in the tags JSON column.
      * For gauges: simple metric/value/time/tags insert.
      *
@@ -1296,11 +1316,16 @@ class ClickHouse extends SQL
 
                 $columns = Metric::extractColumns($tags, $type);
 
+                $rawTime = $metricData['time'] ?? null;
+                $emittedAt = ($rawTime instanceof DateTime || is_string($rawTime))
+                    ? $rawTime
+                    : null;
+
                 $row = array_merge([
                     'id'     => $this->generateId(),
                     'metric' => $metric,
                     'value'  => $value,
-                    'time'   => $this->formatDateTime(null),
+                    'time'   => $this->formatDateTime($emittedAt),
                 ], $columns);
 
                 if ($this->sharedTables) {
@@ -2497,7 +2522,7 @@ class ClickHouse extends SQL
         $groupByColumns = $this->sharedTables ? ['tenant'] : [];
         $groupByColumns[] = 'metric';
         $groupByColumns[] = 'time';
-        foreach (['resource', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'] as $dim) {
+        foreach (['resourceType', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'] as $dim) {
             $groupByColumns[] = $dim;
         }
 
@@ -2675,6 +2700,8 @@ class ClickHouse extends SQL
             $typesToQuery[] = Usage::TYPE_GAUGE;
         }
 
+        $metricTypes = [];
+
         foreach ($typesToQuery as $queryType) {
             // Skip a table when its schema can't satisfy every filter attribute
             // (e.g. `path` on a gauge query); avoids "Invalid attribute name"
@@ -2691,6 +2718,10 @@ class ClickHouse extends SQL
                     continue;
                 }
 
+                if (!empty($metricData['data'])) {
+                    $metricTypes[$metricName] = $queryType;
+                }
+
                 $output[$metricName]['total'] += $metricData['total'];
                 $output[$metricName]['data'] = array_merge(
                     $output[$metricName]['data'],
@@ -2699,15 +2730,24 @@ class ClickHouse extends SQL
             }
         }
 
-        // Zero-fill gaps if requested
         if ($zeroFill) {
             foreach ($output as $metricName => &$metricData) {
-                $metricData['data'] = $this->zeroFillTimeSeries(
-                    $metricData['data'],
-                    $interval,
-                    $startDate,
-                    $endDate
-                );
+                $fillType = $metricTypes[$metricName] ?? $type ?? Usage::TYPE_EVENT;
+                if ($fillType === Usage::TYPE_GAUGE) {
+                    $metricData['data'] = $this->locfFillTimeSeries(
+                        $metricData['data'],
+                        $interval,
+                        $startDate,
+                        $endDate
+                    );
+                } else {
+                    $metricData['data'] = $this->zeroFillTimeSeries(
+                        $metricData['data'],
+                        $interval,
+                        $startDate,
+                        $endDate
+                    );
+                }
             }
             unset($metricData);
         }
@@ -2830,7 +2870,7 @@ class ClickHouse extends SQL
             $dt = new DateTime($point['date']);
             $key = $dt->format($format);
             // If multiple points in the same bucket, sum them
-            $existing[$key] = ($existing[$key] ?? 0) + $point['value'];
+            $existing[$key] = ($existing[$key] ?? 0.0) + $point['value'];
         }
 
         // Generate all time buckets in range
@@ -2843,7 +2883,55 @@ class ClickHouse extends SQL
         while ($current <= $end) {
             $key = $current->format($format);
             $result[] = [
-                'value' => $existing[$key] ?? 0,
+                'value' => $existing[$key] ?? 0.0,
+                'date' => $key,
+            ];
+            $current->modify($step);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Fill missing gauge buckets by carrying the last observation forward.
+     *
+     * Multiple points in the same bucket collapse to the most recent point's
+     * value (last-write-wins), matching argMax(value, time) on the write side.
+     *
+     * @param array<array{value: float, date: string}> $data
+     * @return array<array{value: float, date: string}>
+     */
+    private function locfFillTimeSeries(array $data, string $interval, string $startDate, string $endDate): array
+    {
+        $format = $interval === '1h' ? 'Y-m-d\TH:00:00+00:00' : 'Y-m-d\T00:00:00+00:00';
+        $step = $interval === '1h' ? '+1 hour' : '+1 day';
+
+        usort($data, fn (array $a, array $b): int => strcmp($a['date'], $b['date']));
+
+        $existing = [];
+        foreach ($data as $point) {
+            $dt = new DateTime($point['date']);
+            $key = $dt->format($format);
+            $existing[$key] = $point['value'];
+        }
+
+        $start = new DateTime($startDate);
+        $end = new DateTime($endDate);
+
+        $result = [];
+        $current = clone $start;
+        $lastValue = 0.0;
+        $seenAny = false;
+
+        while ($current <= $end) {
+            $key = $current->format($format);
+            if (array_key_exists($key, $existing)) {
+                $lastValue = $existing[$key];
+                $seenAny = true;
+            }
+            $result[] = [
+                // Pre-window buckets fall back to 0 rather than fabricating a value.
+                'value' => $seenAny ? $lastValue : 0.0,
                 'date' => $key,
             ];
             $current->modify($step);

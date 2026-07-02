@@ -76,7 +76,7 @@ class DatabaseTest extends TestCase
                     'method' => 'POST',
                     'status' => '201',
                     'service' => 'storage',
-                    'resource' => 'bucket',
+                    'resourceType' => 'bucket',
                     'resourceId' => 'bucket123',
                     'resourceInternalId' => '42',
                     'teamId' => 'team_x',

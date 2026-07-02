@@ -4,6 +4,7 @@ namespace Utopia\Tests\Adapter;
 
 use Utopia\Tests\Usage\Adapter\ClickHouseTestCase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
+use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
 
 /**
@@ -93,7 +94,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $ddl = $this->showCreate($this->resolveTableName($this->adapter, 'getGaugesTableName'));
 
         $this->assertStringContainsString('`service` LowCardinality(Nullable(String))', $ddl);
-        $this->assertStringContainsString('`resource` LowCardinality(Nullable(String))', $ddl);
+        $this->assertStringContainsString('`resourceType` LowCardinality(Nullable(String))', $ddl);
         $this->assertStringContainsString("`time` DateTime64(3, 'UTC') CODEC(Delta(4), LZ4)", $ddl);
         $this->assertStringContainsString('`resourceId` Nullable(String) CODEC(ZSTD(3))', $ddl);
         $this->assertStringContainsString('`teamId` Nullable(String) CODEC(ZSTD(3))', $ddl);
@@ -104,7 +105,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $ddl = $this->showCreate($this->resolveTableName($this->adapter, 'getGaugesTableName'));
 
         $this->assertStringContainsString('`index-service` service TYPE set(0)', $ddl);
-        $this->assertStringContainsString('`index-resource` resource TYPE set(0)', $ddl);
+        $this->assertStringContainsString('`index-resourceType` resourceType TYPE set(0)', $ddl);
         $this->assertStringContainsString('`index-resourceId` resourceId TYPE bloom_filter', $ddl);
         $this->assertStringContainsString('`index-teamId` teamId TYPE bloom_filter', $ddl);
     }
@@ -132,10 +133,6 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
                 metric String,
                 value Int64,
                 time DateTime64(3),
-                resourceId Nullable(String),
-                resourceInternalId Nullable(String),
-                teamId Nullable(String),
-                teamInternalId Nullable(String),
                 tenant Nullable(String)
             )
             ENGINE = MergeTree()
@@ -147,18 +144,101 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $usage = new Usage($legacyAdapter);
         $usage->setup();
 
-        $rawString = $this->queryRaw($legacyAdapter, "SHOW CREATE TABLE {$fullName} FORMAT JSON");
+        $ddl = $this->showCreateFor($legacyAdapter, $fullName);
+
+        foreach ($this->expectedDimAssertions(Metric::GAUGE_COLUMNS, 'gauge') as $expected) {
+            $this->assertStringContainsString($expected, $ddl);
+        }
+    }
+
+    public function testSetupBackfillsIpOnLegacyEventsTable(): void
+    {
+        $legacyAdapter = new ClickHouseAdapter(
+            getenv('CLICKHOUSE_HOST') ?: 'clickhouse',
+            getenv('CLICKHOUSE_USER') ?: 'default',
+            getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse',
+            (int) (getenv('CLICKHOUSE_PORT') ?: 8123),
+            (bool) (getenv('CLICKHOUSE_SECURE') ?: false),
+            namespace: 'utopia_usage_schema_legacy_event',
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+            sharedTables: true,
+        );
+        $database = $this->databaseName($legacyAdapter);
+        $eventsTable = $this->resolveTableName($legacyAdapter, 'getEventsTableName');
+        $dailyTable = $this->resolveTableName($legacyAdapter, 'getEventsDailyTableName');
+        $dailyMv = $this->resolveTableName($legacyAdapter, 'getTableName') . '_events_daily_mv';
+        $fullName = "`{$database}`.`{$eventsTable}`";
+        $fullDaily = "`{$database}`.`{$dailyTable}`";
+        $fullMv = "`{$database}`.`{$dailyMv}`";
+
+        $this->queryRaw($legacyAdapter, "DROP TABLE IF EXISTS {$fullMv}");
+        $this->queryRaw($legacyAdapter, "DROP TABLE IF EXISTS {$fullDaily}");
+        $this->queryRaw($legacyAdapter, "DROP TABLE IF EXISTS {$fullName}");
+        $this->queryRaw($legacyAdapter, "
+            CREATE TABLE {$fullName} (
+                id String,
+                metric String,
+                value Int64,
+                time DateTime64(3, 'UTC'),
+                tenant Nullable(String)
+            )
+            ENGINE = MergeTree()
+            ORDER BY (tenant, metric, time, id)
+            PARTITION BY toYYYYMM(time)
+            SETTINGS allow_nullable_key = 1
+        ");
+
+        $usage = new Usage($legacyAdapter);
+        $usage->setup();
+
+        $ddl = $this->showCreateFor($legacyAdapter, $fullName);
+
+        foreach ($this->expectedDimAssertions(Metric::EVENT_COLUMNS, 'event') as $expected) {
+            $this->assertStringContainsString($expected, $ddl);
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $columns
+     * @return array<int, string>
+     */
+    private function expectedDimAssertions(array $columns, string $type): array
+    {
+        $lowCardinality = [
+            'country', 'region', 'service', 'resourceType',
+            'osCode', 'osName', 'osVersion',
+            'clientType', 'clientCode', 'clientName', 'clientVersion',
+            'clientEngine', 'clientEngineVersion',
+            'deviceName', 'deviceBrand', 'deviceModel',
+            'hostname', 'ip',
+        ];
+
+        $baseKey = ['id', 'metric', 'value', 'time', 'tenant'];
+
+        $expected = [];
+        foreach ($columns as $column) {
+            if (in_array($column, $baseKey, true)) {
+                continue;
+            }
+            $suffix = in_array($column, $lowCardinality, true)
+                ? 'LowCardinality(Nullable(String))'
+                : 'Nullable(String)';
+            $expected[] = "`{$column}` {$suffix}";
+        }
+        return $expected;
+    }
+
+    private function showCreateFor(ClickHouseAdapter $adapter, string $fullName): string
+    {
+        $rawString = $this->queryRaw($adapter, "SHOW CREATE TABLE {$fullName} FORMAT JSON");
         $json = json_decode($rawString, true);
-        $ddl = '';
         if (is_array($json) && isset($json['data']) && is_array($json['data']) && isset($json['data'][0]) && is_array($json['data'][0])) {
             $statement = $json['data'][0]['statement'] ?? '';
             if (is_string($statement)) {
-                $ddl = $statement;
+                return $statement;
             }
         }
-
-        $this->assertStringContainsString('`service` LowCardinality(Nullable(String))', $ddl);
-        $this->assertStringContainsString('`resource` LowCardinality(Nullable(String))', $ddl);
+        return '';
     }
 
     private function showCreate(string $table): string
