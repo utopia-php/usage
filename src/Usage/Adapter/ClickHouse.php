@@ -727,6 +727,8 @@ class ClickHouse extends SQL
             $this->getEventIndexes()
         );
 
+        $this->ensureEventDimColumns();
+
         // --- Events daily table (SummingMergeTree) ---
         $this->createDailyTable();
 
@@ -791,6 +793,18 @@ class ClickHouse extends SQL
         $sql = "ALTER TABLE {$gaugesTable} "
             . 'ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String)), '
             . 'ADD COLUMN IF NOT EXISTS resourceType LowCardinality(Nullable(String))';
+
+        $this->query($sql);
+    }
+
+    /** Backfill the ip column on an existing events table (setup uses IF NOT EXISTS, so pre-existing tables never receive it). */
+    private function ensureEventDimColumns(): void
+    {
+        $eventsTable = $this->escapeIdentifier($this->database)
+            . '.' . $this->escapeIdentifier($this->getEventsTableName());
+
+        $sql = "ALTER TABLE {$eventsTable} "
+            . 'ADD COLUMN IF NOT EXISTS ip LowCardinality(Nullable(String))';
 
         $this->query($sql);
     }

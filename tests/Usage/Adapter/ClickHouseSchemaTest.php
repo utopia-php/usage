@@ -161,6 +161,65 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $this->assertStringContainsString('`resourceType` LowCardinality(Nullable(String))', $ddl);
     }
 
+    public function testSetupBackfillsIpOnLegacyEventsTable(): void
+    {
+        $legacyAdapter = new ClickHouseAdapter(
+            getenv('CLICKHOUSE_HOST') ?: 'clickhouse',
+            getenv('CLICKHOUSE_USER') ?: 'default',
+            getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse',
+            (int) (getenv('CLICKHOUSE_PORT') ?: 8123),
+            (bool) (getenv('CLICKHOUSE_SECURE') ?: false),
+            namespace: 'utopia_usage_schema_legacy_event',
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+            sharedTables: true,
+        );
+        $database = $this->databaseName($legacyAdapter);
+        $eventsTable = $this->resolveTableName($legacyAdapter, 'getEventsTableName');
+        $dailyTable = $this->resolveTableName($legacyAdapter, 'getEventsDailyTableName');
+        $dailyMv = $this->resolveTableName($legacyAdapter, 'getTableName') . '_events_daily_mv';
+        $fullName = "`{$database}`.`{$eventsTable}`";
+        $fullDaily = "`{$database}`.`{$dailyTable}`";
+        $fullMv = "`{$database}`.`{$dailyMv}`";
+
+        $this->queryRaw($legacyAdapter, "DROP TABLE IF EXISTS {$fullMv}");
+        $this->queryRaw($legacyAdapter, "DROP TABLE IF EXISTS {$fullDaily}");
+        $this->queryRaw($legacyAdapter, "DROP TABLE IF EXISTS {$fullName}");
+        $this->queryRaw($legacyAdapter, "
+            CREATE TABLE {$fullName} (
+                id String,
+                metric String,
+                value Int64,
+                time DateTime64(3, 'UTC'),
+                service LowCardinality(Nullable(String)),
+                resourceType LowCardinality(Nullable(String)),
+                resourceId Nullable(String),
+                resourceInternalId Nullable(String),
+                teamId Nullable(String),
+                teamInternalId Nullable(String),
+                tenant Nullable(String)
+            )
+            ENGINE = MergeTree()
+            ORDER BY (tenant, metric, time, id)
+            PARTITION BY toYYYYMM(time)
+            SETTINGS allow_nullable_key = 1
+        ");
+
+        $usage = new Usage($legacyAdapter);
+        $usage->setup();
+
+        $rawString = $this->queryRaw($legacyAdapter, "SHOW CREATE TABLE {$fullName} FORMAT JSON");
+        $json = json_decode($rawString, true);
+        $ddl = '';
+        if (is_array($json) && isset($json['data']) && is_array($json['data']) && isset($json['data'][0]) && is_array($json['data'][0])) {
+            $statement = $json['data'][0]['statement'] ?? '';
+            if (is_string($statement)) {
+                $ddl = $statement;
+            }
+        }
+
+        $this->assertStringContainsString('`ip` LowCardinality(Nullable(String))', $ddl);
+    }
+
     private function showCreate(string $table): string
     {
         $database = $this->databaseName($this->adapter);
