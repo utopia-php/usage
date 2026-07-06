@@ -8,7 +8,7 @@ use Utopia\Database\Exception\Duplicate as DuplicateException;
 use Utopia\Database\Query as DatabaseQuery;
 use Utopia\Usage\Metric;
 use Utopia\Usage\Usage;
-use Utopia\Usage\UsageQuery;
+use Utopia\Query\Method;
 use Utopia\Query\Query;
 
 class Database extends SQL
@@ -409,25 +409,25 @@ class Database extends SQL
             $values = $query->getValues();
 
             switch ($method) {
-                case Query::TYPE_EQUAL:
+                case Method::Equal:
                     /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
                     $dbQueries[] = DatabaseQuery::equal($attribute, $values);
                     break;
-                case Query::TYPE_GREATER:
+                case Method::GreaterThan:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::greaterThan($attribute, $value);
                     }
                     break;
-                case Query::TYPE_LESSER:
+                case Method::LessThan:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::lessThan($attribute, $value);
                     }
                     break;
-                case Query::TYPE_BETWEEN:
+                case Method::Between:
                     if (count($values) >= 2) {
                         /** @var bool|float|int|string $start */
                         $start = $values[0];
@@ -436,22 +436,22 @@ class Database extends SQL
                         $dbQueries[] = DatabaseQuery::between($attribute, $start, $end);
                     }
                     break;
-                case Query::TYPE_CONTAINS:
+                case Method::Contains:
                     /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
                     $dbQueries[] = DatabaseQuery::contains($attribute, $values);
                     break;
-                case Query::TYPE_NOT_EQUAL:
+                case Method::NotEqual:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::notEqual($attribute, $value);
                     }
                     break;
-                case Query::TYPE_NOT_CONTAINS:
+                case Method::NotContains:
                     /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
                     $dbQueries[] = DatabaseQuery::notContains($attribute, $values);
                     break;
-                case Query::TYPE_NOT_BETWEEN:
+                case Method::NotBetween:
                     if (count($values) >= 2) {
                         /** @var bool|float|int|string $start */
                         $start = $values[0];
@@ -460,44 +460,44 @@ class Database extends SQL
                         $dbQueries[] = DatabaseQuery::notBetween($attribute, $start, $end);
                     }
                     break;
-                case Query::TYPE_STARTS_WITH:
+                case Method::StartsWith:
                     if (!empty($values) && is_string($values[0])) {
                         $dbQueries[] = DatabaseQuery::startsWith($attribute, $values[0]);
                     }
                     break;
-                case Query::TYPE_ENDS_WITH:
+                case Method::EndsWith:
                     if (!empty($values) && is_string($values[0])) {
                         $dbQueries[] = DatabaseQuery::endsWith($attribute, $values[0]);
                     }
                     break;
-                case Query::TYPE_LESSER_EQUAL:
+                case Method::LessThanEqual:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::lessThanEqual($attribute, $value);
                     }
                     break;
-                case Query::TYPE_GREATER_EQUAL:
+                case Method::GreaterThanEqual:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */
                         $value = $values[0];
                         $dbQueries[] = DatabaseQuery::greaterThanEqual($attribute, $value);
                     }
                     break;
-                case Query::TYPE_ORDER_DESC:
+                case Method::OrderDesc:
                     $dbQueries[] = DatabaseQuery::orderDesc($attribute);
                     break;
-                case Query::TYPE_ORDER_ASC:
+                case Method::OrderAsc:
                     $dbQueries[] = DatabaseQuery::orderAsc($attribute);
                     break;
-                case Query::TYPE_LIMIT:
+                case Method::Limit:
                     if (!empty($values)) {
                         /** @var int|string $val */
                         $val = $values[0] ?? 0;
                         $dbQueries[] = DatabaseQuery::limit((int) $val);
                     }
                     break;
-                case Query::TYPE_OFFSET:
+                case Method::Offset:
                     if (!empty($values)) {
                         /** @var int|string $val */
                         $val = $values[0] ?? 0;
@@ -505,8 +505,8 @@ class Database extends SQL
                     }
                     break;
 
-                case UsageQuery::TYPE_GROUP_BY_INTERVAL:
-                case UsageQuery::TYPE_GROUP_BY:
+                case Method::GroupByTimeBucket:
+                case Method::GroupBy:
                     // groupByInterval and groupBy are not pushed down to the
                     // Database adapter; callers get raw (non-aggregated) results.
                     // Validation runs in validateGroupByQueries() before this loop.
@@ -533,7 +533,7 @@ class Database extends SQL
         $allowed = array_unique(array_merge(Metric::EVENT_COLUMNS, Metric::GAUGE_COLUMNS));
 
         foreach ($queries as $query) {
-            if ($query->getMethod() !== UsageQuery::TYPE_GROUP_BY) {
+            if ($query->getMethod() !== Method::GroupBy) {
                 continue;
             }
 

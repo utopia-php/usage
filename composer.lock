@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "5278bda64bd4289d43cdbc2c6599d7e0",
+    "content-hash": "c9712fe08ef553e837cce3c44267c320",
     "packages": [
         {
             "name": "brick/math",
@@ -2427,24 +2427,27 @@
         },
         {
             "name": "utopia-php/query",
-            "version": "0.1.1",
+            "version": "0.3.3",
             "source": {
                 "type": "git",
                 "url": "https://github.com/utopia-php/query.git",
-                "reference": "964a10ed3185490505f4c0062f2eb7b89287fb27"
+                "reference": "76cd71071cd59cb45ef6b30eb11449f3832bf18f"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/utopia-php/query/zipball/964a10ed3185490505f4c0062f2eb7b89287fb27",
-                "reference": "964a10ed3185490505f4c0062f2eb7b89287fb27",
+                "url": "https://api.github.com/repos/utopia-php/query/zipball/76cd71071cd59cb45ef6b30eb11449f3832bf18f",
+                "reference": "76cd71071cd59cb45ef6b30eb11449f3832bf18f",
                 "shasum": ""
             },
             "require": {
                 "php": ">=8.4"
             },
             "require-dev": {
+                "brianium/paratest": "*",
                 "laravel/pint": "*",
+                "mongodb/mongodb": "^2.0",
                 "phpstan/phpstan": "*",
+                "phpunit/phpcov": "*",
                 "phpunit/phpunit": "^12.0"
             },
             "type": "library",
@@ -2467,9 +2470,9 @@
             ],
             "support": {
                 "issues": "https://github.com/utopia-php/query/issues",
-                "source": "https://github.com/utopia-php/query/tree/0.1.1"
+                "source": "https://github.com/utopia-php/query/tree/0.3.3"
             },
-            "time": "2026-03-03T09:05:14+00:00"
+            "time": "2026-07-06T04:55:56+00:00"
         },
         {
             "name": "utopia-php/span",

@@ -2,14 +2,17 @@
 
 namespace Utopia\Usage;
 
+use Utopia\Query\Method;
 use Utopia\Query\Query;
 
 /**
  * Usage Query
  *
- * Extends the base Query class with usage-specific query types.
- * Currently adds support for `groupByInterval` which enables time-bucketed
- * aggregated queries in the ClickHouse adapter.
+ * Extends the base Query class with usage-specific query factories.
+ * `groupByInterval` enables time-bucketed aggregated queries in the
+ * ClickHouse adapter (compiled as `Method::GroupByTimeBucket`), and
+ * `groupBy` buckets results by a dimension column
+ * (compiled as `Method::GroupBy`).
  *
  * Example usage:
  * ```php
@@ -19,19 +22,17 @@ use Utopia\Query\Query;
  *     Query::greaterThanEqual('time', '2026-03-01'),
  *     Query::lessThanEqual('time', '2026-04-01'),
  * ];
- * $results = $usage->find($queries, 'event');
+ * $results = $usage->find($tenant, $queries, 'event');
  * ```
  *
- * When `groupByInterval` is present in the queries array, the ClickHouse adapter
- * switches from raw row returns to aggregated results grouped by time bucket:
+ * When a `groupByInterval` query is present in the queries array, the
+ * ClickHouse adapter switches from raw row returns to aggregated results
+ * grouped by time bucket:
  * - Events: SUM(value) per bucket
  * - Gauges: argMax(value, time) per bucket
  */
 class UsageQuery extends Query
 {
-    public const TYPE_GROUP_BY_INTERVAL = 'groupByInterval';
-    public const TYPE_GROUP_BY = 'groupBy';
-
     /**
      * Valid interval values and their ClickHouse INTERVAL equivalents.
      */
@@ -47,25 +48,13 @@ class UsageQuery extends Query
     ];
 
     /**
-     * Override isMethod to accept groupByInterval and groupBy in addition to all base Query methods.
-     */
-    public static function isMethod(string $value): bool
-    {
-        if ($value === self::TYPE_GROUP_BY_INTERVAL || $value === self::TYPE_GROUP_BY) {
-            return true;
-        }
-
-        return parent::isMethod($value);
-    }
-
-    /**
      * Create a groupByInterval query.
      *
      * When passed to `find()`, this switches the adapter to return time-bucketed
      * aggregated results instead of raw rows.
      *
      * @param string $attribute The time attribute to bucket (usually 'time')
-     * @param string $interval The bucket size: '1m', '5m', '15m', '1h', '1d', '1w', '1M'
+     * @param string $interval The bucket size: '1m', '5m', '15m', '30m', '1h', '1d', '1w', '1M'
      * @return self
      */
     public static function groupByInterval(string $attribute, string $interval): self
@@ -76,7 +65,7 @@ class UsageQuery extends Query
             );
         }
 
-        return new self(self::TYPE_GROUP_BY_INTERVAL, $attribute, [$interval]);
+        return new self(Method::GroupByTimeBucket, $attribute, [$interval]);
     }
 
     /**
@@ -87,14 +76,11 @@ class UsageQuery extends Query
      */
     public static function isGroupByInterval(Query $query): bool
     {
-        return $query->getMethod() === self::TYPE_GROUP_BY_INTERVAL;
+        return $query->getMethod() === Method::GroupByTimeBucket;
     }
 
     /**
      * Extract the groupByInterval query from an array of queries, if present.
-     *
-     * Queries parsed via `Query::parse()` are base `Query` objects rather than
-     * `UsageQuery` instances, so we match on the method string alone.
      *
      * @param array<Query> $queries
      * @return Query|null The groupByInterval query, or null if not present
@@ -102,7 +88,7 @@ class UsageQuery extends Query
     public static function extractGroupByInterval(array $queries): ?Query
     {
         foreach ($queries as $query) {
-            if ($query->getMethod() === self::TYPE_GROUP_BY_INTERVAL) {
+            if (self::isGroupByInterval($query)) {
                 return $query;
             }
         }
@@ -132,12 +118,15 @@ class UsageQuery extends Query
      * supplied via `groupByInterval`. Multiple `groupBy` queries may be
      * combined to bucket by several dimensions at once (e.g. service x status).
      *
-     * @param string $attribute The dimension column to bucket on (service, path, status, ...).
-     * @return self
+     * @param array<string>|string $attributes The dimension column(s) to bucket on (service, path, status, ...).
      */
-    public static function groupBy(string $attribute): self
+    public static function groupBy(array|string $attributes): static
     {
-        return new self(self::TYPE_GROUP_BY, $attribute, []);
+        if (is_string($attributes)) {
+            return new static(Method::GroupBy, $attributes, []);
+        }
+
+        return parent::groupBy($attributes);
     }
 
     /**
@@ -148,7 +137,7 @@ class UsageQuery extends Query
      */
     public static function isGroupBy(Query $query): bool
     {
-        return $query->getMethod() === self::TYPE_GROUP_BY;
+        return $query->getMethod() === Method::GroupBy;
     }
 
     /**

@@ -3,6 +3,7 @@
 namespace Utopia\Tests\Adapter;
 
 use PHPUnit\Framework\TestCase;
+use Utopia\Query\Method;
 use Utopia\Query\Query;
 use Utopia\Tests\Usage\UsageBase;
 use Utopia\Usage\Adapter\ClickHouse as ClickHouseAdapter;
@@ -1214,7 +1215,7 @@ class ClickHouseTest extends TestCase
         $this->expectExceptionMessage('Equal queries require at least one value.');
 
         $this->usage->find('1', [
-            new Query(Query::TYPE_EQUAL, 'metric', []),
+            new Query(Method::Equal, 'metric', []),
         ], Usage::TYPE_EVENT);
     }
 

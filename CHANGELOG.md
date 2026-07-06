@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — query 0.3.x builder
+
+### Breaking
+
+- Bumped `utopia-php/query` from `0.1.*` to `0.3.*`.
+  `Query::getMethod()` now returns the `Utopia\Query\Method` enum
+  instead of a string, and the `Query::TYPE_*` /
+  `UsageQuery::TYPE_GROUP_BY_INTERVAL` / `UsageQuery::TYPE_GROUP_BY`
+  string constants are gone. Compare against `Method::GroupByTimeBucket`
+  and `Method::GroupBy` instead; the `UsageQuery::groupByInterval()`
+  and `UsageQuery::groupBy()` factories are unchanged (`groupBy()` also
+  accepts an array of columns now, matching the base class).
+- The ClickHouse adapter compiles its SQL through the utopia-php/query
+  ClickHouse builder and schema layer (typed named bindings, schema-level
+  CREATE TABLE / materialized view). Emitted DDL and query semantics are
+  unchanged; projections, dim-column backfills and the daily
+  materialized-view body stay raw SQL because the schema layer cannot
+  express them yet.
+- `contains()` / `containsAny()` / `notContains()` keep the
+  utopia-php/database substring semantics, but now compile through the
+  builder to `position(column, needle)` instead of `LIKE '%needle%'`.
+  Needles are matched literally, so `%` and `_` no longer need
+  escaping. Matching behaviour is unchanged.
+
 ## 0.11.0 — sdk dimensions
 
 ### Added

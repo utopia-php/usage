@@ -3,6 +3,7 @@
 namespace Utopia\Tests\Usage;
 
 use PHPUnit\Framework\TestCase;
+use Utopia\Query\Method;
 use Utopia\Query\Query;
 use Utopia\Usage\UsageQuery;
 
@@ -13,7 +14,7 @@ class UsageQueryTest extends TestCase
         $query = UsageQuery::groupByInterval('time', '1h');
 
         $this->assertInstanceOf(UsageQuery::class, $query);
-        $this->assertEquals(UsageQuery::TYPE_GROUP_BY_INTERVAL, $query->getMethod());
+        $this->assertEquals(Method::GroupByTimeBucket, $query->getMethod());
         $this->assertEquals('time', $query->getAttribute());
         $this->assertEquals(['1h'], $query->getValues());
         $this->assertEquals('1h', $query->getValue());
@@ -63,14 +64,14 @@ class UsageQueryTest extends TestCase
 
         $this->assertNotNull($extracted);
         $this->assertInstanceOf(Query::class, $extracted);
-        $this->assertEquals(UsageQuery::TYPE_GROUP_BY_INTERVAL, $extracted->getMethod());
+        $this->assertEquals(Method::GroupByTimeBucket, $extracted->getMethod());
         $this->assertEquals('1h', $extracted->getValue());
     }
 
     public function testExtractGroupByIntervalFromParsedQuery(): void
     {
         // Queries created via Query::parse() are base Query objects, not UsageQuery.
-        $parsedGroupBy = new Query(UsageQuery::TYPE_GROUP_BY_INTERVAL, 'time', ['1h']);
+        $parsedGroupBy = new Query(Method::GroupByTimeBucket, 'time', ['1h']);
         $equalQuery = Query::equal('metric', ['bandwidth']);
 
         $queries = [$equalQuery, $parsedGroupBy];
@@ -78,7 +79,7 @@ class UsageQueryTest extends TestCase
         $extracted = UsageQuery::extractGroupByInterval($queries);
 
         $this->assertNotNull($extracted);
-        $this->assertEquals(UsageQuery::TYPE_GROUP_BY_INTERVAL, $extracted->getMethod());
+        $this->assertEquals(Method::GroupByTimeBucket, $extracted->getMethod());
         $this->assertEquals('1h', $extracted->getValue());
     }
 
@@ -104,7 +105,7 @@ class UsageQueryTest extends TestCase
         $this->assertCount(2, $remaining);
 
         foreach ($remaining as $query) {
-            $this->assertNotEquals(UsageQuery::TYPE_GROUP_BY_INTERVAL, $query->getMethod());
+            $this->assertNotEquals(Method::GroupByTimeBucket, $query->getMethod());
         }
     }
 
@@ -137,16 +138,16 @@ class UsageQueryTest extends TestCase
         $query = UsageQuery::groupBy('service');
 
         $this->assertInstanceOf(UsageQuery::class, $query);
-        $this->assertEquals(UsageQuery::TYPE_GROUP_BY, $query->getMethod());
+        $this->assertEquals(Method::GroupBy, $query->getMethod());
         $this->assertEquals('service', $query->getAttribute());
         $this->assertEquals([], $query->getValues());
     }
 
     public function testGroupByIsMethod(): void
     {
-        $this->assertTrue(UsageQuery::isMethod(UsageQuery::TYPE_GROUP_BY));
-        $this->assertTrue(UsageQuery::isMethod(UsageQuery::TYPE_GROUP_BY_INTERVAL));
-        $this->assertTrue(UsageQuery::isMethod(Query::TYPE_EQUAL));
+        $this->assertTrue(UsageQuery::isMethod(Method::GroupBy->value));
+        $this->assertTrue(UsageQuery::isMethod(Method::GroupByTimeBucket->value));
+        $this->assertTrue(UsageQuery::isMethod(Method::Equal->value));
         $this->assertFalse(UsageQuery::isMethod('notARealMethod'));
     }
 
@@ -200,14 +201,14 @@ class UsageQueryTest extends TestCase
 
         $this->assertCount(2, $remaining);
         foreach ($remaining as $query) {
-            $this->assertNotEquals(UsageQuery::TYPE_GROUP_BY, $query->getMethod());
+            $this->assertNotEquals(Method::GroupBy, $query->getMethod());
         }
     }
 
     public function testGroupByParseRoundTrip(): void
     {
         $json = json_encode([
-            'method' => UsageQuery::TYPE_GROUP_BY,
+            'method' => Method::GroupBy->value,
             'attribute' => 'service',
             'values' => [],
         ]);
@@ -215,7 +216,7 @@ class UsageQueryTest extends TestCase
 
         $parsed = UsageQuery::parse($json);
 
-        $this->assertEquals(UsageQuery::TYPE_GROUP_BY, $parsed->getMethod());
+        $this->assertEquals(Method::GroupBy, $parsed->getMethod());
         $this->assertEquals('service', $parsed->getAttribute());
         $this->assertEquals([], $parsed->getValues());
     }
@@ -223,7 +224,7 @@ class UsageQueryTest extends TestCase
     public function testExtractGroupByFromParsedQuery(): void
     {
         // Queries created via Query::parse() are base Query objects, not UsageQuery.
-        $parsedGroupBy = new Query(UsageQuery::TYPE_GROUP_BY, 'service', []);
+        $parsedGroupBy = new Query(Method::GroupBy, 'service', []);
         $equal = Query::equal('metric', ['bandwidth']);
 
         $extracted = UsageQuery::extractGroupBy([$equal, $parsedGroupBy]);
