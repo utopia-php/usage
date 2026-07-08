@@ -205,6 +205,50 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         }
     }
 
+    public function testRetentionAppliesTtlToEventsTableOnly(): void
+    {
+        $adapter = new ClickHouseAdapter(
+            getenv('CLICKHOUSE_HOST') ?: 'clickhouse',
+            getenv('CLICKHOUSE_USER') ?: 'default',
+            getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse',
+            (int) (getenv('CLICKHOUSE_PORT') ?: 8123),
+            (bool) (getenv('CLICKHOUSE_SECURE') ?: false),
+            namespace: 'utopia_usage_schema_retention',
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+            sharedTables: true,
+            retention: 30,
+        );
+        $database = $this->databaseName($adapter);
+        $eventsTable = $this->resolveTableName($adapter, 'getEventsTableName');
+        $dailyTable = $this->resolveTableName($adapter, 'getEventsDailyTableName');
+        $dailyMv = $this->resolveTableName($adapter, 'getTableName') . '_events_daily_mv';
+
+        // Start clean so the TTL is applied by setup(), not left over.
+        $this->queryRaw($adapter, "DROP TABLE IF EXISTS `{$database}`.`{$dailyMv}`");
+        $this->queryRaw($adapter, "DROP TABLE IF EXISTS `{$database}`.`{$dailyTable}`");
+        $this->queryRaw($adapter, "DROP TABLE IF EXISTS `{$database}`.`{$eventsTable}`");
+
+        $usage = new Usage($adapter);
+        $usage->setup();
+
+        $eventsDdl = $this->showCreateFor($adapter, "`{$database}`.`{$eventsTable}`");
+        $this->assertStringContainsString('TTL toDateTime(time)', $eventsDdl);
+
+        // Aggregated billing history must never carry a TTL.
+        $dailyDdl = $this->showCreateFor($adapter, "`{$database}`.`{$dailyTable}`");
+        $this->assertStringNotContainsString('TTL', $dailyDdl);
+    }
+
+    public function testRetentionRejectsNonPositiveDays(): void
+    {
+        $this->expectException(\Exception::class);
+
+        new ClickHouseAdapter(
+            getenv('CLICKHOUSE_HOST') ?: 'clickhouse',
+            retention: 0,
+        );
+    }
+
     /**
      * @param  array<int, string>  $columns
      * @return array<int, string>

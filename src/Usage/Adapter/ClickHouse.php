@@ -136,6 +136,14 @@ class ClickHouse extends SQL
     private readonly float $dualReadSampleRate;
 
     /**
+     * Retention window in days. When set, setup() applies a TTL to the raw
+     * events table so rows older than the window are dropped by background
+     * merges. The aggregated events_daily table is left untouched. Null
+     * disables TTL (the default).
+     */
+    private readonly ?int $retention;
+
+    /**
      * @param  string  $host  ClickHouse host
      * @param  string  $username  ClickHouse username (default: 'default')
      * @param  string  $password  ClickHouse password (default: '')
@@ -156,6 +164,10 @@ class ClickHouse extends SQL
      *   re-executed against the raw events table and logs a `warning` route
      *   entry if the totals diverge by >1%. Use 0.01 for a production canary
      *   or 1.0 in CI.
+     * @param  int|null  $retention  Retention window in days for the raw events
+     *   table. When set, setup() applies a TTL that drops rows older than the
+     *   window; the aggregated events_daily table (long-term usage/billing
+     *   history) is left untouched. Null disables TTL (default). Must be positive.
      */
     public function __construct(
         string $host,
@@ -169,10 +181,14 @@ class ClickHouse extends SQL
         bool $sharedTables = false,
         bool $asyncInserts = false,
         bool $asyncInsertWait = true,
-        float $dualReadSampleRate = 0.0
+        float $dualReadSampleRate = 0.0,
+        ?int $retention = null
     ) {
         $this->validateHost($host);
         $this->validatePort($port);
+        if ($retention !== null && $retention < 1) {
+            throw new Exception('Retention must be a positive number of days');
+        }
         if (!empty($namespace)) {
             $this->validateIdentifier($namespace, 'Namespace');
         }
@@ -191,6 +207,7 @@ class ClickHouse extends SQL
         // Clamp to [0.0, 1.0] so out-of-range rates can't disable or
         // over-trigger the parity sampler.
         $this->dualReadSampleRate = max(0.0, min(1.0, $dualReadSampleRate));
+        $this->retention = $retention;
 
         // `withConnectionReuse()` keeps the underlying cURL handle alive across
         // requests so the TCP/TLS handshake is paid once. Auth and database are
@@ -729,6 +746,8 @@ class ClickHouse extends SQL
 
         $this->ensureEventDimColumns();
 
+        $this->applyEventsRetention();
+
         // --- Events daily table (SummingMergeTree) ---
         $this->createDailyTable();
 
@@ -762,6 +781,48 @@ class ClickHouse extends SQL
                 $projection['dims'],
                 'argMax(value, time) AS value'
             );
+        }
+    }
+
+    /**
+     * Apply (or strip) the retention TTL on the raw events table as a separate
+     * idempotent ALTER. CREATE TABLE IF NOT EXISTS won't add a TTL to an
+     * existing table, and MODIFY TTL is a no-op when unchanged, so setup()
+     * stays re-runnable. The aggregated events_daily table is intentionally
+     * left untouched — it backs long-term usage/billing history.
+     * materialize_ttl_after_modify = 0 defers the purge to background merges
+     * rather than an immediate mutation.
+     *
+     * @throws Exception
+     */
+    private function applyEventsRetention(): void
+    {
+        $escapedTable = $this->escapeIdentifier($this->database)
+            . '.' . $this->escapeIdentifier($this->getEventsTableName());
+
+        if ($this->retention !== null) {
+            $this->query(
+                "ALTER TABLE {$escapedTable} "
+                . "MODIFY TTL toDateTime(time) + INTERVAL {$this->retention} DAY "
+                . 'SETTINGS materialize_ttl_after_modify = 0'
+            );
+            return;
+        }
+
+        // Disabling retention must actively strip any TTL a previous run
+        // applied; otherwise rows keep being purged despite retention being
+        // null. REMOVE TTL on a table with no TTL raises BAD_ARGUMENTS
+        // (code 36) — a generic code, so anchor on both the stable code and
+        // a "TTL" mention rather than the full English phrase (which can
+        // drift by version). This keeps setup() idempotent without swallowing
+        // unrelated bad-argument errors.
+        try {
+            $this->query("ALTER TABLE {$escapedTable} REMOVE TTL");
+        } catch (Exception $e) {
+            $message = $e->getMessage();
+            if (!str_contains($message, 'Code: 36') || !str_contains($message, 'TTL')) {
+                throw $e;
+            }
         }
     }
 
