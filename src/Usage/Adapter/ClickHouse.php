@@ -1205,9 +1205,10 @@ class ClickHouse extends SQL
      * @param string $type Metric type ('event' or 'gauge')
      * @param array<string,mixed> $tags Tags
      * @param int|null $metricIndex Index for batch error messages
+     * @param bool $allowNegative Permit a negative value for this row (default: reject)
      * @throws Exception
      */
-    private function validateMetricData(string $metric, int $value, string $type, array $tags, ?int $metricIndex = null): void
+    private function validateMetricData(string $metric, int $value, string $type, array $tags, ?int $metricIndex = null, bool $allowNegative = false): void
     {
         $prefix = $metricIndex !== null ? "Metric #{$metricIndex}: " : '';
 
@@ -1219,7 +1220,11 @@ class ClickHouse extends SQL
             throw new Exception($prefix . 'Metric exceeds maximum size of 255 characters');
         }
 
-        if ($value < 0) {
+        // Negatives are rejected by default so a buggy negative count/bandwidth
+        // is caught. A row opts in with `allowNegative` for genuine signed
+        // deltas (realtime connections emit +1/-1). The library stays generic —
+        // the caller decides which metrics may be negative.
+        if ($value < 0 && !$allowNegative) {
             throw new Exception($prefix . 'Value cannot be negative');
         }
 
@@ -1257,7 +1262,10 @@ class ClickHouse extends SQL
 
             /** @var array<string, mixed> */
             $tags = $metricData['tags'] ?? [];
-            $this->validateMetricData($metric, $value, $type, $tags, $index);
+            // `allowNegative` is a validation-only flag carried on the row; it
+            // gates the negative-value guard and is never stored as a column.
+            $allowNegative = (bool) ($metricData['allowNegative'] ?? false);
+            $this->validateMetricData($metric, $value, $type, $tags, $index, $allowNegative);
 
             $hasTenant = array_key_exists('tenant', $metricData);
 

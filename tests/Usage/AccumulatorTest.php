@@ -275,11 +275,114 @@ class AccumulatorTest extends TestCase
         $this->assertEquals(30, $this->adapter->batches[0]['metrics'][0]['value']);
     }
 
-    public function testNegativeValueThrows(): void
+    public function testGaugeNegativeValueThrows(): void
     {
+        // Gauges are snapshots (e.g. storage); callers never opt in, so
+        // negatives still throw by default.
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Value cannot be negative');
+        $this->accumulator->collect('t1', 'storage', -1, Usage::TYPE_GAUGE);
+    }
+
+    public function testNegativeValueRejectedByDefaultForEvents(): void
+    {
+        // Default is strict for every metric, events included, so a buggy
+        // negative count is caught unless the caller explicitly opts in.
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Value cannot be negative');
         $this->accumulator->collect('t1', 'requests', -1, Usage::TYPE_EVENT);
+    }
+
+    public function testEventNegativeValueAllowedWhenOptedIn(): void
+    {
+        // Genuine signed deltas (realtime connections emit +1/-1) opt in per
+        // call with allowNegative, so a lone -1 persists rather than throws.
+        $this->accumulator->collect('t1', 'realtime.connections', -1, Usage::TYPE_EVENT, allowNegative: true);
+
+        $this->assertEquals(1, $this->accumulator->count());
+        $this->assertTrue($this->accumulator->flush());
+        $entry = $this->adapter->batches[0]['metrics'][0];
+        $this->assertEquals(-1, $entry['value']);
+        // The opt-in flag rides along on the row so addBatch can honour it.
+        $this->assertTrue($entry['allowNegative']);
+    }
+
+    public function testEventMixedSignsNetToDelta(): void
+    {
+        // +1,+1,-1 folds to a net delta of +1 for the metric.
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT, allowNegative: true);
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT, allowNegative: true);
+        $this->accumulator->collect('t1', 'realtime.connections', -1, Usage::TYPE_EVENT, allowNegative: true);
+
+        $this->assertEquals(1, $this->accumulator->count());
+        $this->assertTrue($this->accumulator->flush());
+        $this->assertEquals(1, $this->adapter->batches[0]['metrics'][0]['value']);
+    }
+
+    public function testFoldSecondsGroupsEventsInSameSecond(): void
+    {
+        // Two events landing in the same 1s bucket fold into one net row
+        // stamped at the bucket start.
+        $a = new \DateTime('2026-04-15 12:00:00.200');
+        $b = new \DateTime('2026-04-15 12:00:00.900');
+
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT, [], $a, 1);
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT, [], $b, 1);
+
+        $this->assertEquals(1, $this->accumulator->count());
+        $this->assertTrue($this->accumulator->flush());
+
+        $entry = $this->adapter->batches[0]['metrics'][0];
+        $this->assertEquals(2, $entry['value']);
+        $this->assertArrayHasKey('time', $entry);
+        $time = $entry['time'];
+        $this->assertInstanceOf(\DateTime::class, $time);
+        // Stamped at the second boundary, not the sub-second event time.
+        $this->assertEquals('2026-04-15 12:00:00', $time->format('Y-m-d H:i:s'));
+    }
+
+    public function testFoldSecondsKeepsDistinctSecondsSeparate(): void
+    {
+        // Events in different 1s buckets stay as separate rows so a rise and
+        // fall inside a flush is not collapsed away.
+        $s0 = new \DateTime('2026-04-15 12:00:00.500');
+        $s1 = new \DateTime('2026-04-15 12:00:01.500');
+
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT, [], $s0, 1);
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT, [], $s1, 1);
+
+        $this->assertEquals(2, $this->accumulator->count());
+        $this->assertTrue($this->accumulator->flush());
+
+        $times = [];
+        foreach ($this->adapter->batches[0]['metrics'] as $m) {
+            $time = $m['time'] ?? null;
+            $this->assertInstanceOf(\DateTime::class, $time);
+            $times[] = $time->format('Y-m-d H:i:s');
+        }
+        sort($times);
+        $this->assertEquals(['2026-04-15 12:00:00', '2026-04-15 12:00:01'], $times);
+    }
+
+    public function testFoldSecondsNetsWithinBucket(): void
+    {
+        // Within a single second, +/- deltas net; the per-second row carries
+        // the net so cross-pod running sums stay exact.
+        $t = new \DateTime('2026-04-15 12:00:03.100');
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT, [], $t, 1, allowNegative: true);
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT, [], $t, 1, allowNegative: true);
+        $this->accumulator->collect('t1', 'realtime.connections', -1, Usage::TYPE_EVENT, [], $t, 1, allowNegative: true);
+
+        $this->assertEquals(1, $this->accumulator->count());
+        $this->assertTrue($this->accumulator->flush());
+        $this->assertEquals(1, $this->adapter->batches[0]['metrics'][0]['value']);
+    }
+
+    public function testFoldSecondsRejectsNonPositive(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('foldSeconds must be a positive integer');
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT, [], null, 0);
     }
 
     public function testInvalidTypeThrows(): void
