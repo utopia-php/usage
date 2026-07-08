@@ -811,13 +811,16 @@ class ClickHouse extends SQL
 
         // Disabling retention must actively strip any TTL a previous run
         // applied; otherwise rows keep being purged despite retention being
-        // null. ClickHouse errors (code 36) when REMOVE TTL runs on a table
-        // that has no TTL, so swallow that specific case to keep setup()
-        // idempotent.
+        // null. REMOVE TTL on a table with no TTL raises BAD_ARGUMENTS
+        // (code 36) — a generic code, so anchor on both the stable code and
+        // a "TTL" mention rather than the full English phrase (which can
+        // drift by version). This keeps setup() idempotent without swallowing
+        // unrelated bad-argument errors.
         try {
             $this->query("ALTER TABLE {$escapedTable} REMOVE TTL");
         } catch (Exception $e) {
-            if (!str_contains($e->getMessage(), "doesn't have any table TTL expression")) {
+            $message = $e->getMessage();
+            if (!str_contains($message, 'Code: 36') || !str_contains($message, 'TTL')) {
                 throw $e;
             }
         }
