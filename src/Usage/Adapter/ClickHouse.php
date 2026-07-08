@@ -1148,6 +1148,10 @@ class ClickHouse extends SQL
             'clientEngine', 'clientEngineVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
             'hostname', 'ip',
+            // premium geo (lower-cardinality only; city/isp/AS org/connection org
+            // are high-cardinality and intentionally fall through to Nullable(String))
+            'continentCode', 'subdivisions', 'connectionType',
+            'connectionUsageType', 'autonomousSystemNumber',
         ];
 
         if (in_array($id, $lowCardinality, true)) {
@@ -1188,6 +1192,9 @@ class ClickHouse extends SQL
             'resourceId', 'resourceInternalId',
             'teamId', 'teamInternalId',
             'osVersion', 'clientVersion', 'clientEngineVersion', 'deviceModel',
+            'city', 'continentCode', 'subdivisions', 'isp',
+            'autonomousSystemNumber', 'autonomousSystemOrganization',
+            'connectionType', 'connectionUsageType', 'connectionOrganization',
         ];
 
         if (in_array($id, $zstdColumns, true)) {

@@ -1,6 +1,25 @@
 # Changelog
 
-## Unreleased — resourceType rename + queued time + ip dim + gauge fill
+## 0.10.0 — premium geo dimensions
+
+### Added
+
+- Nine event-only premium geo dimensions in `Metric::EVENT_COLUMNS`
+  and `Metric::getEventSchema()`: `city`, `continentCode`,
+  `subdivisions`, `isp`, `autonomousSystemNumber`,
+  `autonomousSystemOrganization`, `connectionType`,
+  `connectionUsageType`, `connectionOrganization`. All are optional
+  strings. In ClickHouse the lower-cardinality dims (`continentCode`,
+  `subdivisions`, `connectionType`, `connectionUsageType`,
+  `autonomousSystemNumber`) are `LowCardinality(Nullable(String))`;
+  the high-cardinality dims (`city`, `isp`,
+  `autonomousSystemOrganization`, `connectionOrganization`) are plain
+  `Nullable(String)`. Existing tables auto-materialize the columns on
+  `setup()` via the `ADD COLUMN IF NOT EXISTS` path. Gauges are
+  unchanged; these columns are not added to the primary key or
+  indexes.
+
+## 0.9.0 — resourceType rename + queued time + ip dim + gauge fill
 
 ### Breaking
 
