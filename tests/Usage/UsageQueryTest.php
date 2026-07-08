@@ -231,4 +231,94 @@ class UsageQueryTest extends TestCase
         $this->assertCount(1, $extracted);
         $this->assertEquals('service', $extracted[0]->getAttribute());
     }
+
+    public function testAggregateCreation(): void
+    {
+        $query = UsageQuery::aggregate('peak');
+
+        $this->assertInstanceOf(UsageQuery::class, $query);
+        $this->assertEquals(UsageQuery::TYPE_AGGREGATE, $query->getMethod());
+        $this->assertEquals(['peak'], $query->getValues());
+        $this->assertEquals('peak', $query->getValue());
+    }
+
+    public function testAggregateAcceptsAllValidFunctions(): void
+    {
+        foreach (UsageQuery::VALID_AGGREGATES as $function) {
+            $query = UsageQuery::aggregate($function);
+            $this->assertEquals($function, $query->getValue());
+        }
+    }
+
+    public function testAggregateRejectsInvalidFunction(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("Invalid aggregate 'max'");
+        UsageQuery::aggregate('max');
+    }
+
+    public function testAggregateIsMethod(): void
+    {
+        $this->assertTrue(UsageQuery::isMethod(UsageQuery::TYPE_AGGREGATE));
+    }
+
+    public function testIsAggregate(): void
+    {
+        $aggregate = UsageQuery::aggregate('peak');
+        $regular = Query::equal('metric', ['bandwidth']);
+
+        $this->assertTrue(UsageQuery::isAggregate($aggregate));
+        $this->assertFalse(UsageQuery::isAggregate($regular));
+    }
+
+    public function testExtractAggregate(): void
+    {
+        $queries = [
+            Query::equal('metric', ['realtime.connections']),
+            UsageQuery::aggregate('peak'),
+        ];
+
+        $this->assertEquals('peak', UsageQuery::extractAggregate($queries));
+    }
+
+    public function testExtractAggregateFromParsedQuery(): void
+    {
+        // Queries created via Query::parse() are base Query objects, not UsageQuery.
+        $parsedAggregate = new Query(UsageQuery::TYPE_AGGREGATE, 'value', ['peak']);
+        $equal = Query::equal('metric', ['realtime.connections']);
+
+        $this->assertEquals('peak', UsageQuery::extractAggregate([$equal, $parsedAggregate]));
+    }
+
+    public function testExtractAggregateReturnsNullWhenMissing(): void
+    {
+        $queries = [
+            Query::equal('metric', ['realtime.connections']),
+            UsageQuery::groupByInterval('time', '1h'),
+        ];
+
+        $this->assertNull(UsageQuery::extractAggregate($queries));
+    }
+
+    public function testRemoveAggregate(): void
+    {
+        $queries = [
+            Query::equal('metric', ['realtime.connections']),
+            UsageQuery::aggregate('peak'),
+            UsageQuery::groupByInterval('time', '1h'),
+        ];
+
+        $remaining = UsageQuery::removeAggregate($queries);
+
+        $this->assertCount(2, $remaining);
+        foreach ($remaining as $query) {
+            $this->assertNotEquals(UsageQuery::TYPE_AGGREGATE, $query->getMethod());
+        }
+    }
+
+    public function testValidAggregatesConstant(): void
+    {
+        $this->assertContains('sum', UsageQuery::VALID_AGGREGATES);
+        $this->assertContains('peak', UsageQuery::VALID_AGGREGATES);
+    }
 }
