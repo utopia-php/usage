@@ -54,6 +54,10 @@ class Metric extends ArrayObject
         'service', 'resourceType', 'resourceId', 'resourceInternalId',
         'teamId', 'teamInternalId',
         'country', 'region', 'hostname', 'ip',
+        // premium geo
+        'city', 'continentCode', 'subdivisions',
+        'isp', 'autonomousSystemNumber', 'autonomousSystemOrganization',
+        'connectionType', 'connectionUsageType', 'connectionOrganization',
         'osCode', 'osName', 'osVersion',
         'clientType', 'clientCode', 'clientName', 'clientVersion',
         'clientEngine', 'clientEngineVersion',
@@ -82,6 +86,9 @@ class Metric extends ArrayObject
      * - resourceType / resourceId / resourceInternalId: resource identity
      * - teamId / teamInternalId: owning team identity
      * - country / region / hostname / ip: geographic + caller origin
+     * - city / continentCode / subdivisions: premium geo location fields
+     * - isp / autonomousSystemNumber / autonomousSystemOrganization: premium network origin
+     * - connectionType / connectionUsageType / connectionOrganization: premium connection intelligence
      * - osCode / osName / osVersion: parsed user-agent OS fields
      * - clientType / clientCode / clientName / clientVersion: parsed client
      * - clientEngine / clientEngineVersion: parsed client engine
@@ -628,6 +635,16 @@ class Metric extends ArrayObject
             $stringColumn('region', 64),
             $stringColumn('hostname', 255),
             $stringColumn('ip', 45),
+            // premium geo
+            $stringColumn('city', 256),
+            $stringColumn('continentCode', 2),
+            $stringColumn('subdivisions', 256),
+            $stringColumn('isp', 256),
+            $stringColumn('autonomousSystemNumber', 255),
+            $stringColumn('autonomousSystemOrganization', 256),
+            $stringColumn('connectionType', 256),
+            $stringColumn('connectionUsageType', 256),
+            $stringColumn('connectionOrganization', 256),
             $stringColumn('osCode', 256),
             $stringColumn('osName', 256),
             $stringColumn('osVersion', 255),
