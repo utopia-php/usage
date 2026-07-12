@@ -615,6 +615,7 @@ class MetricTest extends TestCase
             'osCode', 'osName', 'osVersion',
             'clientType', 'clientCode', 'clientName', 'clientVersion',
             'clientEngine', 'clientEngineVersion',
+            'sdk', 'sdkVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
         ];
         $this->assertSame($expected, Metric::EVENT_COLUMNS);
@@ -666,6 +667,35 @@ class MetricTest extends TestCase
         $gaugeIds = array_column(Metric::getGaugeSchema(), '$id');
 
         foreach ($geo as $col) {
+            $this->assertContains($col, Metric::EVENT_COLUMNS, "EVENT_COLUMNS missing {$col}");
+            $this->assertContains($col, $eventIds, "Event schema missing {$col}");
+            $this->assertNotContains($col, Metric::GAUGE_COLUMNS, "{$col} must be event-only");
+            $this->assertNotContains($col, $gaugeIds, "{$col} must not be in gauge schema");
+
+            $matches = array_values(array_filter(
+                $schema,
+                static fn (array $attr): bool => $attr['$id'] === $col,
+            ));
+            $this->assertCount(1, $matches, "{$col} must appear exactly once");
+            $this->assertSame('string', $matches[0]['type'], "{$col} must be a string column");
+            $this->assertFalse($matches[0]['required'], "{$col} must be optional");
+        }
+    }
+
+    /**
+     * The sdk dimensions are event-only string columns that are present in
+     * EVENT_COLUMNS and the event schema (as non-required strings) but never
+     * leak into the gauge column set.
+     */
+    public function testSdkColumnsArePresentAsEventStrings(): void
+    {
+        $sdk = ['sdk', 'sdkVersion'];
+
+        $schema = Metric::getEventSchema();
+        $eventIds = array_column($schema, '$id');
+        $gaugeIds = array_column(Metric::getGaugeSchema(), '$id');
+
+        foreach ($sdk as $col) {
             $this->assertContains($col, Metric::EVENT_COLUMNS, "EVENT_COLUMNS missing {$col}");
             $this->assertContains($col, $eventIds, "Event schema missing {$col}");
             $this->assertNotContains($col, Metric::GAUGE_COLUMNS, "{$col} must be event-only");

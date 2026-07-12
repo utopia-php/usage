@@ -61,6 +61,8 @@ class Metric extends ArrayObject
         'osCode', 'osName', 'osVersion',
         'clientType', 'clientCode', 'clientName', 'clientVersion',
         'clientEngine', 'clientEngineVersion',
+        // sdk identity
+        'sdk', 'sdkVersion',
         'deviceName', 'deviceBrand', 'deviceModel',
     ];
 
@@ -92,6 +94,7 @@ class Metric extends ArrayObject
      * - osCode / osName / osVersion: parsed user-agent OS fields
      * - clientType / clientCode / clientName / clientVersion: parsed client
      * - clientEngine / clientEngineVersion: parsed client engine
+     * - sdk / sdkVersion: originating SDK name and version
      * - deviceName / deviceBrand / deviceModel: parsed device fields
      *
      * Gauge-only dimension columns (see GAUGE_COLUMNS):
@@ -654,6 +657,9 @@ class Metric extends ArrayObject
             $stringColumn('clientVersion', 255),
             $stringColumn('clientEngine', 256),
             $stringColumn('clientEngineVersion', 255),
+            // sdk identity
+            $stringColumn('sdk', 256),
+            $stringColumn('sdkVersion', 255),
             $stringColumn('deviceName', 256),
             $stringColumn('deviceBrand', 256),
             $stringColumn('deviceModel', 255),
