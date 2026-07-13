@@ -1213,6 +1213,8 @@ class ClickHouse extends SQL
             // are high-cardinality and intentionally fall through to Nullable(String))
             'continentCode', 'subdivisions', 'connectionType',
             'connectionUsageType', 'autonomousSystemNumber',
+            // sdk identity
+            'sdk', 'sdkVersion',
         ];
 
         if (in_array($id, $lowCardinality, true)) {
@@ -1256,6 +1258,7 @@ class ClickHouse extends SQL
             'city', 'continentCode', 'subdivisions', 'isp',
             'autonomousSystemNumber', 'autonomousSystemOrganization',
             'connectionType', 'connectionUsageType', 'connectionOrganization',
+            'sdk', 'sdkVersion',
         ];
 
         if (in_array($id, $zstdColumns, true)) {

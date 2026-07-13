@@ -51,6 +51,10 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $this->assertStringContainsString('`connectionType` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
         $this->assertStringContainsString('`city` Nullable(String) CODEC(ZSTD(3))', $ddl);
         $this->assertStringContainsString('`isp` Nullable(String) CODEC(ZSTD(3))', $ddl);
+
+        // sdk: both dims are low-cardinality.
+        $this->assertStringContainsString('`sdk` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
+        $this->assertStringContainsString('`sdkVersion` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
     }
 
     public function testEventsTableSwapsBloomForSetOnLowCardinality(): void
@@ -264,6 +268,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
             'hostname', 'ip',
             'continentCode', 'subdivisions', 'connectionType',
             'connectionUsageType', 'autonomousSystemNumber',
+            'sdk', 'sdkVersion',
         ];
 
         $baseKey = ['id', 'metric', 'value', 'time', 'tenant'];

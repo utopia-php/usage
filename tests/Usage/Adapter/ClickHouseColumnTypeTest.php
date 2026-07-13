@@ -72,4 +72,18 @@ class ClickHouseColumnTypeTest extends TestCase
             );
         }
     }
+
+    /**
+     * SDK dims must map to LowCardinality(Nullable(String)).
+     */
+    public function testLowCardinalitySdkColumns(): void
+    {
+        foreach (['sdk', 'sdkVersion'] as $col) {
+            $this->assertSame(
+                'LowCardinality(Nullable(String))',
+                $this->columnType($col),
+                "{$col} should be LowCardinality(Nullable(String))"
+            );
+        }
+    }
 }

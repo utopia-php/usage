@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.0 — sdk dimensions
+
+### Added
+
+- Two event-only SDK dimensions in `Metric::EVENT_COLUMNS` and
+  `Metric::getEventSchema()`: `sdk` (originating SDK name, e.g.
+  `web`, `flutter`, `console`, `cli`) and `sdkVersion` (e.g.
+  `14.0.0`). Both are optional strings. In ClickHouse both map to
+  `LowCardinality(Nullable(String))` with `CODEC(ZSTD(3))`. Existing
+  tables auto-materialize the columns on `setup()` via the
+  `ADD COLUMN IF NOT EXISTS` path. Gauges are unchanged; these columns
+  are not added to the primary key or indexes.
+
 ## 0.10.0 — premium geo dimensions
 
 ### Added
