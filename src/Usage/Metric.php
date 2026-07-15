@@ -69,7 +69,7 @@ class Metric extends ArrayObject
     /**
      * Gauge-specific column names that are extracted from tags into dedicated columns.
      */
-    public const GAUGE_COLUMNS = ['service', 'resourceType', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
+    public const GAUGE_COLUMNS = ['service', 'resourceType', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId', 'ordinal'];
 
     /**
      * Construct a new metric object.
@@ -99,6 +99,7 @@ class Metric extends ArrayObject
      *
      * Gauge-only dimension columns (see GAUGE_COLUMNS):
      * - teamId / teamInternalId / resourceId / resourceInternalId
+     * - ordinal: replica ordinal for multi-node resources (0 is the primary)
      *
      * @param  array<string, mixed>  $input  Metric data
      */
@@ -276,6 +277,15 @@ class Metric extends ArrayObject
     public function getResourceInternalId(): ?string
     {
         $v = $this->getAttribute('resourceInternalId', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get replica ordinal (gauge metrics). 0 is the primary; 1+ are replicas.
+     */
+    public function getOrdinal(): ?string
+    {
+        $v = $this->getAttribute('ordinal', null);
         return is_string($v) ? $v : null;
     }
 
@@ -721,6 +731,7 @@ class Metric extends ArrayObject
             $stringColumn('teamInternalId', 255),
             $stringColumn('resourceId', 255),
             $stringColumn('resourceInternalId', 255),
+            $stringColumn('ordinal', 255),
         ];
     }
 
@@ -778,9 +789,9 @@ class Metric extends ArrayObject
      */
     public static function getGaugeIndexes(): array
     {
-        $indexed = ['service', 'resourceType', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'];
+        $indexed = ['service', 'resourceType', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId', 'ordinal'];
 
-        $setIndexed = ['service', 'resourceType'];
+        $setIndexed = ['service', 'resourceType', 'ordinal'];
 
         return array_map(
             static fn (string $col): array => [
