@@ -269,6 +269,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
             'continentCode', 'subdivisions', 'connectionType',
             'connectionUsageType', 'autonomousSystemNumber',
             'sdk', 'sdkVersion',
+            'ordinal',
         ];
 
         $baseKey = ['id', 'metric', 'value', 'time', 'tenant'];

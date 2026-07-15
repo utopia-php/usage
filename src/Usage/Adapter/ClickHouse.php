@@ -1215,6 +1215,8 @@ class ClickHouse extends SQL
             'connectionUsageType', 'autonomousSystemNumber',
             // sdk identity
             'sdk', 'sdkVersion',
+            // gauge replica ordinal
+            'ordinal',
         ];
 
         if (in_array($id, $lowCardinality, true)) {

@@ -314,6 +314,7 @@ class ClickHouseTest extends TestCase
                     'teamInternalId' => '7',
                     'resourceId' => 'r1',
                     'resourceInternalId' => '42',
+                    'ordinal' => '0',
                 ],
             ],
         ], Usage::TYPE_GAUGE));
@@ -330,6 +331,55 @@ class ClickHouseTest extends TestCase
         $this->assertEquals('7', $metric->getTeamInternalId());
         $this->assertEquals('r1', $metric->getResourceId());
         $this->assertEquals('42', $metric->getResourceInternalId());
+        $this->assertEquals('0', $metric->getOrdinal());
+    }
+
+    /**
+     * Per-replica gauge rows for one resource stay distinct series via the
+     * ordinal dimension: filtering by ordinal isolates one node, grouping by
+     * ordinal returns the latest snapshot per node.
+     */
+    public function testGaugeOrdinalSeparatesReplicaSeries(): void
+    {
+        $this->usage->purge('1', [], Usage::TYPE_GAUGE);
+
+        $this->assertTrue($this->usage->addBatch([
+            [
+                'tenant' => '1',
+                'metric' => 'gauge-ordinal-test',
+                'value' => 10,
+                'tags' => ['resourceType' => 'databases', 'resourceId' => 'db1', 'ordinal' => '0'],
+            ],
+            [
+                'tenant' => '1',
+                'metric' => 'gauge-ordinal-test',
+                'value' => 20,
+                'tags' => ['resourceType' => 'databases', 'resourceId' => 'db1', 'ordinal' => '1'],
+            ],
+        ], Usage::TYPE_GAUGE));
+
+        $primary = $this->usage->find('1', [
+            \Utopia\Query\Query::equal('metric', ['gauge-ordinal-test']),
+            \Utopia\Query\Query::equal('ordinal', ['0']),
+        ], Usage::TYPE_GAUGE);
+
+        $this->assertCount(1, $primary);
+        $this->assertEquals(10, $primary[0]->getValue());
+        $this->assertEquals('0', $primary[0]->getOrdinal());
+
+        $perNode = $this->usage->find('1', [
+            \Utopia\Query\Query::equal('metric', ['gauge-ordinal-test']),
+            UsageQuery::groupBy('ordinal'),
+        ], Usage::TYPE_GAUGE);
+
+        $this->assertCount(2, $perNode);
+        $byOrdinal = [];
+        foreach ($perNode as $row) {
+            $ordinal = $row->getOrdinal();
+            $this->assertNotNull($ordinal);
+            $byOrdinal[$ordinal] = (int) $row->getValue();
+        }
+        $this->assertEquals(['0' => 10, '1' => 20], $byOrdinal);
     }
 
     public function testUnknownTagKeyThrows(): void

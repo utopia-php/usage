@@ -33,11 +33,11 @@ class ClickHouseColumnTypeTest extends TestCase
         $this->getColumnType->setAccessible(true);
     }
 
-    private function columnType(string $id): string
+    private function columnType(string $id, string $type = 'event'): string
     {
-        /** @var string $type */
-        $type = $this->getColumnType->invoke($this->adapter, $id, 'event');
-        return $type;
+        /** @var string $columnType */
+        $columnType = $this->getColumnType->invoke($this->adapter, $id, $type);
+        return $columnType;
     }
 
     /**
@@ -85,5 +85,18 @@ class ClickHouseColumnTypeTest extends TestCase
                 "{$col} should be LowCardinality(Nullable(String))"
             );
         }
+    }
+
+    /**
+     * The gauge replica ordinal holds a handful of distinct values, so it
+     * must map to LowCardinality(Nullable(String)).
+     */
+    public function testLowCardinalityOrdinalColumn(): void
+    {
+        $this->assertSame(
+            'LowCardinality(Nullable(String))',
+            $this->columnType('ordinal', 'gauge'),
+            'ordinal should be LowCardinality(Nullable(String))'
+        );
     }
 }
