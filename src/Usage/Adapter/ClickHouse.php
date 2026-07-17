@@ -137,8 +137,8 @@ class ClickHouse extends SQL
 
     /**
      * Retention window in days. When set, setup() applies a TTL to the raw
-     * events table so rows older than the window are dropped by background
-     * merges. The aggregated events_daily table is left untouched. Null
+     * events and aggregated events_daily tables so rows older than the window
+     * are dropped by background merges. Gauges are left untouched. Null
      * disables TTL (the default).
      */
     private readonly ?int $retention;
@@ -164,10 +164,10 @@ class ClickHouse extends SQL
      *   re-executed against the raw events table and logs a `warning` route
      *   entry if the totals diverge by >1%. Use 0.01 for a production canary
      *   or 1.0 in CI.
-     * @param  int|null  $retention  Retention window in days for the raw events
-     *   table. When set, setup() applies a TTL that drops rows older than the
-     *   window; the aggregated events_daily table (long-term usage/billing
-     *   history) is left untouched. Null disables TTL (default). Must be positive.
+     * @param  int|null  $retention  Retention window in days for the events and
+     *   events_daily tables. When set, setup() applies a TTL that drops rows
+     *   older than the window; gauges are left untouched. Null disables TTL
+     *   (default). Must be positive.
      */
     public function __construct(
         string $host,
@@ -746,10 +746,12 @@ class ClickHouse extends SQL
 
         $this->ensureEventDimColumns();
 
-        $this->applyEventsRetention();
+        $this->applyRetention($this->getEventsTableName());
 
         // --- Events daily table (SummingMergeTree) ---
         $this->createDailyTable();
+
+        $this->applyRetention($this->getEventsDailyTableName());
 
         // --- Events daily materialized view ---
         $this->createDailyMaterializedView();
@@ -785,20 +787,19 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Apply (or strip) the retention TTL on the raw events table as a separate
-     * idempotent ALTER. CREATE TABLE IF NOT EXISTS won't add a TTL to an
-     * existing table, and MODIFY TTL is a no-op when unchanged, so setup()
-     * stays re-runnable. The aggregated events_daily table is intentionally
-     * left untouched — it backs long-term usage/billing history.
-     * materialize_ttl_after_modify = 0 defers the purge to background merges
-     * rather than an immediate mutation.
+     * Apply (or strip) the retention TTL on a table as a separate idempotent
+     * ALTER. CREATE TABLE IF NOT EXISTS won't add a TTL to an existing table,
+     * and MODIFY TTL is a no-op when unchanged, so setup() stays re-runnable.
+     * The raw events and aggregated events_daily tables share the same window;
+     * gauges are left untouched. materialize_ttl_after_modify = 0 defers the
+     * purge to background merges rather than an immediate mutation.
      *
      * @throws Exception
      */
-    private function applyEventsRetention(): void
+    private function applyRetention(string $tableName): void
     {
         $escapedTable = $this->escapeIdentifier($this->database)
-            . '.' . $this->escapeIdentifier($this->getEventsTableName());
+            . '.' . $this->escapeIdentifier($tableName);
 
         if ($this->retention !== null) {
             $this->query(

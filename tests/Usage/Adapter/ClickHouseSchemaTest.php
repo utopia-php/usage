@@ -209,7 +209,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         }
     }
 
-    public function testRetentionAppliesTtlToEventsTableOnly(): void
+    public function testRetentionAppliesTtlToEventsAndDailyTables(): void
     {
         $adapter = new ClickHouseAdapter(
             getenv('CLICKHOUSE_HOST') ?: 'clickhouse',
@@ -225,6 +225,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $database = $this->databaseName($adapter);
         $eventsTable = $this->resolveTableName($adapter, 'getEventsTableName');
         $dailyTable = $this->resolveTableName($adapter, 'getEventsDailyTableName');
+        $gaugesTable = $this->resolveTableName($adapter, 'getGaugesTableName');
         $dailyMv = $this->resolveTableName($adapter, 'getTableName') . '_events_daily_mv';
 
         // Start clean so the TTL is applied by setup(), not left over.
@@ -238,9 +239,13 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $eventsDdl = $this->showCreateFor($adapter, "`{$database}`.`{$eventsTable}`");
         $this->assertStringContainsString('TTL toDateTime(time)', $eventsDdl);
 
-        // Aggregated billing history must never carry a TTL.
+        // Aggregated daily table shares the same retention window.
         $dailyDdl = $this->showCreateFor($adapter, "`{$database}`.`{$dailyTable}`");
-        $this->assertStringNotContainsString('TTL', $dailyDdl);
+        $this->assertStringContainsString('TTL toDateTime(time)', $dailyDdl);
+
+        // Gauges are point-in-time state and never carry a TTL.
+        $gaugesDdl = $this->showCreateFor($adapter, "`{$database}`.`{$gaugesTable}`");
+        $this->assertStringNotContainsString('TTL', $gaugesDdl);
     }
 
     public function testRetentionRejectsNonPositiveDays(): void
