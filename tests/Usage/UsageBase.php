@@ -224,6 +224,31 @@ trait UsageBase
 
         // Should find all metrics matching either 'requests' or 'bandwidth'
         $this->assertGreaterThanOrEqual(2, count($results));
+
+        // Contains is a substring match (like utopia-php/database), not an
+        // exact IN match — 'band' should match 'bandwidth'
+        $results = $this->usage->find('1', [
+            Query::contains('metric', ['band']),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertGreaterThanOrEqual(1, count($results));
+        foreach ($results as $result) {
+            $this->assertStringContainsString('band', $result->getMetric());
+        }
+    }
+
+    public function testNotContainsQuery(): void
+    {
+        // notContains is a negated substring match — excludes any metric
+        // containing 'request', keeps 'bandwidth'
+        $results = $this->usage->find('1', [
+            Query::notContains('metric', ['request']),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertGreaterThanOrEqual(1, count($results));
+        foreach ($results as $result) {
+            $this->assertStringNotContainsString('request', $result->getMetric());
+        }
     }
 
     public function testLessThanEqualQuery(): void

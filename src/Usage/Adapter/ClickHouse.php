@@ -3281,6 +3281,21 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Escape ClickHouse LIKE-pattern wildcards in a user-supplied needle.
+     *
+     * Backslash is escaped first so already-escaped characters aren't
+     * double-escaped. Keeps `contains('metric', ['100%'])` a literal
+     * substring match instead of a wildcard.
+     *
+     * @param string $value
+     * @return string
+     */
+    private function escapeLikeWildcards(string $value): string
+    {
+        return \str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $value);
+    }
+
+    /**
      * Normalize a user-supplied cursor row into a column-keyed array.
      *
      * Accepts a `Metric` (or any `ArrayObject`) or a plain associative array.
@@ -3613,33 +3628,37 @@ class ClickHouse extends SQL
                     break;
 
                 case Query::TYPE_CONTAINS:
+                    // Substring match, mirroring utopia-php/database: each
+                    // value becomes `LIKE '%value%'`, OR'd together.
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
-                    $chType = $this->getParamType($attribute);
-                    $inParams = [];
+                    $conditions = [];
                     foreach ($values as $value) {
+                        if (!is_string($value)) {
+                            throw new Exception("contains value must be a string for attribute '{$attribute}'");
+                        }
                         $paramName = 'param_' . $paramCounter++;
-                        $inParams[] = "{{$paramName}:{$chType}}";
-                        $params[$paramName] = $this->formatTypedValue($chType, $value);
+                        $conditions[] = "{$escapedAttr} LIKE {{$paramName}:String}";
+                        $params[$paramName] = '%' . $this->escapeLikeWildcards($value) . '%';
                     }
-                    if (!empty($inParams)) {
-                        $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
-                    }
+                    $filters[] = '(' . implode(' OR ', $conditions) . ')';
                     break;
 
                 case Query::TYPE_NOT_CONTAINS:
+                    // Negated substring match, mirroring utopia-php/database:
+                    // each value becomes `NOT LIKE '%value%'`, AND'd together.
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
-                    $chType = $this->getParamType($attribute);
-                    $inParams = [];
+                    $conditions = [];
                     foreach ($values as $value) {
+                        if (!is_string($value)) {
+                            throw new Exception("notContains value must be a string for attribute '{$attribute}'");
+                        }
                         $paramName = 'param_' . $paramCounter++;
-                        $inParams[] = "{{$paramName}:{$chType}}";
-                        $params[$paramName] = $this->formatTypedValue($chType, $value);
+                        $conditions[] = "{$escapedAttr} NOT LIKE {{$paramName}:String}";
+                        $params[$paramName] = '%' . $this->escapeLikeWildcards($value) . '%';
                     }
-                    if (!empty($inParams)) {
-                        $filters[] = "{$escapedAttr} NOT IN (" . implode(', ', $inParams) . ")";
-                    }
+                    $filters[] = '(' . implode(' AND ', $conditions) . ')';
                     break;
 
                 case Query::TYPE_IS_NULL:
