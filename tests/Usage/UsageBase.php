@@ -251,6 +251,28 @@ trait UsageBase
         }
     }
 
+    public function testContainsEscapesLikeWildcards(): void
+    {
+        $this->assertTrue($this->usage->addBatch([
+            ['tenant' => '1', 'metric' => 'cache%hit', 'value' => 1, 'tags' => []],
+        ], Usage::TYPE_EVENT));
+
+        // '%' in a needle is a literal, not a LIKE wildcard — an unescaped
+        // '%' would match every metric
+        $results = $this->usage->find('1', [
+            Query::contains('metric', ['%']),
+        ], Usage::TYPE_EVENT);
+        $this->assertCount(1, $results);
+        $this->assertEquals('cache%hit', $results[0]->getMetric());
+
+        // '_' is a literal too — as a wildcard 'cache_hit' would match
+        // 'cache%hit'
+        $results = $this->usage->find('1', [
+            Query::contains('metric', ['cache_hit']),
+        ], Usage::TYPE_EVENT);
+        $this->assertCount(0, $results);
+    }
+
     public function testLessThanEqualQuery(): void
     {
         $now = (new \DateTime())->format('Y-m-d\TH:i:s');
