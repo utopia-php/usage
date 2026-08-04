@@ -103,6 +103,26 @@ abstract class Adapter
     abstract public function find(string $tenant, array $queries = [], ?string $type = null): array;
 
     /**
+     * Find metrics across every tenant in shared-tables mode.
+     *
+     * Deliberately crosses the per-tenant isolation every other read enforces,
+     * so it is reserved for operator-side aggregation jobs that roll many
+     * tenants up in one pass. Never reachable from a tenant-scoped request
+     * path. Pair with `groupBy('tenant')` to keep the rows attributable.
+     *
+     * Adapters that cannot express an unscoped read leave this unsupported.
+     *
+     * @param array<\Utopia\Query\Query> $queries
+     * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
+     * @return array<Metric>
+     * @throws \Exception
+     */
+    public function findAcrossTenants(array $queries = [], ?string $type = null): array
+    {
+        throw new \Exception($this->getName() . ' does not support cross-tenant reads');
+    }
+
+    /**
      * Count metrics using Query objects.
      *
      * When $max is non-null the count is bounded at the database level —

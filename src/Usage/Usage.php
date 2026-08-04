@@ -155,6 +155,24 @@ class Usage
     }
 
     /**
+     * Find metrics across every tenant in shared-tables mode.
+     *
+     * Unlike find(), this applies no tenant filter — it is for operator-side
+     * aggregation jobs that need one pass over all tenants instead of N
+     * per-tenant queries. Keep it out of request-scoped code paths, and add
+     * `groupBy('tenant')` so the returned rows stay attributable.
+     *
+     * @param array<\Utopia\Query\Query> $queries
+     * @param string|null $type Metric type: 'event', 'gauge', or null (query both)
+     * @return array<Metric>
+     * @throws \Exception
+     */
+    public function findAcrossTenants(array $queries = [], ?string $type = null): array
+    {
+        return $this->adapter->findAcrossTenants($queries, $type);
+    }
+
+    /**
      * Count metrics using Query objects.
      *
      * When $max is non-null the count is bounded at the database level.

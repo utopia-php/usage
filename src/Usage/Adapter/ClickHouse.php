@@ -1053,6 +1053,13 @@ class ClickHouse extends SQL
     {
         $allowed = $type === Usage::TYPE_GAUGE ? Metric::GAUGE_COLUMNS : Metric::EVENT_COLUMNS;
 
+        // `tenant` is a real column in shared-tables mode, not a dimension on
+        // Metric. Grouping by it is what makes a cross-tenant read
+        // ({@see findAcrossTenants}) attributable, so allow it there.
+        if ($this->sharedTables) {
+            $allowed[] = 'tenant';
+        }
+
         if (in_array($attribute, $allowed, true)) {
             return true;
         }
@@ -1386,6 +1393,44 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('find()');
 
+        return $this->findScoped($tenant, $queries, $type);
+    }
+
+    /**
+     * Find metrics across every tenant. Applies no tenant filter, so it is
+     * restricted to shared-tables mode and reserved for operator-side
+     * aggregation jobs — see {@see Adapter::findAcrossTenants()}.
+     *
+     * Callers should add `groupBy('tenant')` to keep rows attributable; the
+     * aggregated paths already carry `tenant` through select/group-by in
+     * shared-tables mode.
+     *
+     * @param array<Query> $queries
+     * @param string|null $type
+     * @return array<Metric>
+     * @throws Exception
+     */
+    public function findAcrossTenants(array $queries = [], ?string $type = null): array
+    {
+        $this->setOperationContext('findAcrossTenants()');
+
+        if (!$this->sharedTables) {
+            throw new Exception('findAcrossTenants() requires shared-tables mode; use find() instead');
+        }
+
+        return $this->findScoped(null, $queries, $type);
+    }
+
+    /**
+     * Shared body for find()/findAcrossTenants(). A null $tenant means no
+     * tenant filter (cross-tenant); a string scopes to that tenant.
+     *
+     * @param array<Query> $queries
+     * @return array<Metric>
+     * @throws Exception
+     */
+    private function findScoped(?string $tenant, array $queries, ?string $type): array
+    {
         if ($type !== null) {
             return $this->findFromTable($tenant, $queries, $type);
         }
@@ -1476,7 +1521,7 @@ class ClickHouse extends SQL
      * @return array<Metric>
      * @throws Exception
      */
-    private function findFromTable(string $tenant, array $queries, string $type): array
+    private function findFromTable(?string $tenant, array $queries, string $type): array
     {
         $tableName = $this->getTableForType($type);
         $fromTable = $this->buildTableReference($tableName);
@@ -1687,7 +1732,7 @@ class ClickHouse extends SQL
      * @return array<Metric>
      * @throws Exception
      */
-    private function findPeakFromTable(string $tenant, array $parsed, string $fromTable, string $type): array
+    private function findPeakFromTable(?string $tenant, array $parsed, string $fromTable, string $type): array
     {
         $hasInterval = isset($parsed['groupByInterval']);
         $params = $parsed['params'];
@@ -1712,6 +1757,27 @@ class ClickHouse extends SQL
             $partitionCols[] = $escapedDim;
         }
         $partitionSql = implode(', ', $partitionCols);
+
+        // The baseline below is a single non-correlated scalar, but the running
+        // sum is partitioned per (metric[, tenant][, dims]). Those only agree
+        // when the window covers exactly one series, i.e. when every partition
+        // column beyond `metric` is pinned by an equality filter. A
+        // cross-tenant read or a dimension break-down would add the combined
+        // baseline of every series to each series. Reject rather than return a
+        // silently inflated peak.
+        if ($tenant === null && $peakStartParam !== null) {
+            throw new Exception(
+                'aggregate(peak) is not supported on a cross-tenant read: the window baseline '
+                . 'is not correlated per tenant. Query one tenant at a time, or drop the lower '
+                . 'time bound.'
+            );
+        }
+        if (!empty($groupByDims) && $peakStartParam !== null) {
+            throw new Exception(
+                'aggregate(peak) cannot be combined with groupBy(' . implode(', ', $groupByDims)
+                . '): the window baseline is not correlated per dimension.'
+            );
+        }
 
         // Baseline: concurrency already open at the window start. Non-correlated
         // scalar; omitted (0) when the query has no lower time bound.
@@ -3549,12 +3615,15 @@ class ClickHouse extends SQL
      * @return array{filters: array<int, string>, params: array<string, mixed>, orderBy?: array<string>, orderAttributes?: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, aggregate?: string, timeFilters?: array<int, string>, nonTimeFilters?: array<int, string>, peakStartParam?: string|null, cursor?: array<string, mixed>, cursorDirection?: string}
      * @throws Exception
      */
-    private function parseQueries(string $tenant, array $queries, string $type = 'event'): array
+    private function parseQueries(?string $tenant, array $queries, string $type = 'event'): array
     {
-        if ($this->sharedTables) {
-            // An empty tenant would compile to `tenant = ''` and silently read
-            // an empty scope. Fail fast instead, like the write side. ("0" is
-            // a valid tenant id, so check for '' specifically.)
+        // A null tenant is the explicit cross-tenant read used by operator-side
+        // aggregation ({@see findAcrossTenants}) — no tenant filter is applied.
+        // It is deliberately distinct from '': an empty string would compile to
+        // `tenant = ''` and silently read an empty scope, so that still fails
+        // fast, like the write side. ("0" is a valid tenant id, so check for ''
+        // specifically.)
+        if ($this->sharedTables && $tenant !== null) {
             if ($tenant === '') {
                 throw new Exception('Tenant cannot be empty in shared-tables mode');
             }
