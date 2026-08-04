@@ -27,10 +27,10 @@ use Utopia\Query\Query;
  * - Events: SUM(value) per bucket
  * - Gauges: argMax(value, time) per bucket
  *
- * An `aggregate` hint selects how event values are combined. The default `sum`
- * totals values; `peak` computes the running-sum maximum for delta metrics
- * emitted as `+1`/`-1` (e.g. realtime connections), yielding the peak concurrent
- * value rather than the net total.
+ * An `aggregate` hint overrides how values are combined. The default `sum`
+ * totals them; `max` takes the largest value per bucket, which is how a gauge
+ * level series rolls up to a coarser interval — the default `argMax` would
+ * return the latest reading rather than the highest.
  */
 class UsageQuery extends Query
 {
@@ -41,12 +41,14 @@ class UsageQuery extends Query
     /**
      * Valid aggregation functions.
      *
-     * - `sum`  — the default; totals the metric value per bucket (current behaviour).
-     * - `peak` — running-sum maximum, for delta metrics emitted as `+1`/`-1`
-     *   (e.g. realtime connections). Returns the peak concurrent value: the
-     *   maximum of the cumulative sum ordered by time.
+     * - `sum` — the default; totals the metric value per bucket (current behaviour).
+     * - `max` — the largest value per bucket. Intended for gauges, where the
+     *   default `argMax(value, time)` returns the *latest* reading rather than
+     *   the highest one. Reading a pre-computed level series (e.g. realtime
+     *   concurrency sampled every 5 minutes) at a coarser interval needs the
+     *   peak of the samples, not the last one.
      */
-    public const VALID_AGGREGATES = ['sum', 'peak'];
+    public const VALID_AGGREGATES = ['sum', 'max'];
 
     /**
      * Valid interval values and their ClickHouse INTERVAL equivalents.
@@ -201,9 +203,10 @@ class UsageQuery extends Query
      * Create an aggregate query selecting the aggregation function.
      *
      * `sum` (the default when no aggregate query is present) totals the metric
-     * value per bucket. `peak` computes the running-sum maximum — the peak
-     * concurrent value for delta metrics emitted as `+1`/`-1` (realtime
-     * connections). See {@see UsageQuery::VALID_AGGREGATES}.
+     * value per bucket. `max` takes the largest value in the bucket instead —
+     * the meaningful roll-up for a gauge level series, whose default
+     * `argMax(value, time)` would return the latest reading.
+     * See {@see UsageQuery::VALID_AGGREGATES}.
      *
      * @param string $function One of {@see UsageQuery::VALID_AGGREGATES}.
      * @return self

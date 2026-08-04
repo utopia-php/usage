@@ -1512,9 +1512,8 @@ class ClickHouse extends SQL
      * - Gauges: SELECT metric, argMax(value, time) as value, toStartOfInterval(time, INTERVAL ...) as time
      * Results are grouped by metric and time bucket, ordered by time ASC.
      *
-     * When an `aggregate('peak')` query is present, switches to the running-sum
-     * max path ({@see findPeakFromTable}) for delta metrics like realtime
-     * connections, honouring interval bucketing and dimensions inside it.
+     * An `aggregate('max')` query overrides the per-type default value
+     * expression — see {@see findAggregatedFromTable()}.
      *
      * @param array<Query> $queries
      * @param string $type 'event' or 'gauge'
@@ -1532,13 +1531,6 @@ class ClickHouse extends SQL
         // aggregated rows have no stable identity to anchor a keyset cursor on.
         if (isset($parsed['cursor']) && isset($parsed['groupByInterval'])) {
             throw new Exception('Cursor pagination cannot be combined with groupByInterval');
-        }
-
-        // Peak aggregation (running-sum max) needs its own window-function
-        // query. Route it here — before the SUM-based aggregated path — while
-        // still honouring interval bucketing and dimension breakdowns inside.
-        if (($parsed['aggregate'] ?? null) === 'peak') {
-            return $this->findPeakFromTable($tenant, $parsed, $fromTable, $type);
         }
 
         // Route through the aggregated path whenever any aggregation
@@ -1614,10 +1606,17 @@ class ClickHouse extends SQL
     {
         $hasInterval = isset($parsed['groupByInterval']);
 
-        // Choose aggregation function based on metric type
+        // Choose aggregation function based on metric type. `aggregate('max')`
+        // overrides both defaults: for gauges it takes the highest reading in
+        // the bucket rather than the latest one (argMax), which is what rolling
+        // a sampled level series up to a coarser interval needs.
         $valueExpr = $type === Usage::TYPE_GAUGE
             ? 'argMax(value, time) as value'
             : 'SUM(value) as value';
+
+        if (($parsed['aggregate'] ?? null) === 'max') {
+            $valueExpr = 'max(value) as value';
+        }
 
         // Bucket column is only emitted when time bucketing is requested.
         // Without it the result is a flat aggregate per (metric, …dims).
@@ -1685,173 +1684,6 @@ class ClickHouse extends SQL
         $sql = "
             SELECT metric, {$valueExpr}{$bucketSelect}{$dimSelect}
             FROM {$fromTable}{$whereClause}
-            GROUP BY metric{$bucketGroup}{$dimGroup}{$orderClause}{$limitClause}{$offsetClause}
-            FORMAT JSON
-        ";
-
-        $result = $this->query($sql, $params);
-
-        return $this->parseAggregatedResults($result, $type);
-    }
-
-    /**
-     * Find peak (running-sum maximum) metrics from a table.
-     *
-     * Delta metrics — emitted as `+1` on open / `-1` on close (e.g. realtime
-     * connections) and stored as events — carry no meaningful `MAX(value)`
-     * (that is just `1`). The true peak concurrent value is the maximum of the
-     * cumulative sum ordered by time, computed here cross-producer with a
-     * single window function so interleaved rows from many pods sum before the
-     * max is taken.
-     *
-     * A baseline scalar subquery adds connections opened strictly before the
-     * window start (still-open at `start`) so an in-window peak is not
-     * understated. The baseline is non-correlated — it is scoped to the
-     * non-time filters (tenant, metric) that pin a single series, matching the
-     * realtime-connections use case.
-     *
-     * Produces SQL like (interval variant):
-     *   SELECT metric, max(running) AS value,
-     *          toStartOfInterval(time, INTERVAL 1 HOUR) AS bucket
-     *   FROM (
-     *     SELECT metric, time,
-     *            ifNull((SELECT sum(value) FROM t
-     *                    WHERE `metric` = {m} AND time < {start}), 0)
-     *              + sum(value) OVER (PARTITION BY metric ORDER BY time ASC
-     *                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running
-     *     FROM t WHERE `metric` = {m} AND time >= {start} AND time <= {end}
-     *   )
-     *   GROUP BY metric, bucket ORDER BY bucket ASC
-     *
-     * Without `groupByInterval` the bucket column is dropped, yielding a single
-     * `max(running)` row per metric (flat peak over the window).
-     *
-     * @param array{filters: array<int, string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, aggregate?: string, timeFilters?: array<int, string>, nonTimeFilters?: array<int, string>, peakStartParam?: string|null} $parsed
-     * @param string $fromTable Fully qualified table reference
-     * @param string $type 'event' or 'gauge'
-     * @return array<Metric>
-     * @throws Exception
-     */
-    private function findPeakFromTable(?string $tenant, array $parsed, string $fromTable, string $type): array
-    {
-        $hasInterval = isset($parsed['groupByInterval']);
-        $params = $parsed['params'];
-
-        $nonTimeFilters = $parsed['nonTimeFilters'] ?? [];
-        $timeFilters = $parsed['timeFilters'] ?? [];
-        $peakStartParam = $parsed['peakStartParam'] ?? null;
-
-        // Dimension columns join the window PARTITION so the running sum is
-        // computed per (metric[, tenant][, dims]) series.
-        $groupByDims = $parsed['groupBy'] ?? [];
-        $escapedDims = array_map(
-            fn (string $dim): string => $this->escapeIdentifier($dim),
-            $groupByDims
-        );
-
-        $partitionCols = ['metric'];
-        if ($this->sharedTables) {
-            $partitionCols[] = 'tenant';
-        }
-        foreach ($escapedDims as $escapedDim) {
-            $partitionCols[] = $escapedDim;
-        }
-        $partitionSql = implode(', ', $partitionCols);
-
-        // The baseline below is a single non-correlated scalar, but the running
-        // sum is partitioned per (metric[, tenant][, dims]). Those only agree
-        // when the window covers exactly one series, i.e. when every partition
-        // column beyond `metric` is pinned by an equality filter. A
-        // cross-tenant read or a dimension break-down would add the combined
-        // baseline of every series to each series. Reject rather than return a
-        // silently inflated peak.
-        if ($tenant === null && $peakStartParam !== null) {
-            throw new Exception(
-                'aggregate(peak) is not supported on a cross-tenant read: the window baseline '
-                . 'is not correlated per tenant. Query one tenant at a time, or drop the lower '
-                . 'time bound.'
-            );
-        }
-        if (!empty($groupByDims) && $peakStartParam !== null) {
-            throw new Exception(
-                'aggregate(peak) cannot be combined with groupBy(' . implode(', ', $groupByDims)
-                . '): the window baseline is not correlated per dimension.'
-            );
-        }
-
-        // Baseline: concurrency already open at the window start. Non-correlated
-        // scalar; omitted (0) when the query has no lower time bound.
-        $baseline = '0';
-        if ($peakStartParam !== null) {
-            $baselineConds = $nonTimeFilters;
-            $baselineConds[] = "time < {{$peakStartParam}:DateTime64(3, 'UTC')}";
-            $baseline = "ifNull((SELECT sum(value) FROM {$fromTable} WHERE "
-                . implode(' AND ', $baselineConds)
-                . '), 0)';
-        }
-
-        $runningExpr = "{$baseline}"
-            . " + sum(value) OVER (PARTITION BY {$partitionSql} ORDER BY time ASC"
-            . ' ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)';
-
-        // Inner query: window WHERE = non-time filters + time bounds.
-        $innerConds = array_merge($nonTimeFilters, $timeFilters);
-        $innerWhere = !empty($innerConds) ? ' WHERE ' . implode(' AND ', $innerConds) : '';
-        $innerDimSelect = !empty($escapedDims) ? ', ' . implode(', ', $escapedDims) : '';
-        $innerSql = "SELECT metric, time{$innerDimSelect}, {$runningExpr} AS running"
-            . " FROM {$fromTable}{$innerWhere}";
-
-        // Outer query: max(running) per (metric[, bucket][, dims]).
-        $bucketSelect = '';
-        $bucketGroup = '';
-        if ($hasInterval) {
-            $interval = $parsed['groupByInterval'];
-            $intervalSql = UsageQuery::VALID_INTERVALS[$interval];
-            $bucketSelect = ", toStartOfInterval(time, {$intervalSql}) AS bucket";
-            $bucketGroup = ', bucket';
-        }
-
-        $dimSelect = !empty($escapedDims) ? ', ' . implode(', ', $escapedDims) : '';
-        $dimGroup = !empty($escapedDims) ? ', ' . implode(', ', $escapedDims) : '';
-
-        // ORDER BY mirrors findAggregatedFromTable: chronological when bucketed,
-        // value DESC otherwise. `time` in a caller ORDER BY maps to `bucket`
-        // when bucketing, and is rejected without it (no time column survives).
-        if ($hasInterval) {
-            $orderClause = ' ORDER BY bucket ASC';
-            if (!empty($parsed['orderBy'])) {
-                $rewrittenOrderBy = array_map(
-                    fn (string $clause): string => preg_replace(
-                        '/^`time`(\s+(?:ASC|DESC))?$/',
-                        '`bucket`$1',
-                        $clause
-                    ) ?? $clause,
-                    $parsed['orderBy']
-                );
-                $orderClause = ' ORDER BY ' . implode(', ', $rewrittenOrderBy);
-            }
-        } else {
-            $orderClause = ' ORDER BY value DESC';
-            if (!empty($parsed['orderBy'])) {
-                foreach ($parsed['orderBy'] as $clause) {
-                    if (preg_match('/^`time`/', $clause)) {
-                        throw new Exception(
-                            'orderBy("time") requires groupByInterval — without time bucketing the result has no time column'
-                        );
-                    }
-                }
-                $orderClause = ' ORDER BY ' . implode(', ', $parsed['orderBy']);
-            }
-        }
-
-        $limitClause = isset($parsed['limit']) ? ' LIMIT {limit:UInt64}' : '';
-        $offsetClause = isset($parsed['offset']) ? ' OFFSET {offset:UInt64}' : '';
-
-        $sql = "
-            SELECT metric, max(running) as value{$bucketSelect}{$dimSelect}
-            FROM (
-                {$innerSql}
-            )
             GROUP BY metric{$bucketGroup}{$dimGroup}{$orderClause}{$limitClause}{$offsetClause}
             FORMAT JSON
         ";
@@ -3612,7 +3444,7 @@ class ClickHouse extends SQL
      * @param string $tenant Tenant scope (shared-tables mode)
      * @param array<Query> $queries
      * @param string $type 'event' or 'gauge' — used for attribute validation
-     * @return array{filters: array<int, string>, params: array<string, mixed>, orderBy?: array<string>, orderAttributes?: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, aggregate?: string, timeFilters?: array<int, string>, nonTimeFilters?: array<int, string>, peakStartParam?: string|null, cursor?: array<string, mixed>, cursorDirection?: string}
+     * @return array{filters: array<int, string>, params: array<string, mixed>, orderBy?: array<string>, orderAttributes?: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, aggregate?: string, cursor?: array<string, mixed>, cursorDirection?: string}
      * @throws Exception
      */
     private function parseQueries(?string $tenant, array $queries, string $type = 'event'): array
@@ -3920,36 +3752,8 @@ class ClickHouse extends SQL
             $result['groupBy'] = $groupBy;
         }
 
-        // Peak aggregation needs the time filters split out from the other
-        // filters: the running-sum window and the pre-window baseline subquery
-        // apply different time predicates (window: >= start AND <= end;
-        // baseline: < start) while sharing the same non-time filters (tenant,
-        // metric, dims). The `sum`/default path is untouched — it ignores these
-        // extra keys entirely.
-        if ($aggregate === 'peak') {
-            $result['aggregate'] = 'peak';
-
-            $timeFilters = [];
-            $nonTimeFilters = [];
-            $peakStartParam = null;
-            foreach ($filters as $filter) {
-                if (str_starts_with($filter, $this->escapeIdentifier('time'))) {
-                    $timeFilters[] = $filter;
-                    // The window lower bound (`time >=`/`time >`, or the first
-                    // arg of a BETWEEN) is the baseline cutoff: connections
-                    // opened strictly before it are the starting concurrency.
-                    if ($peakStartParam === null
-                        && preg_match('/(?:>=|>|BETWEEN)\s*\{([A-Za-z0-9_]+):/', $filter, $matches) === 1) {
-                        $peakStartParam = $matches[1];
-                    }
-                } else {
-                    $nonTimeFilters[] = $filter;
-                }
-            }
-
-            $result['timeFilters'] = $timeFilters;
-            $result['nonTimeFilters'] = $nonTimeFilters;
-            $result['peakStartParam'] = $peakStartParam;
+        if ($aggregate !== null) {
+            $result['aggregate'] = $aggregate;
         }
 
         if ($cursor !== null && $cursorDirection !== null) {
