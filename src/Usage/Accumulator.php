@@ -44,17 +44,10 @@ class Accumulator
      * `$allowNegative = true`. The library stays generic — the decision lives
      * with the caller, not with any metric-name knowledge here.
      *
-     * When $foldSeconds is set, events only fold within the same time bucket:
-     * the bucket start (floor(timestamp / $foldSeconds) * $foldSeconds) joins
-     * the fold key and becomes the entry's canonical time, so every event in
-     * that window shares one timestamp and sub-flush peaks survive the fold.
-     * When $foldSeconds is null the fold key and time handling are unchanged.
-     *
      * @param array<string,mixed> $tags
-     * @param int|null $foldSeconds Fold events within this many seconds, or null for the default per-flush fold.
      * @param bool $allowNegative Permit a negative value for this metric (default: reject).
      */
-    public function collect(string $tenant, string $metric, int $value, string $type, array $tags = [], ?\DateTime $time = null, ?int $foldSeconds = null, bool $allowNegative = false): self
+    public function collect(string $tenant, string $metric, int $value, string $type, array $tags = [], ?\DateTime $time = null, bool $allowNegative = false): self
     {
         // Compare against '' rather than empty(): the string "0" is a valid
         // tenant/metric id but empty("0") is true in PHP.
@@ -70,9 +63,6 @@ class Accumulator
         if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
             throw new \InvalidArgumentException("Invalid metric type '{$type}'. Allowed: " . Usage::TYPE_EVENT . ', ' . Usage::TYPE_GAUGE);
         }
-        if ($foldSeconds !== null && $foldSeconds <= 0) {
-            throw new \InvalidArgumentException('foldSeconds must be a positive integer');
-        }
 
         // Hash the full identity so distinct (tenant, metric, type, tags)
         // tuples never collide on the key — a raw `:`-join would let
@@ -80,31 +70,12 @@ class Accumulator
         // entry. Tags are sorted first so key order doesn't matter.
         $canonicalTags = $tags;
         ksort($canonicalTags);
-
-        // Per-bucket fold: the bucket start joins the key so events only fold
-        // within the same window, and becomes the canonical entry time so all
-        // events in that bucket share one timestamp.
-        $bucketTime = null;
-        if ($foldSeconds !== null) {
-            $timestamp = $time !== null ? $time->getTimestamp() : time();
-            $bucketStart = intdiv($timestamp, $foldSeconds) * $foldSeconds;
-            $bucketTime = new \DateTime('@' . $bucketStart);
-            $key = md5(json_encode([$tenant, $metric, $type, $canonicalTags, $bucketStart], JSON_THROW_ON_ERROR));
-        } else {
-            $key = md5(json_encode([$tenant, $metric, $type, $canonicalTags], JSON_THROW_ON_ERROR));
-        }
-
-        // With bucketing, the bucket start is the entry time; otherwise the
-        // caller-supplied time (if any) is used.
-        $effectiveTime = $bucketTime ?? $time;
+        $key = md5(json_encode([$tenant, $metric, $type, $canonicalTags], JSON_THROW_ON_ERROR));
 
         if ($type === Usage::TYPE_EVENT && isset($this->buffer[$key])) {
+            // earliest time wins on merge
             $this->buffer[$key]['value'] += $value;
-            if ($bucketTime !== null) {
-                // Every event in this bucket shares the bucket-start time.
-                $this->buffer[$key]['time'] = $bucketTime;
-            } elseif ($time !== null && (!isset($this->buffer[$key]['time']) || $time < $this->buffer[$key]['time'])) {
-                // earliest time wins on merge
+            if ($time !== null && (!isset($this->buffer[$key]['time']) || $time < $this->buffer[$key]['time'])) {
                 $this->buffer[$key]['time'] = $time;
             }
         } else {
@@ -116,8 +87,8 @@ class Accumulator
                 'tags' => $tags,
                 'allowNegative' => $allowNegative,
             ];
-            if ($effectiveTime !== null) {
-                $entry['time'] = $effectiveTime;
+            if ($time !== null) {
+                $entry['time'] = $time;
             }
             $this->buffer[$key] = $entry;
         }
