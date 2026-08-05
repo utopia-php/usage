@@ -1533,9 +1533,17 @@ class ClickHouse extends SQL
             throw new Exception('Cursor pagination cannot be combined with groupByInterval');
         }
 
-        // Route through the aggregated path whenever any aggregation
-        // hint is present — time bucketing, dimension breakdown, or both.
-        if (isset($parsed['groupByInterval']) || !empty($parsed['groupBy'])) {
+        // Route through the aggregated path whenever any aggregation hint is
+        // present — time bucketing, dimension breakdown, an explicit
+        // aggregate(), or any combination. An aggregate() on its own still
+        // counts: `aggregate('max')` with no interval and no dimensions is the
+        // flat "highest value over this window" shape, and without this it
+        // would fall through and return raw rows instead.
+        if (
+            isset($parsed['groupByInterval'])
+            || !empty($parsed['groupBy'])
+            || isset($parsed['aggregate'])
+        ) {
             return $this->findAggregatedFromTable($parsed, $fromTable, $type);
         }
 
@@ -1596,7 +1604,7 @@ class ClickHouse extends SQL
      *          toStartOfInterval(time, INTERVAL 1 HOUR) as time
      *   FROM table WHERE ... GROUP BY metric, time ORDER BY time ASC
      *
-     * @param array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>} $parsed Parsed query data from parseQueries()
+     * @param array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, aggregate?: string} $parsed Parsed query data from parseQueries()
      * @param string $fromTable Fully qualified table reference
      * @param string $type 'event' or 'gauge'
      * @return array<Metric>

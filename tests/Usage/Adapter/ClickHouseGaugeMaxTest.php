@@ -242,7 +242,9 @@ class ClickHouseGaugeMaxTest extends ClickHouseTestCase
 
         $byTenant = [];
         foreach ($results as $row) {
-            $byTenant[$row->getTenant()] = $row->getValue();
+            $tenant = $row->getTenant();
+            $this->assertNotNull($tenant, 'every cross-tenant row must carry its tenant');
+            $byTenant[$tenant] = $row->getValue();
         }
 
         $this->assertCount(2, $byTenant);

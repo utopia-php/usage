@@ -254,7 +254,7 @@ class UsageQueryTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage("Invalid aggregate 'peak'");
-        UsageQuery::aggregate('max');
+        UsageQuery::aggregate('peak');
     }
 
     public function testAggregateIsMethod(): void
