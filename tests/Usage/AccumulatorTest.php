@@ -319,6 +319,40 @@ class AccumulatorTest extends TestCase
         $this->assertEquals(1, $this->adapter->batches[0]['metrics'][0]['value']);
     }
 
+    public function testFoldedEntryKeepsTheNegativeOptIn(): void
+    {
+        // The opt-in belongs to the folded row, not to whichever call opened
+        // it. Here the entry is created by a plain positive with the flag off,
+        // then a signed delta folds in and takes the net negative.
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'realtime.connections', -3, Usage::TYPE_EVENT, allowNegative: true);
+
+        $this->assertEquals(1, $this->accumulator->count());
+        $this->assertTrue($this->accumulator->flush());
+
+        $entry = $this->adapter->batches[0]['metrics'][0];
+        $this->assertEquals(-2, $entry['value']);
+
+        // Without this the net row is written unauthorised and rejected at
+        // validation. A failed batch keeps its entries buffered, so every
+        // later flush would retry the same rejection.
+        $this->assertTrue($entry['allowNegative']);
+    }
+
+    public function testFoldRetainsOptInRegardlessOfCallOrder(): void
+    {
+        // Same fold, opposite order: the entry is opened by the opted-in
+        // delta and a plain positive folds in afterwards.
+        $this->accumulator->collect('t1', 'realtime.connections', -3, Usage::TYPE_EVENT, allowNegative: true);
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT);
+
+        $this->assertTrue($this->accumulator->flush());
+
+        $entry = $this->adapter->batches[0]['metrics'][0];
+        $this->assertEquals(-2, $entry['value']);
+        $this->assertTrue($entry['allowNegative']);
+    }
+
     public function testInvalidTypeThrows(): void
     {
         $this->expectException(\InvalidArgumentException::class);

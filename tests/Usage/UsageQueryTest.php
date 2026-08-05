@@ -318,7 +318,9 @@ class UsageQueryTest extends TestCase
 
     public function testValidAggregatesConstant(): void
     {
-        $this->assertContains('sum', UsageQuery::VALID_AGGREGATES);
-        $this->assertContains('max', UsageQuery::VALID_AGGREGATES);
+        // `max` is the only selectable aggregate: it overrides the per-type
+        // default. `sum` is absent on purpose - already the default for events,
+        // and on gauges it would total point-in-time snapshots.
+        $this->assertSame(['max'], UsageQuery::VALID_AGGREGATES);
     }
 }

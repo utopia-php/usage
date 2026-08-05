@@ -75,6 +75,15 @@ class Accumulator
         if ($type === Usage::TYPE_EVENT && isset($this->buffer[$key])) {
             // earliest time wins on merge
             $this->buffer[$key]['value'] += $value;
+
+            // The opt-in is a property of the folded row, not of whichever
+            // call happened to create it. Folding a signed delta into an entry
+            // opened by a plain positive must not leave the net row looking
+            // unauthorised: it would be rejected at write time, and since a
+            // failed batch keeps its entries buffered, every later flush would
+            // retry the same rejection.
+            $this->buffer[$key]['allowNegative'] = $this->buffer[$key]['allowNegative'] || $allowNegative;
+
             if ($time !== null && (!isset($this->buffer[$key]['time']) || $time < $this->buffer[$key]['time'])) {
                 $this->buffer[$key]['time'] = $time;
             }

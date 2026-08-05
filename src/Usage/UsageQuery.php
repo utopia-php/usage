@@ -27,10 +27,10 @@ use Utopia\Query\Query;
  * - Events: SUM(value) per bucket
  * - Gauges: argMax(value, time) per bucket
  *
- * An `aggregate` hint overrides how values are combined. The default `sum`
- * totals them; `max` takes the largest value per bucket, which is how a gauge
- * level series rolls up to a coarser interval — the default `argMax` would
- * return the latest reading rather than the highest.
+ * An `aggregate` hint overrides how values are combined: `max` takes the
+ * largest value per bucket, which is how a gauge level series rolls up to a
+ * coarser interval — the default `argMax` would return the latest reading
+ * rather than the highest.
  */
 class UsageQuery extends Query
 {
@@ -41,14 +41,16 @@ class UsageQuery extends Query
     /**
      * Valid aggregation functions.
      *
-     * - `sum` — the default; totals the metric value per bucket (current behaviour).
-     * - `max` — the largest value per bucket. Intended for gauges, where the
-     *   default `argMax(value, time)` returns the *latest* reading rather than
-     *   the highest one. Reading a pre-computed level series (e.g. realtime
-     *   concurrency sampled every 5 minutes) at a coarser interval needs the
-     *   peak of the samples, not the last one.
+     * - `max` — the largest value per bucket, overriding the per-type default.
+     *   Intended for gauges, where the default `argMax(value, time)` returns the
+     *   *latest* reading rather than the highest one. Reading a pre-computed
+     *   level series (e.g. realtime concurrency sampled every 5 minutes) at a
+     *   coarser interval needs the peak of the samples, not the last one.
+     *
+     * There is deliberately no `sum`: it is already the default for events, and
+     * on gauges it would total point-in-time snapshots, which means nothing.
      */
-    public const VALID_AGGREGATES = ['sum', 'max'];
+    public const VALID_AGGREGATES = ['max'];
 
     /**
      * Valid interval values and their ClickHouse INTERVAL equivalents.
@@ -202,9 +204,8 @@ class UsageQuery extends Query
     /**
      * Create an aggregate query selecting the aggregation function.
      *
-     * `sum` (the default when no aggregate query is present) totals the metric
-     * value per bucket. `max` takes the largest value in the bucket instead —
-     * the meaningful roll-up for a gauge level series, whose default
+     * `max` takes the largest value in the bucket, overriding the per-type
+     * default — the meaningful roll-up for a gauge level series, whose default
      * `argMax(value, time)` would return the latest reading.
      * See {@see UsageQuery::VALID_AGGREGATES}.
      *
