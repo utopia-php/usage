@@ -54,16 +54,22 @@ class Metric extends ArrayObject
         'service', 'resourceType', 'resourceId', 'resourceInternalId',
         'teamId', 'teamInternalId',
         'country', 'region', 'hostname', 'ip',
+        // premium geo
+        'city', 'continentCode', 'subdivisions',
+        'isp', 'autonomousSystemNumber', 'autonomousSystemOrganization',
+        'connectionType', 'connectionUsageType', 'connectionOrganization',
         'osCode', 'osName', 'osVersion',
         'clientType', 'clientCode', 'clientName', 'clientVersion',
         'clientEngine', 'clientEngineVersion',
+        // sdk identity
+        'sdk', 'sdkVersion',
         'deviceName', 'deviceBrand', 'deviceModel',
     ];
 
     /**
      * Gauge-specific column names that are extracted from tags into dedicated columns.
      */
-    public const GAUGE_COLUMNS = ['service', 'resourceType', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
+    public const GAUGE_COLUMNS = ['service', 'resourceType', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId', 'ordinal'];
 
     /**
      * Construct a new metric object.
@@ -82,13 +88,18 @@ class Metric extends ArrayObject
      * - resourceType / resourceId / resourceInternalId: resource identity
      * - teamId / teamInternalId: owning team identity
      * - country / region / hostname / ip: geographic + caller origin
+     * - city / continentCode / subdivisions: premium geo location fields
+     * - isp / autonomousSystemNumber / autonomousSystemOrganization: premium network origin
+     * - connectionType / connectionUsageType / connectionOrganization: premium connection intelligence
      * - osCode / osName / osVersion: parsed user-agent OS fields
      * - clientType / clientCode / clientName / clientVersion: parsed client
      * - clientEngine / clientEngineVersion: parsed client engine
+     * - sdk / sdkVersion: originating SDK name and version
      * - deviceName / deviceBrand / deviceModel: parsed device fields
      *
      * Gauge-only dimension columns (see GAUGE_COLUMNS):
      * - teamId / teamInternalId / resourceId / resourceInternalId
+     * - ordinal: replica ordinal for multi-node resources (0 is the primary)
      *
      * @param  array<string, mixed>  $input  Metric data
      */
@@ -266,6 +277,15 @@ class Metric extends ArrayObject
     public function getResourceInternalId(): ?string
     {
         $v = $this->getAttribute('resourceInternalId', null);
+        return is_string($v) ? $v : null;
+    }
+
+    /**
+     * Get replica ordinal (gauge metrics). 0 is the primary; 1+ are replicas.
+     */
+    public function getOrdinal(): ?string
+    {
+        $v = $this->getAttribute('ordinal', null);
         return is_string($v) ? $v : null;
     }
 
@@ -628,6 +648,16 @@ class Metric extends ArrayObject
             $stringColumn('region', 64),
             $stringColumn('hostname', 255),
             $stringColumn('ip', 45),
+            // premium geo
+            $stringColumn('city', 256),
+            $stringColumn('continentCode', 2),
+            $stringColumn('subdivisions', 256),
+            $stringColumn('isp', 256),
+            $stringColumn('autonomousSystemNumber', 255),
+            $stringColumn('autonomousSystemOrganization', 256),
+            $stringColumn('connectionType', 256),
+            $stringColumn('connectionUsageType', 256),
+            $stringColumn('connectionOrganization', 256),
             $stringColumn('osCode', 256),
             $stringColumn('osName', 256),
             $stringColumn('osVersion', 255),
@@ -637,6 +667,9 @@ class Metric extends ArrayObject
             $stringColumn('clientVersion', 255),
             $stringColumn('clientEngine', 256),
             $stringColumn('clientEngineVersion', 255),
+            // sdk identity
+            $stringColumn('sdk', 256),
+            $stringColumn('sdkVersion', 255),
             $stringColumn('deviceName', 256),
             $stringColumn('deviceBrand', 256),
             $stringColumn('deviceModel', 255),
@@ -698,6 +731,7 @@ class Metric extends ArrayObject
             $stringColumn('teamInternalId', 255),
             $stringColumn('resourceId', 255),
             $stringColumn('resourceInternalId', 255),
+            $stringColumn('ordinal', 255),
         ];
     }
 
@@ -755,9 +789,9 @@ class Metric extends ArrayObject
      */
     public static function getGaugeIndexes(): array
     {
-        $indexed = ['service', 'resourceType', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId'];
+        $indexed = ['service', 'resourceType', 'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId', 'ordinal'];
 
-        $setIndexed = ['service', 'resourceType'];
+        $setIndexed = ['service', 'resourceType', 'ordinal'];
 
         return array_map(
             static fn (string $col): array => [

@@ -76,7 +76,8 @@ class Database extends SQL
         // Event schema is a superset of the gauge schema for the dimensions
         // that exist in both (resourceId, resourceInternalId, teamId,
         // teamInternalId), so a single Database collection backed by the
-        // event schema works for both types.
+        // event schema works for both types. Gauge-only columns (ordinal)
+        // are appended below.
         $attributes = $this->getAttributeDocuments('event');
         $indexDocs = $this->getIndexDocuments('event');
 
@@ -95,6 +96,22 @@ class Database extends SQL
             '$id' => 'index-type',
             'type' => 'key',
             'attributes' => ['type'],
+        ]);
+
+        // Gauge-only replica ordinal dimension.
+        $attributes[] = new Document([
+            '$id' => 'ordinal',
+            'type' => 'string',
+            'size' => 255,
+            'required' => false,
+            'signed' => true,
+            'array' => false,
+            'filters' => [],
+        ]);
+        $indexDocs[] = new Document([
+            '$id' => 'index-ordinal',
+            'type' => 'key',
+            'attributes' => ['ordinal'],
         ]);
 
         try {

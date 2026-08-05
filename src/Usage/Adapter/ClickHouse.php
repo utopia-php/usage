@@ -136,6 +136,14 @@ class ClickHouse extends SQL
     private readonly float $dualReadSampleRate;
 
     /**
+     * Retention window in days. When set, setup() applies a TTL to the raw
+     * events and aggregated events_daily tables so rows older than the window
+     * are dropped by background merges. Gauges are left untouched. Null
+     * disables TTL (the default).
+     */
+    private readonly ?int $retention;
+
+    /**
      * @param  string  $host  ClickHouse host
      * @param  string  $username  ClickHouse username (default: 'default')
      * @param  string  $password  ClickHouse password (default: '')
@@ -156,6 +164,10 @@ class ClickHouse extends SQL
      *   re-executed against the raw events table and logs a `warning` route
      *   entry if the totals diverge by >1%. Use 0.01 for a production canary
      *   or 1.0 in CI.
+     * @param  int|null  $retention  Retention window in days for the events and
+     *   events_daily tables. When set, setup() applies a TTL that drops rows
+     *   older than the window; gauges are left untouched. Null disables TTL
+     *   (default). Must be positive.
      */
     public function __construct(
         string $host,
@@ -169,10 +181,14 @@ class ClickHouse extends SQL
         bool $sharedTables = false,
         bool $asyncInserts = false,
         bool $asyncInsertWait = true,
-        float $dualReadSampleRate = 0.0
+        float $dualReadSampleRate = 0.0,
+        ?int $retention = null
     ) {
         $this->validateHost($host);
         $this->validatePort($port);
+        if ($retention !== null && $retention < 1) {
+            throw new Exception('Retention must be a positive number of days');
+        }
         if (!empty($namespace)) {
             $this->validateIdentifier($namespace, 'Namespace');
         }
@@ -191,6 +207,7 @@ class ClickHouse extends SQL
         // Clamp to [0.0, 1.0] so out-of-range rates can't disable or
         // over-trigger the parity sampler.
         $this->dualReadSampleRate = max(0.0, min(1.0, $dualReadSampleRate));
+        $this->retention = $retention;
 
         // `withConnectionReuse()` keeps the underlying cURL handle alive across
         // requests so the TCP/TLS handshake is paid once. Auth and database are
@@ -729,8 +746,12 @@ class ClickHouse extends SQL
 
         $this->ensureEventDimColumns();
 
+        $this->applyRetention($this->getEventsTableName());
+
         // --- Events daily table (SummingMergeTree) ---
         $this->createDailyTable();
+
+        $this->applyRetention($this->getEventsDailyTableName());
 
         // --- Events daily materialized view ---
         $this->createDailyMaterializedView();
@@ -762,6 +783,47 @@ class ClickHouse extends SQL
                 $projection['dims'],
                 'argMax(value, time) AS value'
             );
+        }
+    }
+
+    /**
+     * Apply (or strip) the retention TTL on a table as a separate idempotent
+     * ALTER. CREATE TABLE IF NOT EXISTS won't add a TTL to an existing table,
+     * and MODIFY TTL is a no-op when unchanged, so setup() stays re-runnable.
+     * The raw events and aggregated events_daily tables share the same window;
+     * gauges are left untouched. materialize_ttl_after_modify = 0 defers the
+     * purge to background merges rather than an immediate mutation.
+     *
+     * @throws Exception
+     */
+    private function applyRetention(string $tableName): void
+    {
+        $escapedTable = $this->escapeIdentifier($this->database)
+            . '.' . $this->escapeIdentifier($tableName);
+
+        if ($this->retention !== null) {
+            $this->query(
+                "ALTER TABLE {$escapedTable} "
+                . "MODIFY TTL toDateTime(time) + INTERVAL {$this->retention} DAY "
+                . 'SETTINGS materialize_ttl_after_modify = 0'
+            );
+            return;
+        }
+
+        // Disabling retention must actively strip any TTL a previous run
+        // applied; otherwise rows keep being purged despite retention being
+        // null. REMOVE TTL on a table with no TTL raises BAD_ARGUMENTS
+        // (code 36) — a generic code, so anchor on both the stable code and
+        // a "TTL" mention rather than the full English phrase (which can
+        // drift by version). This keeps setup() idempotent without swallowing
+        // unrelated bad-argument errors.
+        try {
+            $this->query("ALTER TABLE {$escapedTable} REMOVE TTL");
+        } catch (Exception $e) {
+            $message = $e->getMessage();
+            if (!str_contains($message, 'Code: 36') || !str_contains($message, 'TTL')) {
+                throw $e;
+            }
         }
     }
 
@@ -1155,6 +1217,14 @@ class ClickHouse extends SQL
             'clientEngine', 'clientEngineVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
             'hostname', 'ip',
+            // premium geo (lower-cardinality only; city/isp/AS org/connection org
+            // are high-cardinality and intentionally fall through to Nullable(String))
+            'continentCode', 'subdivisions', 'connectionType',
+            'connectionUsageType', 'autonomousSystemNumber',
+            // sdk identity
+            'sdk', 'sdkVersion',
+            // gauge replica ordinal
+            'ordinal',
         ];
 
         if (in_array($id, $lowCardinality, true)) {
@@ -1195,6 +1265,10 @@ class ClickHouse extends SQL
             'resourceId', 'resourceInternalId',
             'teamId', 'teamInternalId',
             'osVersion', 'clientVersion', 'clientEngineVersion', 'deviceModel',
+            'city', 'continentCode', 'subdivisions', 'isp',
+            'autonomousSystemNumber', 'autonomousSystemOrganization',
+            'connectionType', 'connectionUsageType', 'connectionOrganization',
+            'sdk', 'sdkVersion',
         ];
 
         if (in_array($id, $zstdColumns, true)) {
@@ -3278,6 +3352,21 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Escape ClickHouse LIKE-pattern wildcards in a user-supplied needle.
+     *
+     * Backslash is escaped first so already-escaped characters aren't
+     * double-escaped. Keeps `contains('metric', ['100%'])` a literal
+     * substring match instead of a wildcard.
+     *
+     * @param string $value
+     * @return string
+     */
+    private function escapeLikeWildcards(string $value): string
+    {
+        return \str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $value);
+    }
+
+    /**
      * Normalize a user-supplied cursor row into a column-keyed array.
      *
      * Accepts a `Metric` (or any `ArrayObject`) or a plain associative array.
@@ -3614,33 +3703,37 @@ class ClickHouse extends SQL
                     break;
 
                 case Query::TYPE_CONTAINS:
+                    // Substring match, mirroring utopia-php/database: each
+                    // value becomes `LIKE '%value%'`, OR'd together.
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
-                    $chType = $this->getParamType($attribute);
-                    $inParams = [];
+                    $conditions = [];
                     foreach ($values as $value) {
+                        if (!is_string($value)) {
+                            throw new Exception("contains value must be a string for attribute '{$attribute}'");
+                        }
                         $paramName = 'param_' . $paramCounter++;
-                        $inParams[] = "{{$paramName}:{$chType}}";
-                        $params[$paramName] = $this->formatTypedValue($chType, $value);
+                        $conditions[] = "{$escapedAttr} LIKE {{$paramName}:String}";
+                        $params[$paramName] = '%' . $this->escapeLikeWildcards($value) . '%';
                     }
-                    if (!empty($inParams)) {
-                        $filters[] = "{$escapedAttr} IN (" . implode(', ', $inParams) . ")";
-                    }
+                    $filters[] = '(' . implode(' OR ', $conditions) . ')';
                     break;
 
                 case Query::TYPE_NOT_CONTAINS:
+                    // Negated substring match, mirroring utopia-php/database:
+                    // each value becomes `NOT LIKE '%value%'`, AND'd together.
                     $this->validateAttributeName($attribute, $type);
                     $escapedAttr = $this->escapeIdentifier($attribute);
-                    $chType = $this->getParamType($attribute);
-                    $inParams = [];
+                    $conditions = [];
                     foreach ($values as $value) {
+                        if (!is_string($value)) {
+                            throw new Exception("notContains value must be a string for attribute '{$attribute}'");
+                        }
                         $paramName = 'param_' . $paramCounter++;
-                        $inParams[] = "{{$paramName}:{$chType}}";
-                        $params[$paramName] = $this->formatTypedValue($chType, $value);
+                        $conditions[] = "{$escapedAttr} NOT LIKE {{$paramName}:String}";
+                        $params[$paramName] = '%' . $this->escapeLikeWildcards($value) . '%';
                     }
-                    if (!empty($inParams)) {
-                        $filters[] = "{$escapedAttr} NOT IN (" . implode(', ', $inParams) . ")";
-                    }
+                    $filters[] = '(' . implode(' AND ', $conditions) . ')';
                     break;
 
                 case Query::TYPE_IS_NULL:

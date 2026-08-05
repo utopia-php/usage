@@ -609,9 +609,13 @@ class MetricTest extends TestCase
             'service', 'resourceType', 'resourceId', 'resourceInternalId',
             'teamId', 'teamInternalId',
             'country', 'region', 'hostname', 'ip',
+            'city', 'continentCode', 'subdivisions',
+            'isp', 'autonomousSystemNumber', 'autonomousSystemOrganization',
+            'connectionType', 'connectionUsageType', 'connectionOrganization',
             'osCode', 'osName', 'osVersion',
             'clientType', 'clientCode', 'clientName', 'clientVersion',
             'clientEngine', 'clientEngineVersion',
+            'sdk', 'sdkVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
         ];
         $this->assertSame($expected, Metric::EVENT_COLUMNS);
@@ -622,8 +626,36 @@ class MetricTest extends TestCase
      */
     public function testGaugeColumnsConstant(): void
     {
-        $expected = ['service', 'resourceType', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId'];
+        $expected = ['service', 'resourceType', 'teamId', 'teamInternalId', 'resourceId', 'resourceInternalId', 'ordinal'];
         $this->assertSame($expected, Metric::GAUGE_COLUMNS);
+    }
+
+    /**
+     * The replica ordinal is a gauge-only dimension: present in GAUGE_COLUMNS,
+     * the gauge schema and gauge indexes, extracted from tags into its column,
+     * and readable via the typed accessor. Events must not carry it.
+     */
+    public function testOrdinalIsGaugeOnly(): void
+    {
+        $this->assertContains('ordinal', Metric::GAUGE_COLUMNS);
+        $this->assertNotContains('ordinal', Metric::EVENT_COLUMNS);
+
+        $gaugeIds = array_column(Metric::getGaugeSchema(), '$id');
+        $this->assertContains('ordinal', $gaugeIds);
+
+        $eventIds = array_column(Metric::getEventSchema(), '$id');
+        $this->assertNotContains('ordinal', $eventIds);
+
+        $indexIds = array_column(Metric::getGaugeIndexes(), '$id');
+        $this->assertContains('index-ordinal', $indexIds);
+
+        $columns = Metric::extractColumns(['resourceId' => 'db_a', 'ordinal' => 1], 'gauge');
+        $this->assertSame('1', $columns['ordinal']);
+        $this->assertSame('db_a', $columns['resourceId']);
+
+        $metric = new Metric(['ordinal' => '2']);
+        $this->assertSame('2', $metric->getOrdinal());
+        $this->assertNull((new Metric([]))->getOrdinal());
     }
 
     /**
@@ -643,6 +675,68 @@ class MetricTest extends TestCase
         }
         $this->assertNotContains('userAgent', $ids, 'userAgent must be removed');
         $this->assertNotContains('tags', $ids, 'tags must be removed');
+    }
+
+    /**
+     * The premium geo dimensions are event-only string columns that are
+     * present in EVENT_COLUMNS and the event schema (as non-required
+     * strings) but never leak into the gauge column set.
+     */
+    public function testPremiumGeoColumnsArePresentAsEventStrings(): void
+    {
+        $geo = [
+            'city', 'continentCode', 'subdivisions',
+            'isp', 'autonomousSystemNumber', 'autonomousSystemOrganization',
+            'connectionType', 'connectionUsageType', 'connectionOrganization',
+        ];
+
+        $schema = Metric::getEventSchema();
+        $eventIds = array_column($schema, '$id');
+        $gaugeIds = array_column(Metric::getGaugeSchema(), '$id');
+
+        foreach ($geo as $col) {
+            $this->assertContains($col, Metric::EVENT_COLUMNS, "EVENT_COLUMNS missing {$col}");
+            $this->assertContains($col, $eventIds, "Event schema missing {$col}");
+            $this->assertNotContains($col, Metric::GAUGE_COLUMNS, "{$col} must be event-only");
+            $this->assertNotContains($col, $gaugeIds, "{$col} must not be in gauge schema");
+
+            $matches = array_values(array_filter(
+                $schema,
+                static fn (array $attr): bool => $attr['$id'] === $col,
+            ));
+            $this->assertCount(1, $matches, "{$col} must appear exactly once");
+            $this->assertSame('string', $matches[0]['type'], "{$col} must be a string column");
+            $this->assertFalse($matches[0]['required'], "{$col} must be optional");
+        }
+    }
+
+    /**
+     * The sdk dimensions are event-only string columns that are present in
+     * EVENT_COLUMNS and the event schema (as non-required strings) but never
+     * leak into the gauge column set.
+     */
+    public function testSdkColumnsArePresentAsEventStrings(): void
+    {
+        $sdk = ['sdk', 'sdkVersion'];
+
+        $schema = Metric::getEventSchema();
+        $eventIds = array_column($schema, '$id');
+        $gaugeIds = array_column(Metric::getGaugeSchema(), '$id');
+
+        foreach ($sdk as $col) {
+            $this->assertContains($col, Metric::EVENT_COLUMNS, "EVENT_COLUMNS missing {$col}");
+            $this->assertContains($col, $eventIds, "Event schema missing {$col}");
+            $this->assertNotContains($col, Metric::GAUGE_COLUMNS, "{$col} must be event-only");
+            $this->assertNotContains($col, $gaugeIds, "{$col} must not be in gauge schema");
+
+            $matches = array_values(array_filter(
+                $schema,
+                static fn (array $attr): bool => $attr['$id'] === $col,
+            ));
+            $this->assertCount(1, $matches, "{$col} must appear exactly once");
+            $this->assertSame('string', $matches[0]['type'], "{$col} must be a string column");
+            $this->assertFalse($matches[0]['required'], "{$col} must be optional");
+        }
     }
 
     /**

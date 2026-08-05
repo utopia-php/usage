@@ -44,6 +44,17 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $this->assertStringContainsString('`teamId` Nullable(String) CODEC(ZSTD(3))', $ddl);
         $this->assertStringContainsString('`osVersion` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
         $this->assertStringContainsString('`deviceModel` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
+
+        // premium geo: lower-cardinality dims are LowCardinality, high-cardinality
+        // dims fall through to plain Nullable(String).
+        $this->assertStringContainsString('`continentCode` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
+        $this->assertStringContainsString('`connectionType` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
+        $this->assertStringContainsString('`city` Nullable(String) CODEC(ZSTD(3))', $ddl);
+        $this->assertStringContainsString('`isp` Nullable(String) CODEC(ZSTD(3))', $ddl);
+
+        // sdk: both dims are low-cardinality.
+        $this->assertStringContainsString('`sdk` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
+        $this->assertStringContainsString('`sdkVersion` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
     }
 
     public function testEventsTableSwapsBloomForSetOnLowCardinality(): void
@@ -198,6 +209,55 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         }
     }
 
+    public function testRetentionAppliesTtlToEventsAndDailyTables(): void
+    {
+        $adapter = new ClickHouseAdapter(
+            getenv('CLICKHOUSE_HOST') ?: 'clickhouse',
+            getenv('CLICKHOUSE_USER') ?: 'default',
+            getenv('CLICKHOUSE_PASSWORD') ?: 'clickhouse',
+            (int) (getenv('CLICKHOUSE_PORT') ?: 8123),
+            (bool) (getenv('CLICKHOUSE_SECURE') ?: false),
+            namespace: 'utopia_usage_schema_retention',
+            database: getenv('CLICKHOUSE_DATABASE') ?: 'default',
+            sharedTables: true,
+            retention: 30,
+        );
+        $database = $this->databaseName($adapter);
+        $eventsTable = $this->resolveTableName($adapter, 'getEventsTableName');
+        $dailyTable = $this->resolveTableName($adapter, 'getEventsDailyTableName');
+        $gaugesTable = $this->resolveTableName($adapter, 'getGaugesTableName');
+        $dailyMv = $this->resolveTableName($adapter, 'getTableName') . '_events_daily_mv';
+
+        // Start clean so the TTL is applied by setup(), not left over.
+        $this->queryRaw($adapter, "DROP TABLE IF EXISTS `{$database}`.`{$dailyMv}`");
+        $this->queryRaw($adapter, "DROP TABLE IF EXISTS `{$database}`.`{$dailyTable}`");
+        $this->queryRaw($adapter, "DROP TABLE IF EXISTS `{$database}`.`{$eventsTable}`");
+
+        $usage = new Usage($adapter);
+        $usage->setup();
+
+        $eventsDdl = $this->showCreateFor($adapter, "`{$database}`.`{$eventsTable}`");
+        $this->assertStringContainsString('TTL toDateTime(time)', $eventsDdl);
+
+        // Aggregated daily table shares the same retention window.
+        $dailyDdl = $this->showCreateFor($adapter, "`{$database}`.`{$dailyTable}`");
+        $this->assertStringContainsString('TTL toDateTime(time)', $dailyDdl);
+
+        // Gauges are point-in-time state and never carry a TTL.
+        $gaugesDdl = $this->showCreateFor($adapter, "`{$database}`.`{$gaugesTable}`");
+        $this->assertStringNotContainsString('TTL', $gaugesDdl);
+    }
+
+    public function testRetentionRejectsNonPositiveDays(): void
+    {
+        $this->expectException(\Exception::class);
+
+        new ClickHouseAdapter(
+            getenv('CLICKHOUSE_HOST') ?: 'clickhouse',
+            retention: 0,
+        );
+    }
+
     /**
      * @param  array<int, string>  $columns
      * @return array<int, string>
@@ -211,6 +271,10 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
             'clientEngine', 'clientEngineVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
             'hostname', 'ip',
+            'continentCode', 'subdivisions', 'connectionType',
+            'connectionUsageType', 'autonomousSystemNumber',
+            'sdk', 'sdkVersion',
+            'ordinal',
         ];
 
         $baseKey = ['id', 'metric', 'value', 'time', 'tenant'];
