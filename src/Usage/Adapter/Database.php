@@ -142,7 +142,7 @@ class Database extends SQL
      * Each metric carries its own `tenant` (shared-tables mode), so a single
      * batch may span multiple tenants.
      *
-     * @param array<array{tenant: string, metric: string, value: int, tags?: array<string,mixed>}> $metrics
+     * @param array<array{tenant: string, metric: string, value: int, tags?: array<string,mixed>, allowNegative?: bool}> $metrics
      * @param string $type Metric type: 'event' or 'gauge'
      * @param int $batchSize
      * @return bool
@@ -157,7 +157,13 @@ class Database extends SQL
                     throw new \InvalidArgumentException("Invalid type '{$type}'. Allowed: event, gauge");
                 }
 
-                if ($metric['value'] < 0) {
+                // Negatives are rejected by default so a buggy count or
+                // bandwidth figure is still caught. A row carrying a genuine
+                // signed delta opts in, the same contract the accumulator sets
+                // and the ClickHouse adapter honours - an adapter that ignored
+                // it would reject the row on every flush, and a failed batch
+                // keeps its entries buffered.
+                if ($metric['value'] < 0 && !($metric['allowNegative'] ?? false)) {
                     throw new \InvalidArgumentException('Value cannot be negative');
                 }
 

@@ -9,6 +9,7 @@ use Utopia\Cache\Cache;
 use Utopia\Database\Adapter\MariaDB;
 use Utopia\Database\Database;
 use Utopia\Database\Exception\Duplicate;
+use Utopia\Query\Query;
 use Utopia\Tests\Usage\UsageBase;
 use Utopia\Usage\Adapter\Database as AdapterDatabase;
 use Utopia\Usage\Usage;
@@ -258,5 +259,41 @@ class DatabaseTest extends TestCase
             $this->assertIsString($health['error']);
             $this->assertNotEmpty($health['error']);
         }
+    }
+
+    public function testNegativeValueRejectedByDefault(): void
+    {
+        if (!extension_loaded('pdo_mysql')) {
+            $this->markTestSkipped('pdo_mysql extension is not installed');
+        }
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Value cannot be negative');
+
+        $this->usage->addBatch([
+            ['tenant' => '1', 'metric' => 'db-negative-default', 'value' => -1],
+        ], Usage::TYPE_EVENT);
+    }
+
+    public function testNegativeValuePersistsWhenOptedIn(): void
+    {
+        if (!extension_loaded('pdo_mysql')) {
+            $this->markTestSkipped('pdo_mysql extension is not installed');
+        }
+
+        $this->usage->purge('1', [], Usage::TYPE_EVENT);
+
+        // A signed delta opts in per row. The accumulator sets this flag and
+        // the ClickHouse adapter honours it; an adapter that ignored it would
+        // reject the row on every flush, since a failed batch stays buffered.
+        $this->assertTrue($this->usage->addBatch([
+            ['tenant' => '1', 'metric' => 'db-negative-optin', 'value' => -3, 'allowNegative' => true],
+        ], Usage::TYPE_EVENT));
+
+        $this->assertEquals(
+            -3,
+            $this->usage->sum('1', [Query::equal('metric', ['db-negative-optin'])], 'value', Usage::TYPE_EVENT),
+            'the opted-in negative must be stored, not silently dropped',
+        );
     }
 }
