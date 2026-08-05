@@ -16,7 +16,7 @@ class Accumulator
     private Usage $usage;
 
     /**
-     * @var array<string, array{tenant: string, metric: string, value: int, type: string, tags: array<string, mixed>, time?: \DateTime}>
+     * @var array<string, array{tenant: string, metric: string, value: int, type: string, tags: array<string, mixed>, allowNegative: bool, time?: \DateTime}>
      */
     private array $buffer = [];
 
@@ -38,9 +38,16 @@ class Accumulator
      * Events fold additively; earliest non-null time wins on merge.
      * Gauges use last-write-wins.
      *
+     * Negative values are rejected by default for every metric, so a buggy
+     * negative count/bandwidth is still caught. A caller that emits a genuine
+     * signed delta (e.g. realtime connections `+1`/`-1`) opts in per call with
+     * `$allowNegative = true`. The library stays generic — the decision lives
+     * with the caller, not with any metric-name knowledge here.
+     *
      * @param array<string,mixed> $tags
+     * @param bool $allowNegative Permit a negative value for this metric (default: reject).
      */
-    public function collect(string $tenant, string $metric, int $value, string $type, array $tags = [], ?\DateTime $time = null): self
+    public function collect(string $tenant, string $metric, int $value, string $type, array $tags = [], ?\DateTime $time = null, bool $allowNegative = false): self
     {
         // Compare against '' rather than empty(): the string "0" is a valid
         // tenant/metric id but empty("0") is true in PHP.
@@ -50,7 +57,7 @@ class Accumulator
         if ($metric === '') {
             throw new \InvalidArgumentException('Metric name cannot be empty');
         }
-        if ($value < 0) {
+        if ($value < 0 && !$allowNegative) {
             throw new \InvalidArgumentException('Value cannot be negative');
         }
         if ($type !== Usage::TYPE_EVENT && $type !== Usage::TYPE_GAUGE) {
@@ -68,6 +75,15 @@ class Accumulator
         if ($type === Usage::TYPE_EVENT && isset($this->buffer[$key])) {
             // earliest time wins on merge
             $this->buffer[$key]['value'] += $value;
+
+            // The opt-in is a property of the folded row, not of whichever
+            // call happened to create it. Folding a signed delta into an entry
+            // opened by a plain positive must not leave the net row looking
+            // unauthorised: it would be rejected at write time, and since a
+            // failed batch keeps its entries buffered, every later flush would
+            // retry the same rejection.
+            $this->buffer[$key]['allowNegative'] = $this->buffer[$key]['allowNegative'] || $allowNegative;
+
             if ($time !== null && (!isset($this->buffer[$key]['time']) || $time < $this->buffer[$key]['time'])) {
                 $this->buffer[$key]['time'] = $time;
             }
@@ -78,6 +94,7 @@ class Accumulator
                 'value' => $value,
                 'type' => $type,
                 'tags' => $tags,
+                'allowNegative' => $allowNegative,
             ];
             if ($time !== null) {
                 $entry['time'] = $time;

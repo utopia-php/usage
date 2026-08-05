@@ -26,11 +26,31 @@ use Utopia\Query\Query;
  * switches from raw row returns to aggregated results grouped by time bucket:
  * - Events: SUM(value) per bucket
  * - Gauges: argMax(value, time) per bucket
+ *
+ * An `aggregate` hint overrides how values are combined: `max` takes the
+ * largest value per bucket, which is how a gauge level series rolls up to a
+ * coarser interval — the default `argMax` would return the latest reading
+ * rather than the highest.
  */
 class UsageQuery extends Query
 {
     public const TYPE_GROUP_BY_INTERVAL = 'groupByInterval';
     public const TYPE_GROUP_BY = 'groupBy';
+    public const TYPE_AGGREGATE = 'aggregate';
+
+    /**
+     * Valid aggregation functions.
+     *
+     * - `max` — the largest value per bucket, overriding the per-type default.
+     *   Intended for gauges, where the default `argMax(value, time)` returns the
+     *   *latest* reading rather than the highest one. Reading a pre-computed
+     *   level series (e.g. realtime concurrency sampled every 5 minutes) at a
+     *   coarser interval needs the peak of the samples, not the last one.
+     *
+     * There is deliberately no `sum`: it is already the default for events, and
+     * on gauges it would total point-in-time snapshots, which means nothing.
+     */
+    public const VALID_AGGREGATES = ['max'];
 
     /**
      * Valid interval values and their ClickHouse INTERVAL equivalents.
@@ -51,7 +71,7 @@ class UsageQuery extends Query
      */
     public static function isMethod(string $value): bool
     {
-        if ($value === self::TYPE_GROUP_BY_INTERVAL || $value === self::TYPE_GROUP_BY) {
+        if ($value === self::TYPE_GROUP_BY_INTERVAL || $value === self::TYPE_GROUP_BY || $value === self::TYPE_AGGREGATE) {
             return true;
         }
 
@@ -178,6 +198,74 @@ class UsageQuery extends Query
     {
         return array_values(array_filter($queries, function (Query $query) {
             return !self::isGroupBy($query);
+        }));
+    }
+
+    /**
+     * Create an aggregate query selecting the aggregation function.
+     *
+     * `max` takes the largest value in the bucket, overriding the per-type
+     * default — the meaningful roll-up for a gauge level series, whose default
+     * `argMax(value, time)` would return the latest reading.
+     * See {@see UsageQuery::VALID_AGGREGATES}.
+     *
+     * @param string $function One of {@see UsageQuery::VALID_AGGREGATES}.
+     * @return self
+     */
+    public static function aggregate(string $function): self
+    {
+        if (!in_array($function, self::VALID_AGGREGATES, true)) {
+            throw new \InvalidArgumentException(
+                "Invalid aggregate '{$function}'. Allowed: " . implode(', ', self::VALID_AGGREGATES)
+            );
+        }
+
+        return new self(self::TYPE_AGGREGATE, 'value', [$function]);
+    }
+
+    /**
+     * Check if a query is an aggregate query.
+     *
+     * @param Query $query
+     * @return bool
+     */
+    public static function isAggregate(Query $query): bool
+    {
+        return $query->getMethod() === self::TYPE_AGGREGATE;
+    }
+
+    /**
+     * Extract the aggregation function from an array of queries, if present.
+     *
+     * Queries parsed via `Query::parse()` are base `Query` objects rather than
+     * `UsageQuery` instances, so we match on the method string alone.
+     *
+     * @param array<Query> $queries
+     * @return string|null The aggregation function, or null if not present.
+     */
+    public static function extractAggregate(array $queries): ?string
+    {
+        foreach ($queries as $query) {
+            if (self::isAggregate($query)) {
+                $value = $query->getValues()[0] ?? null;
+
+                return is_string($value) ? $value : null;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Remove all aggregate queries from an array of queries.
+     *
+     * @param array<Query> $queries
+     * @return array<Query>
+     */
+    public static function removeAggregate(array $queries): array
+    {
+        return array_values(array_filter($queries, function (Query $query) {
+            return !self::isAggregate($query);
         }));
     }
 }

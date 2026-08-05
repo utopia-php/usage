@@ -1115,6 +1115,13 @@ class ClickHouse extends SQL
     {
         $allowed = $type === Usage::TYPE_GAUGE ? Metric::GAUGE_COLUMNS : Metric::EVENT_COLUMNS;
 
+        // `tenant` is a real column in shared-tables mode, not a dimension on
+        // Metric. Grouping by it is what makes a cross-tenant read
+        // ({@see findAcrossTenants}) attributable, so allow it there.
+        if ($this->sharedTables) {
+            $allowed[] = 'tenant';
+        }
+
         if (in_array($attribute, $allowed, true)) {
             return true;
         }
@@ -1279,9 +1286,10 @@ class ClickHouse extends SQL
      * @param string $type Metric type ('event' or 'gauge')
      * @param array<string,mixed> $tags Tags
      * @param int|null $metricIndex Index for batch error messages
+     * @param bool $allowNegative Permit a negative value for this row (default: reject)
      * @throws Exception
      */
-    private function validateMetricData(string $metric, int $value, string $type, array $tags, ?int $metricIndex = null): void
+    private function validateMetricData(string $metric, int $value, string $type, array $tags, ?int $metricIndex = null, bool $allowNegative = false): void
     {
         $prefix = $metricIndex !== null ? "Metric #{$metricIndex}: " : '';
 
@@ -1293,7 +1301,11 @@ class ClickHouse extends SQL
             throw new Exception($prefix . 'Metric exceeds maximum size of 255 characters');
         }
 
-        if ($value < 0) {
+        // Negatives are rejected by default so a buggy negative count/bandwidth
+        // is caught. A row opts in with `allowNegative` for genuine signed
+        // deltas (realtime connections emit +1/-1). The library stays generic —
+        // the caller decides which metrics may be negative.
+        if ($value < 0 && !$allowNegative) {
             throw new Exception($prefix . 'Value cannot be negative');
         }
 
@@ -1331,7 +1343,10 @@ class ClickHouse extends SQL
 
             /** @var array<string, mixed> */
             $tags = $metricData['tags'] ?? [];
-            $this->validateMetricData($metric, $value, $type, $tags, $index);
+            // `allowNegative` is a validation-only flag carried on the row; it
+            // gates the negative-value guard and is never stored as a column.
+            $allowNegative = (bool) ($metricData['allowNegative'] ?? false);
+            $this->validateMetricData($metric, $value, $type, $tags, $index, $allowNegative);
 
             $hasTenant = array_key_exists('tenant', $metricData);
 
@@ -1452,6 +1467,44 @@ class ClickHouse extends SQL
     {
         $this->setOperationContext('find()');
 
+        return $this->findScoped($tenant, $queries, $type);
+    }
+
+    /**
+     * Find metrics across every tenant. Applies no tenant filter, so it is
+     * restricted to shared-tables mode and reserved for operator-side
+     * aggregation jobs — see {@see Adapter::findAcrossTenants()}.
+     *
+     * Callers should add `groupBy('tenant')` to keep rows attributable; the
+     * aggregated paths already carry `tenant` through select/group-by in
+     * shared-tables mode.
+     *
+     * @param array<Query> $queries
+     * @param string|null $type
+     * @return array<Metric>
+     * @throws Exception
+     */
+    public function findAcrossTenants(array $queries = [], ?string $type = null): array
+    {
+        $this->setOperationContext('findAcrossTenants()');
+
+        if (!$this->sharedTables) {
+            throw new Exception('findAcrossTenants() requires shared-tables mode; use find() instead');
+        }
+
+        return $this->findScoped(null, $queries, $type);
+    }
+
+    /**
+     * Shared body for find()/findAcrossTenants(). A null $tenant means no
+     * tenant filter (cross-tenant); a string scopes to that tenant.
+     *
+     * @param array<Query> $queries
+     * @return array<Metric>
+     * @throws Exception
+     */
+    private function findScoped(?string $tenant, array $queries, ?string $type): array
+    {
         if ($type !== null) {
             return $this->findFromTable($tenant, $queries, $type);
         }
@@ -1533,12 +1586,15 @@ class ClickHouse extends SQL
      * - Gauges: SELECT metric, argMax(value, time) as value, toStartOfInterval(time, INTERVAL ...) as time
      * Results are grouped by metric and time bucket, ordered by time ASC.
      *
+     * An `aggregate('max')` query overrides the per-type default value
+     * expression — see {@see findAggregatedFromTable()}.
+     *
      * @param array<Query> $queries
      * @param string $type 'event' or 'gauge'
      * @return array<Metric>
      * @throws Exception
      */
-    private function findFromTable(string $tenant, array $queries, string $type): array
+    private function findFromTable(?string $tenant, array $queries, string $type): array
     {
         $tableName = $this->getTableForType($type);
         $fromTable = $this->buildTableReference($tableName);
@@ -1551,9 +1607,17 @@ class ClickHouse extends SQL
             throw new Exception('Cursor pagination cannot be combined with groupByInterval');
         }
 
-        // Route through the aggregated path whenever any aggregation
-        // hint is present — time bucketing, dimension breakdown, or both.
-        if (isset($parsed['groupByInterval']) || !empty($parsed['groupBy'])) {
+        // Route through the aggregated path whenever any aggregation hint is
+        // present — time bucketing, dimension breakdown, an explicit
+        // aggregate(), or any combination. An aggregate() on its own still
+        // counts: `aggregate('max')` with no interval and no dimensions is the
+        // flat "highest value over this window" shape, and without this it
+        // would fall through and return raw rows instead.
+        if (
+            isset($parsed['groupByInterval'])
+            || !empty($parsed['groupBy'])
+            || isset($parsed['aggregate'])
+        ) {
             return $this->findAggregatedFromTable($parsed, $fromTable, $type);
         }
 
@@ -1614,7 +1678,7 @@ class ClickHouse extends SQL
      *          toStartOfInterval(time, INTERVAL 1 HOUR) as time
      *   FROM table WHERE ... GROUP BY metric, time ORDER BY time ASC
      *
-     * @param array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>} $parsed Parsed query data from parseQueries()
+     * @param array{filters: array<string>, params: array<string, mixed>, orderBy?: array<string>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, aggregate?: string} $parsed Parsed query data from parseQueries()
      * @param string $fromTable Fully qualified table reference
      * @param string $type 'event' or 'gauge'
      * @return array<Metric>
@@ -1624,10 +1688,17 @@ class ClickHouse extends SQL
     {
         $hasInterval = isset($parsed['groupByInterval']);
 
-        // Choose aggregation function based on metric type
+        // Choose aggregation function based on metric type. `aggregate('max')`
+        // overrides both defaults: for gauges it takes the highest reading in
+        // the bucket rather than the latest one (argMax), which is what rolling
+        // a sampled level series up to a coarser interval needs.
         $valueExpr = $type === Usage::TYPE_GAUGE
             ? 'argMax(value, time) as value'
             : 'SUM(value) as value';
+
+        if (($parsed['aggregate'] ?? null) === 'max') {
+            $valueExpr = 'max(value) as value';
+        }
 
         // Bucket column is only emitted when time bucketing is requested.
         // Without it the result is a flat aggregate per (metric, …dims).
@@ -3470,15 +3541,18 @@ class ClickHouse extends SQL
      * @param string $tenant Tenant scope (shared-tables mode)
      * @param array<Query> $queries
      * @param string $type 'event' or 'gauge' — used for attribute validation
-     * @return array{filters: array<int, string>, params: array<string, mixed>, orderBy?: array<string>, orderAttributes?: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, cursor?: array<string, mixed>, cursorDirection?: string}
+     * @return array{filters: array<int, string>, params: array<string, mixed>, orderBy?: array<string>, orderAttributes?: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int, groupByInterval?: string, groupBy?: array<int, string>, aggregate?: string, cursor?: array<string, mixed>, cursorDirection?: string}
      * @throws Exception
      */
-    private function parseQueries(string $tenant, array $queries, string $type = 'event'): array
+    private function parseQueries(?string $tenant, array $queries, string $type = 'event'): array
     {
-        if ($this->sharedTables) {
-            // An empty tenant would compile to `tenant = ''` and silently read
-            // an empty scope. Fail fast instead, like the write side. ("0" is
-            // a valid tenant id, so check for '' specifically.)
+        // A null tenant is the explicit cross-tenant read used by operator-side
+        // aggregation ({@see findAcrossTenants}) — no tenant filter is applied.
+        // It is deliberately distinct from '': an empty string would compile to
+        // `tenant = ''` and silently read an empty scope, so that still fails
+        // fast, like the write side. ("0" is a valid tenant id, so check for ''
+        // specifically.)
+        if ($this->sharedTables && $tenant !== null) {
             if ($tenant === '') {
                 throw new Exception('Tenant cannot be empty in shared-tables mode');
             }
@@ -3493,6 +3567,7 @@ class ClickHouse extends SQL
         $offset = null;
         $groupByInterval = null;
         $groupBy = [];
+        $aggregate = null;
         $cursor = null;
         $cursorDirection = null;
         $paramCounter = 0;
@@ -3739,6 +3814,16 @@ class ClickHouse extends SQL
                         $groupBy[] = $attribute;
                     }
                     break;
+
+                case UsageQuery::TYPE_AGGREGATE:
+                    $aggValue = $values[0] ?? null;
+                    if (!is_string($aggValue) || !in_array($aggValue, UsageQuery::VALID_AGGREGATES, true)) {
+                        throw new Exception(
+                            'Invalid aggregate: expected one of ' . implode(', ', UsageQuery::VALID_AGGREGATES)
+                        );
+                    }
+                    $aggregate = $aggValue;
+                    break;
             }
         }
 
@@ -3766,6 +3851,10 @@ class ClickHouse extends SQL
 
         if (!empty($groupBy)) {
             $result['groupBy'] = $groupBy;
+        }
+
+        if ($aggregate !== null) {
+            $result['aggregate'] = $aggregate;
         }
 
         if ($cursor !== null && $cursorDirection !== null) {
