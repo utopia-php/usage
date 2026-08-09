@@ -232,4 +232,102 @@ class UsageQueryTest extends TestCase
         $this->assertCount(1, $extracted);
         $this->assertEquals('service', $extracted[0]->getAttribute());
     }
+
+    public function testAggregateCreation(): void
+    {
+        $query = UsageQuery::aggregate('max');
+
+        $this->assertInstanceOf(UsageQuery::class, $query);
+        // Since query 0.3 the function is the method itself rather than a
+        // TYPE_AGGREGATE string with the name in the values. Values stay empty:
+        // base Query::max() reserves them for an alias.
+        $this->assertSame(Method::Max, $query->getMethod());
+        $this->assertSame('value', $query->getAttribute());
+        $this->assertSame([], $query->getValues());
+        $this->assertSame('max', UsageQuery::extractAggregate([$query]));
+    }
+
+    public function testAggregateAcceptsAllValidFunctions(): void
+    {
+        foreach (UsageQuery::VALID_AGGREGATES as $function) {
+            $query = UsageQuery::aggregate($function);
+            $this->assertSame($function, UsageQuery::extractAggregate([$query]));
+        }
+    }
+
+    public function testAggregateRejectsInvalidFunction(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("Invalid aggregate 'peak'");
+        UsageQuery::aggregate('peak');
+    }
+
+    public function testAggregateIsMethod(): void
+    {
+        // No override needed any more - 'max' is a real method in query 0.3,
+        // so the base implementation resolves it through Method::tryFrom().
+        $this->assertTrue(UsageQuery::isMethod('max'));
+    }
+
+    public function testIsAggregate(): void
+    {
+        $aggregate = UsageQuery::aggregate('max');
+        $regular = Query::equal('metric', ['bandwidth']);
+
+        $this->assertTrue(UsageQuery::isAggregate($aggregate));
+        $this->assertFalse(UsageQuery::isAggregate($regular));
+    }
+
+    public function testExtractAggregate(): void
+    {
+        $queries = [
+            Query::equal('metric', ['realtime.connections']),
+            UsageQuery::aggregate('max'),
+        ];
+
+        $this->assertEquals('max', UsageQuery::extractAggregate($queries));
+    }
+
+    public function testExtractAggregateFromParsedQuery(): void
+    {
+        // Queries created via Query::parse() are base Query objects, not UsageQuery.
+        $parsedAggregate = new Query(Method::Max, 'value', []);
+        $equal = Query::equal('metric', ['realtime.connections']);
+
+        $this->assertEquals('max', UsageQuery::extractAggregate([$equal, $parsedAggregate]));
+    }
+
+    public function testExtractAggregateReturnsNullWhenMissing(): void
+    {
+        $queries = [
+            Query::equal('metric', ['realtime.connections']),
+            UsageQuery::groupByInterval('time', '1h'),
+        ];
+
+        $this->assertNull(UsageQuery::extractAggregate($queries));
+    }
+
+    public function testRemoveAggregate(): void
+    {
+        $queries = [
+            Query::equal('metric', ['realtime.connections']),
+            UsageQuery::aggregate('max'),
+            UsageQuery::groupByInterval('time', '1h'),
+        ];
+
+        $remaining = UsageQuery::removeAggregate($queries);
+
+        $this->assertCount(2, $remaining);
+        foreach ($remaining as $query) {
+            $this->assertNotSame(Method::Max, $query->getMethod());
+        }
+    }
+
+    public function testValidAggregatesConstant(): void
+    {
+        // `max` is the only selectable aggregate: it overrides the per-type
+        // default. `sum` is absent on purpose - already the default for events,
+        // and on gauges it would total point-in-time snapshots.
+        $this->assertSame(['max'], UsageQuery::VALID_AGGREGATES);
+    }
 }

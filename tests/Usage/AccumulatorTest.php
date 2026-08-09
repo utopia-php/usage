@@ -275,11 +275,82 @@ class AccumulatorTest extends TestCase
         $this->assertEquals(30, $this->adapter->batches[0]['metrics'][0]['value']);
     }
 
-    public function testNegativeValueThrows(): void
+    public function testGaugeNegativeValueThrows(): void
     {
+        // Gauges are snapshots (e.g. storage); callers never opt in, so
+        // negatives still throw by default.
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Value cannot be negative');
+        $this->accumulator->collect('t1', 'storage', -1, Usage::TYPE_GAUGE);
+    }
+
+    public function testNegativeValueRejectedByDefaultForEvents(): void
+    {
+        // Default is strict for every metric, events included, so a buggy
+        // negative count is caught unless the caller explicitly opts in.
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Value cannot be negative');
         $this->accumulator->collect('t1', 'requests', -1, Usage::TYPE_EVENT);
+    }
+
+    public function testEventNegativeValueAllowedWhenOptedIn(): void
+    {
+        // Genuine signed deltas (realtime connections emit +1/-1) opt in per
+        // call with allowNegative, so a lone -1 persists rather than throws.
+        $this->accumulator->collect('t1', 'realtime.connections', -1, Usage::TYPE_EVENT, allowNegative: true);
+
+        $this->assertEquals(1, $this->accumulator->count());
+        $this->assertTrue($this->accumulator->flush());
+        $entry = $this->adapter->batches[0]['metrics'][0];
+        $this->assertEquals(-1, $entry['value']);
+        // The opt-in flag rides along on the row so addBatch can honour it.
+        $this->assertTrue($entry['allowNegative']);
+    }
+
+    public function testEventMixedSignsNetToDelta(): void
+    {
+        // +1,+1,-1 folds to a net delta of +1 for the metric.
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT, allowNegative: true);
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT, allowNegative: true);
+        $this->accumulator->collect('t1', 'realtime.connections', -1, Usage::TYPE_EVENT, allowNegative: true);
+
+        $this->assertEquals(1, $this->accumulator->count());
+        $this->assertTrue($this->accumulator->flush());
+        $this->assertEquals(1, $this->adapter->batches[0]['metrics'][0]['value']);
+    }
+
+    public function testFoldedEntryKeepsTheNegativeOptIn(): void
+    {
+        // The opt-in belongs to the folded row, not to whichever call opened
+        // it. Here the entry is created by a plain positive with the flag off,
+        // then a signed delta folds in and takes the net negative.
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT);
+        $this->accumulator->collect('t1', 'realtime.connections', -3, Usage::TYPE_EVENT, allowNegative: true);
+
+        $this->assertEquals(1, $this->accumulator->count());
+        $this->assertTrue($this->accumulator->flush());
+
+        $entry = $this->adapter->batches[0]['metrics'][0];
+        $this->assertEquals(-2, $entry['value']);
+
+        // Without this the net row is written unauthorised and rejected at
+        // validation. A failed batch keeps its entries buffered, so every
+        // later flush would retry the same rejection.
+        $this->assertTrue($entry['allowNegative']);
+    }
+
+    public function testFoldRetainsOptInRegardlessOfCallOrder(): void
+    {
+        // Same fold, opposite order: the entry is opened by the opted-in
+        // delta and a plain positive folds in afterwards.
+        $this->accumulator->collect('t1', 'realtime.connections', -3, Usage::TYPE_EVENT, allowNegative: true);
+        $this->accumulator->collect('t1', 'realtime.connections', 1, Usage::TYPE_EVENT);
+
+        $this->assertTrue($this->accumulator->flush());
+
+        $entry = $this->adapter->batches[0]['metrics'][0];
+        $this->assertEquals(-2, $entry['value']);
+        $this->assertTrue($entry['allowNegative']);
     }
 
     public function testInvalidTypeThrows(): void
