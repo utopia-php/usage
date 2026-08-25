@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased — query 0.3.x builder
+## Unreleased — query 0.6.x builder
 
 ### Breaking
 
-- Bumped `utopia-php/query` from `0.1.*` to `0.3.*`.
+- Bumped `utopia-php/query` from `0.1.*` to `0.6.*`.
   `Query::getMethod()` now returns the `Utopia\Query\Method` enum
   instead of a string, and the `Query::TYPE_*` /
   `UsageQuery::TYPE_GROUP_BY_INTERVAL` / `UsageQuery::TYPE_GROUP_BY`

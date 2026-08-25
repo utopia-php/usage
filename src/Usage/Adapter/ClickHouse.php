@@ -3847,6 +3847,11 @@ class ClickHouse extends SQL
                     // name so the rest of the adapter still works in strings.
                     $aggregate = UsageQuery::extractAggregate([$query]);
                     break;
+                default:
+                    // Same guard the Database adapter carries: a method with no
+                    // arm would contribute nothing and the caller would get a
+                    // wider result than it asked for. Fail where it can be seen.
+                    throw new Exception('Unsupported query method for the ClickHouse adapter: ' . $method->value);
             }
         }
 
