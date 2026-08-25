@@ -105,49 +105,6 @@ class UsageQuery extends Query
     }
 
     /**
-     * Check if a query is a groupByInterval query.
-     *
-     * @param Query $query
-     * @return bool
-     */
-    public static function isGroupByInterval(Query $query): bool
-    {
-        return $query->getMethod() === Method::GroupByTimeBucket;
-    }
-
-    /**
-     * Extract the groupByInterval query from an array of queries, if present.
-     *
-     * @param array<Query> $queries
-     * @return Query|null The groupByInterval query, or null if not present
-     */
-    public static function extractGroupByInterval(array $queries): ?Query
-    {
-        foreach ($queries as $query) {
-            if (self::isGroupByInterval($query)) {
-                return $query;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Remove groupByInterval queries from an array of queries.
-     *
-     * Returns the remaining queries that should be processed normally.
-     *
-     * @param array<Query> $queries
-     * @return array<Query>
-     */
-    public static function removeGroupByInterval(array $queries): array
-    {
-        return array_values(array_filter($queries, function (Query $query) {
-            return !self::isGroupByInterval($query);
-        }));
-    }
-
-    /**
      * Create a groupBy query for dimensional aggregation.
      *
      * Buckets results by the given attribute in addition to the time bucket
@@ -163,47 +120,6 @@ class UsageQuery extends Query
         }
 
         return parent::groupBy($attributes);
-    }
-
-    /**
-     * Check if a query is a groupBy query.
-     *
-     * @param Query $query
-     * @return bool
-     */
-    public static function isGroupBy(Query $query): bool
-    {
-        return $query->getMethod() === Method::GroupBy;
-    }
-
-    /**
-     * Extract all groupBy queries from an array of queries.
-     *
-     * Multiple groupBy queries can coexist (group by service AND status), so
-     * this returns every match rather than the single-instance form used by
-     * groupByInterval.
-     *
-     * @param array<Query> $queries
-     * @return array<Query>
-     */
-    public static function extractGroupBy(array $queries): array
-    {
-        return array_values(array_filter($queries, function (Query $query) {
-            return self::isGroupBy($query);
-        }));
-    }
-
-    /**
-     * Remove all groupBy queries from an array of queries.
-     *
-     * @param array<Query> $queries
-     * @return array<Query>
-     */
-    public static function removeGroupBy(array $queries): array
-    {
-        return array_values(array_filter($queries, function (Query $query) {
-            return !self::isGroupBy($query);
-        }));
     }
 
     /**
@@ -231,17 +147,6 @@ class UsageQuery extends Query
     }
 
     /**
-     * Check if a query is an aggregate query.
-     *
-     * @param Query $query
-     * @return bool
-     */
-    public static function isAggregate(Query $query): bool
-    {
-        return \in_array($query->getMethod(), self::AGGREGATE_METHODS, true);
-    }
-
-    /**
      * Extract the aggregation function from an array of queries, if present.
      *
      * Queries parsed via `Query::parse()` are base `Query` objects rather than
@@ -263,16 +168,4 @@ class UsageQuery extends Query
         return null;
     }
 
-    /**
-     * Remove all aggregate queries from an array of queries.
-     *
-     * @param array<Query> $queries
-     * @return array<Query>
-     */
-    public static function removeAggregate(array $queries): array
-    {
-        return array_values(array_filter($queries, function (Query $query) {
-            return !self::isAggregate($query);
-        }));
-    }
 }

@@ -43,72 +43,6 @@ class UsageQueryTest extends TestCase
         UsageQuery::groupByInterval('time', '');
     }
 
-    public function testIsGroupByInterval(): void
-    {
-        $groupByQuery = UsageQuery::groupByInterval('time', '1h');
-        $regularQuery = Query::equal('metric', ['bandwidth']);
-
-        $this->assertTrue(UsageQuery::isGroupByInterval($groupByQuery));
-        $this->assertFalse(UsageQuery::isGroupByInterval($regularQuery));
-    }
-
-    public function testExtractGroupByInterval(): void
-    {
-        $groupByQuery = UsageQuery::groupByInterval('time', '1h');
-        $equalQuery = Query::equal('metric', ['bandwidth']);
-        $timeQuery = Query::greaterThanEqual('time', '2026-03-01');
-
-        $queries = [$equalQuery, $groupByQuery, $timeQuery];
-
-        $extracted = UsageQuery::extractGroupByInterval($queries);
-
-        $this->assertNotNull($extracted);
-        $this->assertInstanceOf(Query::class, $extracted);
-        $this->assertEquals(Method::GroupByTimeBucket, $extracted->getMethod());
-        $this->assertEquals('1h', $extracted->getValue());
-    }
-
-    public function testExtractGroupByIntervalFromParsedQuery(): void
-    {
-        // Queries created via Query::parse() are base Query objects, not UsageQuery.
-        $parsedGroupBy = new Query(Method::GroupByTimeBucket, 'time', ['1h']);
-        $equalQuery = Query::equal('metric', ['bandwidth']);
-
-        $queries = [$equalQuery, $parsedGroupBy];
-
-        $extracted = UsageQuery::extractGroupByInterval($queries);
-
-        $this->assertNotNull($extracted);
-        $this->assertEquals(Method::GroupByTimeBucket, $extracted->getMethod());
-        $this->assertEquals('1h', $extracted->getValue());
-    }
-
-    public function testExtractGroupByIntervalReturnsNullWhenMissing(): void
-    {
-        $queries = [
-            Query::equal('metric', ['bandwidth']),
-            Query::greaterThanEqual('time', '2026-03-01'),
-        ];
-
-        $this->assertNull(UsageQuery::extractGroupByInterval($queries));
-    }
-
-    public function testRemoveGroupByInterval(): void
-    {
-        $groupByQuery = UsageQuery::groupByInterval('time', '1h');
-        $equalQuery = Query::equal('metric', ['bandwidth']);
-        $timeQuery = Query::greaterThanEqual('time', '2026-03-01');
-
-        $queries = [$equalQuery, $groupByQuery, $timeQuery];
-        $remaining = UsageQuery::removeGroupByInterval($queries);
-
-        $this->assertCount(2, $remaining);
-
-        foreach ($remaining as $query) {
-            $this->assertNotEquals(Method::GroupByTimeBucket, $query->getMethod());
-        }
-    }
-
     public function testValidIntervalsConstant(): void
     {
         $this->assertArrayHasKey('1m', UsageQuery::VALID_INTERVALS);
@@ -143,68 +77,6 @@ class UsageQueryTest extends TestCase
         $this->assertEquals([], $query->getValues());
     }
 
-    public function testGroupByIsMethod(): void
-    {
-        $this->assertTrue(UsageQuery::isMethod(Method::GroupBy->value));
-        $this->assertTrue(UsageQuery::isMethod(Method::GroupByTimeBucket->value));
-        $this->assertTrue(UsageQuery::isMethod(Method::Equal->value));
-        $this->assertFalse(UsageQuery::isMethod('notARealMethod'));
-    }
-
-    public function testIsGroupBy(): void
-    {
-        $groupBy = UsageQuery::groupBy('service');
-        $groupByInterval = UsageQuery::groupByInterval('time', '1h');
-        $regular = Query::equal('metric', ['bandwidth']);
-
-        $this->assertTrue(UsageQuery::isGroupBy($groupBy));
-        $this->assertFalse(UsageQuery::isGroupBy($groupByInterval));
-        $this->assertFalse(UsageQuery::isGroupBy($regular));
-    }
-
-    public function testExtractGroupByReturnsAllMatches(): void
-    {
-        $byService = UsageQuery::groupBy('service');
-        $byPath = UsageQuery::groupBy('path');
-        $interval = UsageQuery::groupByInterval('time', '1h');
-        $equal = Query::equal('metric', ['bandwidth']);
-
-        $queries = [$equal, $byService, $interval, $byPath];
-
-        $extracted = UsageQuery::extractGroupBy($queries);
-
-        $this->assertCount(2, $extracted);
-        $this->assertEquals('service', $extracted[0]->getAttribute());
-        $this->assertEquals('path', $extracted[1]->getAttribute());
-    }
-
-    public function testExtractGroupByReturnsEmptyWhenAbsent(): void
-    {
-        $queries = [
-            Query::equal('metric', ['bandwidth']),
-            UsageQuery::groupByInterval('time', '1h'),
-        ];
-
-        $this->assertSame([], UsageQuery::extractGroupBy($queries));
-    }
-
-    public function testRemoveGroupBy(): void
-    {
-        $byService = UsageQuery::groupBy('service');
-        $byPath = UsageQuery::groupBy('path');
-        $interval = UsageQuery::groupByInterval('time', '1h');
-        $equal = Query::equal('metric', ['bandwidth']);
-
-        $queries = [$equal, $byService, $interval, $byPath];
-
-        $remaining = UsageQuery::removeGroupBy($queries);
-
-        $this->assertCount(2, $remaining);
-        foreach ($remaining as $query) {
-            $this->assertNotEquals(Method::GroupBy, $query->getMethod());
-        }
-    }
-
     public function testGroupByParseRoundTrip(): void
     {
         $json = json_encode([
@@ -219,18 +91,6 @@ class UsageQueryTest extends TestCase
         $this->assertEquals(Method::GroupBy, $parsed->getMethod());
         $this->assertEquals('service', $parsed->getAttribute());
         $this->assertEquals([], $parsed->getValues());
-    }
-
-    public function testExtractGroupByFromParsedQuery(): void
-    {
-        // Queries created via Query::parse() are base Query objects, not UsageQuery.
-        $parsedGroupBy = new Query(Method::GroupBy, 'service', []);
-        $equal = Query::equal('metric', ['bandwidth']);
-
-        $extracted = UsageQuery::extractGroupBy([$equal, $parsedGroupBy]);
-
-        $this->assertCount(1, $extracted);
-        $this->assertEquals('service', $extracted[0]->getAttribute());
     }
 
     public function testAggregateCreation(): void
@@ -262,22 +122,6 @@ class UsageQueryTest extends TestCase
         UsageQuery::aggregate('peak');
     }
 
-    public function testAggregateIsMethod(): void
-    {
-        // No override needed any more - 'max' is a real method in query 0.3,
-        // so the base implementation resolves it through Method::tryFrom().
-        $this->assertTrue(UsageQuery::isMethod('max'));
-    }
-
-    public function testIsAggregate(): void
-    {
-        $aggregate = UsageQuery::aggregate('max');
-        $regular = Query::equal('metric', ['bandwidth']);
-
-        $this->assertTrue(UsageQuery::isAggregate($aggregate));
-        $this->assertFalse(UsageQuery::isAggregate($regular));
-    }
-
     public function testExtractAggregate(): void
     {
         $queries = [
@@ -305,22 +149,6 @@ class UsageQueryTest extends TestCase
         ];
 
         $this->assertNull(UsageQuery::extractAggregate($queries));
-    }
-
-    public function testRemoveAggregate(): void
-    {
-        $queries = [
-            Query::equal('metric', ['realtime.connections']),
-            UsageQuery::aggregate('max'),
-            UsageQuery::groupByInterval('time', '1h'),
-        ];
-
-        $remaining = UsageQuery::removeAggregate($queries);
-
-        $this->assertCount(2, $remaining);
-        foreach ($remaining as $query) {
-            $this->assertNotSame(Method::Max, $query->getMethod());
-        }
     }
 
     public function testValidAggregatesConstant(): void
