@@ -1217,7 +1217,7 @@ class ClickHouse extends SQL
             'clientEngine', 'clientEngineVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
             // metric-scoped dimensions; small closed value spaces per metric
-            'type', 'outcome',
+            'category', 'outcome',
             'hostname', 'ip',
             // premium geo (lower-cardinality only; city/isp/AS org/connection org
             // are high-cardinality and intentionally fall through to Nullable(String))
