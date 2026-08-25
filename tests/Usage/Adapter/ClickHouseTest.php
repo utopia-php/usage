@@ -710,7 +710,7 @@ class ClickHouseTest extends TestCase
 
         // 6. Contains (IN alias)
         $results = $this->usage->find('1', [
-            \Utopia\Query\Query::contains('metric', ['metric-A']),
+            \Utopia\Query\Query::containsString('metric', ['metric-A']),
         ], Usage::TYPE_EVENT);
         $this->assertGreaterThanOrEqual(1, count($results));
 
