@@ -4,6 +4,7 @@ namespace Utopia\Usage\Adapter;
 
 use Utopia\Database\Database as UtopiaDatabase;
 use Utopia\Database\Document;
+use Exception;
 use Utopia\Database\Exception\Duplicate as DuplicateException;
 use Utopia\Database\Query as DatabaseQuery;
 use Utopia\Usage\Metric;
@@ -446,6 +447,10 @@ class Database extends SQL
                     /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
                     $dbQueries[] = DatabaseQuery::contains($attribute, $values);
                     break;
+                case Method::ContainsAny:
+                    /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
+                    $dbQueries[] = DatabaseQuery::containsAny($attribute, $values);
+                    break;
                 case Method::NotEqual:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */
@@ -517,6 +522,14 @@ class Database extends SQL
                     // Database adapter; callers get raw (non-aggregated) results.
                     // Validation runs in validateGroupByQueries() before this loop.
                     break;
+                default:
+                    // A method with no arm used to fall out of this switch and
+                    // contribute no WHERE fragment, so the filter silently did
+                    // not apply and the caller got a wider result set than it
+                    // asked for - a wrong answer that looks like a working
+                    // query. Refuse instead: a method this adapter cannot push
+                    // down has to be visible.
+                    throw new Exception('Unsupported query method for the Database adapter: ' . $method->value);
             }
         }
 

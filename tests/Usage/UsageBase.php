@@ -237,6 +237,35 @@ trait UsageBase
         }
     }
 
+    /**
+     * `containsAny` has to reach the adapter, not fall out of it.
+     *
+     * The Database adapter's switch had no arm for Method::ContainsAny and no
+     * default, so the predicate contributed no WHERE fragment: the query still
+     * succeeded and returned every row, which is a wrong answer wearing the
+     * shape of a working one. The ClickHouse adapter had handled it all along,
+     * so the two backends disagreed on the same query.
+     */
+    public function testContainsAnyFiltersRatherThanBeingDropped(): void
+    {
+        $matching = $this->usage->find('1', [
+            Query::containsAny('metric', ['requests']),
+        ], Usage::TYPE_EVENT);
+
+        $everything = $this->usage->find('1', [], Usage::TYPE_EVENT);
+
+        $this->assertNotEmpty($matching, 'the filter must still match its own rows');
+        $this->assertLessThan(
+            \count($everything),
+            \count($matching),
+            'a dropped predicate returns the unfiltered set, which is the failure this guards',
+        );
+
+        foreach ($matching as $row) {
+            $this->assertSame('requests', $row->getMetric());
+        }
+    }
+
     public function testNotContainsQuery(): void
     {
         // notContains is a negated substring match — excludes any metric
