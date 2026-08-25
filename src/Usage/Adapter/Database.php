@@ -451,6 +451,13 @@ class Database extends SQL
                     /** @var array<array<int|string, mixed>|bool|float|int|string> $values */
                     $dbQueries[] = DatabaseQuery::containsAny($attribute, $values);
                     break;
+                case Method::IsNull:
+                    // Takes no values, so it is not in VALUE_REQUIRED_METHODS.
+                    $dbQueries[] = DatabaseQuery::isNull($attribute);
+                    break;
+                case Method::IsNotNull:
+                    $dbQueries[] = DatabaseQuery::isNotNull($attribute);
+                    break;
                 case Method::NotEqual:
                     if (!empty($values)) {
                         /** @var bool|float|int|string $value */
@@ -518,10 +525,20 @@ class Database extends SQL
 
                 case Method::GroupByTimeBucket:
                 case Method::GroupBy:
-                    // groupByInterval and groupBy are not pushed down to the
-                    // Database adapter; callers get raw (non-aggregated) results.
-                    // Validation runs in validateGroupByQueries() before this loop.
+                case Method::Max:
+                    // groupByInterval, groupBy and aggregate() are not pushed
+                    // down to the Database adapter; callers get raw
+                    // (non-aggregated) results. Validation runs in
+                    // validateGroupByQueries() before this loop.
                     break;
+                case Method::CursorAfter:
+                case Method::CursorBefore:
+                    // This adapter has never implemented cursor pagination, and
+                    // DatabaseQuery's cursors take a Document rather than the
+                    // value carried here. Refusing says so; the previous
+                    // behaviour was to drop the cursor and return an unpaginated
+                    // set, which reads as success.
+                    throw new Exception('The Database adapter does not support cursor pagination; use the ClickHouse adapter or limit/offset.');
                 default:
                     // A method with no arm used to fall out of this switch and
                     // contribute no WHERE fragment, so the filter silently did
