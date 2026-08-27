@@ -1827,7 +1827,7 @@ class ClickHouse extends SQL
 
         $table = $this->buildTableReference($this->getSamplesTableName());
         $sql = <<<SQL
-            SELECT ingestId
+            SELECT concat(ingestId, ':', id, ':', payloadHash) AS entryId
             FROM {$table}
             WHERE environment = {environment:String}
               AND region = {region:String}
@@ -1839,7 +1839,7 @@ class ClickHouse extends SQL
               AND sequence >= {firstSequence:UInt64}
               AND sequence <= {lastSequence:UInt64}
               AND ingestId != ''
-            LIMIT 1 BY ingestId
+            LIMIT 1 BY entryId
             LIMIT {queryLimit:UInt64}
             FORMAT JSON
             SQL;
@@ -1862,12 +1862,12 @@ class ClickHouse extends SQL
             $rows = array_slice($rows, 0, $limit);
         }
 
-        $ingestIds = [];
+        $entries = [];
         foreach ($rows as $row) {
-            $ingestIds[] = self::toStr($row['ingestId'] ?? null);
+            $entries[] = self::toStr($row['entryId'] ?? null);
         }
 
-        return new SampleWatermark($range, $ingestIds, $truncated);
+        return new SampleWatermark($range, $entries, $truncated);
     }
 
     #[\Override]
@@ -1896,9 +1896,16 @@ class ClickHouse extends SQL
                 metric,
                 argMin(
                     tuple(intervalStart, intervalEnd, value, eventVersion, payloadHash),
-                    tuple(payloadHash, intervalStart, intervalEnd, value, eventVersion, ingestId)
+                    tuple(
+                        payloadHash,
+                        intervalStart,
+                        intervalEnd,
+                        value,
+                        eventVersion,
+                        concat(ingestId, ':', id, ':', payloadHash)
+                    )
                 ) AS observation,
-                uniqExact(ingestId) AS copies,
+                uniqExact(concat(ingestId, ':', id, ':', payloadHash)) AS copies,
                 uniqExact(tuple(payloadHash, intervalStart, intervalEnd, value, eventVersion)) AS variants
             FROM {$table}
             WHERE environment = {environment:String}
@@ -1910,7 +1917,7 @@ class ClickHouse extends SQL
               AND metric = {metric:String}
               AND sequence >= {firstSequence:UInt64}
               AND sequence <= {lastSequence:UInt64}
-              AND has({ingestIds:Array(String)}, ingestId)
+              AND has({entries:Array(String)}, concat(ingestId, ':', id, ':', payloadHash))
             GROUP BY
                 environment,
                 region,
@@ -1935,9 +1942,9 @@ class ClickHouse extends SQL
             'metric' => $range->metric,
             'firstSequence' => $range->firstSequence,
             'lastSequence' => $range->lastSequence,
-            'ingestIds' => $watermark->getIngestIds() === []
+            'entries' => $watermark->getEntries() === []
                 ? '[]'
-                : "['" . implode("','", $watermark->getIngestIds()) . "']",
+                : "['" . implode("','", $watermark->getEntries()) . "']",
             'queryLimit' => $limit + 1,
         ]));
 

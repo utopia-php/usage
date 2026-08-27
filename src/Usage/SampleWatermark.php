@@ -7,26 +7,27 @@ use InvalidArgumentException;
 /**
  * Exact bounded membership captured by one adapter snapshot query.
  *
- * IDs are generated inside addSamples() before transport, so a repeated HTTP
- * request retains them while any later logical insert receives different IDs.
+ * Ingestion IDs are generated inside addSamples() before transport. Each
+ * captured entry also binds the canonical and payload hashes, so a repeated
+ * HTTP request retains the same entry while any changed row is excluded.
  */
 final readonly class SampleWatermark
 {
     /**
-     * @param list<string> $ingestIds
+     * @param list<string> $entries
      */
     public function __construct(
         private SampleRange $range,
-        private array $ingestIds,
+        private array $entries,
         private bool $truncated,
     ) {
-        if ($ingestIds !== array_values(array_unique($ingestIds))) {
-            throw new InvalidArgumentException('ingestIds must be a unique list');
+        if ($entries !== array_values(array_unique($entries))) {
+            throw new InvalidArgumentException('entries must be a unique list');
         }
 
-        foreach ($ingestIds as $ingestId) {
-            if (preg_match('/^[a-f0-9]{32}$/', $ingestId) !== 1) {
-                throw new InvalidArgumentException('ingestIds must contain lowercase 128-bit hexadecimal IDs');
+        foreach ($entries as $entry) {
+            if (preg_match('/^[a-f0-9]{32}:[a-f0-9]{64}:[a-f0-9]{64}$/', $entry) !== 1) {
+                throw new InvalidArgumentException('entries must bind an ingestion ID, canonical ID and payload hash');
             }
         }
     }
@@ -47,9 +48,9 @@ final readonly class SampleWatermark
     }
 
     /** @return list<string> */
-    public function getIngestIds(): array
+    public function getEntries(): array
     {
-        return $this->ingestIds;
+        return $this->entries;
     }
 
     public function isTruncated(): bool

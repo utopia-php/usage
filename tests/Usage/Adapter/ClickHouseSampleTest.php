@@ -255,9 +255,9 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
 
         $this->assertTrue($this->usage->addSamples([$sample]));
         $watermark = $this->usage->getSampleWatermark($range, 10);
-        $this->assertCount(1, $watermark->getIngestIds());
+        $this->assertCount(1, $watermark->getEntries());
 
-        $this->insertRawSample($sample, $watermark->getIngestIds()[0]);
+        $this->insertRawSample($sample, $this->ingestId($watermark->getEntries()[0]));
 
         $result = $this->usage->findSamples($range, $watermark, 10);
 
@@ -266,7 +266,7 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
         $this->assertSame(0, $result->getDuplicateCount());
     }
 
-    public function testReusedIngestIdWithDifferentPayloadFailsClosed(): void
+    public function testReusedIngestIdWithDifferentPayloadCannotChangeSnapshot(): void
     {
         $key = bin2hex(random_bytes(8));
         $sample = $this->sample($key, sequence: 0, value: 10);
@@ -274,18 +274,19 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
 
         $this->assertTrue($this->usage->addSamples([$sample]));
         $watermark = $this->usage->getSampleWatermark($range, 10);
-        $this->assertCount(1, $watermark->getIngestIds());
+        $this->assertCount(1, $watermark->getEntries());
 
         $this->insertRawSample(
             $this->sample($key, sequence: 0, value: 11),
-            $watermark->getIngestIds()[0],
+            $this->ingestId($watermark->getEntries()[0]),
         );
 
         $result = $this->usage->findSamples($range, $watermark, 10);
 
-        $this->assertFalse($result->isComplete());
-        $this->assertSame([0], $result->getConflicts());
-        $this->assertSame([], $result->getSamples());
+        $this->assertTrue($result->isComplete());
+        $this->assertSame([], $result->getConflicts());
+        $this->assertCount(1, $result->getSamples());
+        $this->assertSame(10, $result->getSamples()[0]->value);
     }
 
     public function testRejectsWatermarkFromAnotherRange(): void
@@ -340,6 +341,11 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
             'value' => $sample->value,
             'eventVersion' => $sample->eventVersion,
         ]);
+    }
+
+    private function ingestId(string $entry): string
+    {
+        return explode(':', $entry, 2)[0];
     }
 
     private function sample(string $key, int $sequence, int $value = 10, ?int $startMinute = null): Sample

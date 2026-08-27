@@ -245,11 +245,13 @@ if (!$result->isComplete()) {
 
 Each supplied sample row receives an adapter-owned random ingestion ID before
 its request is sent. `getSampleWatermark()` performs one bounded ClickHouse
-snapshot read and captures the exact IDs visible for that stream and range.
-`findSamples()` admits only those IDs, so later inserts cannot cross the
+snapshot read and captures each visible ingestion ID bound to its canonical ID
+and payload hash for that stream and range. `findSamples()` admits only those
+exact entry fingerprints, so later inserts or changed rows cannot cross the
 boundary even when their server timestamps would be identical. A transport
-retry of the same request retains its IDs and is counted once; a new logical
-retry gets a new ID and is included only when visible to the watermark query.
+retry of the same request retains its fingerprint and is counted once; a new
+logical retry gets a new ingestion ID and is included only when visible to the
+watermark query.
 
 Both the watermark evidence and `findSamples()` result are explicitly bounded.
 A result is complete only when neither bound is truncated and there are no

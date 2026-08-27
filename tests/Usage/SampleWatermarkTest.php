@@ -14,29 +14,36 @@ final class SampleWatermarkTest extends TestCase
         $range = $this->range(lastSequence: 1);
         $watermark = new SampleWatermark(
             $range,
-            ['0123456789abcdef0123456789abcdef'],
+            [$this->entry()],
             false,
         );
 
         $this->assertTrue($watermark->matches($range));
         $this->assertFalse($watermark->matches($this->range(lastSequence: 2)));
-        $this->assertSame(['0123456789abcdef0123456789abcdef'], $watermark->getIngestIds());
+        $this->assertSame([$this->entry()], $watermark->getEntries());
         $this->assertFalse($watermark->isTruncated());
     }
 
     public function testRejectsDuplicateIngestIds(): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('ingestIds must be a unique list');
+        $this->expectExceptionMessage('entries must be a unique list');
 
         new SampleWatermark(
             $this->range(lastSequence: 1),
             [
-                '0123456789abcdef0123456789abcdef',
-                '0123456789abcdef0123456789abcdef',
+                $this->entry(),
+                $this->entry(),
             ],
             false,
         );
+    }
+
+    private function entry(): string
+    {
+        return '0123456789abcdef0123456789abcdef'
+            . ':' . str_repeat('a', 64)
+            . ':' . str_repeat('b', 64);
     }
 
     private function range(int $lastSequence): SampleRange
