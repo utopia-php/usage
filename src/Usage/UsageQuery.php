@@ -2,14 +2,17 @@
 
 namespace Utopia\Usage;
 
+use Utopia\Query\Method;
 use Utopia\Query\Query;
 
 /**
  * Usage Query
  *
- * Extends the base Query class with usage-specific query types.
- * Currently adds support for `groupByInterval` which enables time-bucketed
- * aggregated queries in the ClickHouse adapter.
+ * Extends the base Query class with usage-specific query factories.
+ * `groupByInterval` enables time-bucketed aggregated queries in the
+ * ClickHouse adapter (compiled as `Method::GroupByTimeBucket`), and
+ * `groupBy` buckets results by a dimension column
+ * (compiled as `Method::GroupBy`).
  *
  * Example usage:
  * ```php
@@ -19,11 +22,12 @@ use Utopia\Query\Query;
  *     Query::greaterThanEqual('time', '2026-03-01'),
  *     Query::lessThanEqual('time', '2026-04-01'),
  * ];
- * $results = $usage->find($queries, 'event');
+ * $results = $usage->find($tenant, $queries, 'event');
  * ```
  *
- * When `groupByInterval` is present in the queries array, the ClickHouse adapter
- * switches from raw row returns to aggregated results grouped by time bucket:
+ * When a `groupByInterval` query is present in the queries array, the
+ * ClickHouse adapter switches from raw row returns to aggregated results
+ * grouped by time bucket:
  * - Events: SUM(value) per bucket
  * - Gauges: argMax(value, time) per bucket
  *
@@ -34,12 +38,9 @@ use Utopia\Query\Query;
  */
 class UsageQuery extends Query
 {
-    public const TYPE_GROUP_BY_INTERVAL = 'groupByInterval';
-    public const TYPE_GROUP_BY = 'groupBy';
-    public const TYPE_AGGREGATE = 'aggregate';
-
     /**
-     * Valid aggregation functions.
+     * Aggregation functions `aggregate()` accepts, mapped to the query 0.3
+     * `Method` that expresses each one.
      *
      * - `max` — the largest value per bucket, overriding the per-type default.
      *   Intended for gauges, where the default `argMax(value, time)` returns the
@@ -49,6 +50,21 @@ class UsageQuery extends Query
      *
      * There is deliberately no `sum`: it is already the default for events, and
      * on gauges it would total point-in-time snapshots, which means nothing.
+     *
+     * Encoded as a real `Method` rather than the `TYPE_AGGREGATE` string this
+     * carried before the query 0.3 migration, for the same reason
+     * `groupByInterval` and `groupBy` are: 0.3 removed the string method
+     * constants, and `getMethod()` now returns the enum, so a string comparison
+     * would compile and always be false.
+     *
+     * @var array<string, Method>
+     */
+    private const AGGREGATE_METHODS = ['max' => Method::Max];
+
+    /**
+     * Valid aggregation functions, as accepted by `aggregate()`.
+     *
+     * @see UsageQuery::AGGREGATE_METHODS for what each one means.
      */
     public const VALID_AGGREGATES = ['max'];
 
@@ -67,25 +83,14 @@ class UsageQuery extends Query
     ];
 
     /**
-     * Override isMethod to accept groupByInterval and groupBy in addition to all base Query methods.
-     */
-    public static function isMethod(string $value): bool
-    {
-        if ($value === self::TYPE_GROUP_BY_INTERVAL || $value === self::TYPE_GROUP_BY || $value === self::TYPE_AGGREGATE) {
-            return true;
-        }
 
-        return parent::isMethod($value);
-    }
-
-    /**
      * Create a groupByInterval query.
      *
      * When passed to `find()`, this switches the adapter to return time-bucketed
      * aggregated results instead of raw rows.
      *
      * @param string $attribute The time attribute to bucket (usually 'time')
-     * @param string $interval The bucket size: '1m', '5m', '15m', '1h', '1d', '1w', '1M'
+     * @param string $interval The bucket size: '1m', '5m', '15m', '30m', '1h', '1d', '1w', '1M'
      * @return self
      */
     public static function groupByInterval(string $attribute, string $interval): self
@@ -96,53 +101,7 @@ class UsageQuery extends Query
             );
         }
 
-        return new self(self::TYPE_GROUP_BY_INTERVAL, $attribute, [$interval]);
-    }
-
-    /**
-     * Check if a query is a groupByInterval query.
-     *
-     * @param Query $query
-     * @return bool
-     */
-    public static function isGroupByInterval(Query $query): bool
-    {
-        return $query->getMethod() === self::TYPE_GROUP_BY_INTERVAL;
-    }
-
-    /**
-     * Extract the groupByInterval query from an array of queries, if present.
-     *
-     * Queries parsed via `Query::parse()` are base `Query` objects rather than
-     * `UsageQuery` instances, so we match on the method string alone.
-     *
-     * @param array<Query> $queries
-     * @return Query|null The groupByInterval query, or null if not present
-     */
-    public static function extractGroupByInterval(array $queries): ?Query
-    {
-        foreach ($queries as $query) {
-            if ($query->getMethod() === self::TYPE_GROUP_BY_INTERVAL) {
-                return $query;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Remove groupByInterval queries from an array of queries.
-     *
-     * Returns the remaining queries that should be processed normally.
-     *
-     * @param array<Query> $queries
-     * @return array<Query>
-     */
-    public static function removeGroupByInterval(array $queries): array
-    {
-        return array_values(array_filter($queries, function (Query $query) {
-            return !self::isGroupByInterval($query);
-        }));
+        return new self(Method::GroupByTimeBucket, $attribute, [$interval]);
     }
 
     /**
@@ -152,53 +111,15 @@ class UsageQuery extends Query
      * supplied via `groupByInterval`. Multiple `groupBy` queries may be
      * combined to bucket by several dimensions at once (e.g. service x status).
      *
-     * @param string $attribute The dimension column to bucket on (service, path, status, ...).
-     * @return self
+     * @param array<string>|string $attributes The dimension column(s) to bucket on (service, path, status, ...).
      */
-    public static function groupBy(string $attribute): self
+    public static function groupBy(array|string $attributes): static
     {
-        return new self(self::TYPE_GROUP_BY, $attribute, []);
-    }
+        if (is_string($attributes)) {
+            return new static(Method::GroupBy, $attributes, []);
+        }
 
-    /**
-     * Check if a query is a groupBy query.
-     *
-     * @param Query $query
-     * @return bool
-     */
-    public static function isGroupBy(Query $query): bool
-    {
-        return $query->getMethod() === self::TYPE_GROUP_BY;
-    }
-
-    /**
-     * Extract all groupBy queries from an array of queries.
-     *
-     * Multiple groupBy queries can coexist (group by service AND status), so
-     * this returns every match rather than the single-instance form used by
-     * groupByInterval.
-     *
-     * @param array<Query> $queries
-     * @return array<Query>
-     */
-    public static function extractGroupBy(array $queries): array
-    {
-        return array_values(array_filter($queries, function (Query $query) {
-            return self::isGroupBy($query);
-        }));
-    }
-
-    /**
-     * Remove all groupBy queries from an array of queries.
-     *
-     * @param array<Query> $queries
-     * @return array<Query>
-     */
-    public static function removeGroupBy(array $queries): array
-    {
-        return array_values(array_filter($queries, function (Query $query) {
-            return !self::isGroupBy($query);
-        }));
+        return parent::groupBy($attributes);
     }
 
     /**
@@ -214,31 +135,22 @@ class UsageQuery extends Query
      */
     public static function aggregate(string $function): self
     {
-        if (!in_array($function, self::VALID_AGGREGATES, true)) {
+        if (!isset(self::AGGREGATE_METHODS[$function])) {
             throw new \InvalidArgumentException(
                 "Invalid aggregate '{$function}'. Allowed: " . implode(', ', self::VALID_AGGREGATES)
             );
         }
 
-        return new self(self::TYPE_AGGREGATE, 'value', [$function]);
-    }
-
-    /**
-     * Check if a query is an aggregate query.
-     *
-     * @param Query $query
-     * @return bool
-     */
-    public static function isAggregate(Query $query): bool
-    {
-        return $query->getMethod() === self::TYPE_AGGREGATE;
+        // The function is carried by the method itself, so there is no value to
+        // pass; `extractAggregate()` reads the name back off the method.
+        return new self(self::AGGREGATE_METHODS[$function], 'value', []);
     }
 
     /**
      * Extract the aggregation function from an array of queries, if present.
      *
      * Queries parsed via `Query::parse()` are base `Query` objects rather than
-     * `UsageQuery` instances, so we match on the method string alone.
+     * `UsageQuery` instances, so we match on the method alone.
      *
      * @param array<Query> $queries
      * @return string|null The aggregation function, or null if not present.
@@ -246,26 +158,14 @@ class UsageQuery extends Query
     public static function extractAggregate(array $queries): ?string
     {
         foreach ($queries as $query) {
-            if (self::isAggregate($query)) {
-                $value = $query->getValues()[0] ?? null;
+            $function = \array_search($query->getMethod(), self::AGGREGATE_METHODS, true);
 
-                return is_string($value) ? $value : null;
+            if ($function !== false) {
+                return $function;
             }
         }
 
         return null;
     }
 
-    /**
-     * Remove all aggregate queries from an array of queries.
-     *
-     * @param array<Query> $queries
-     * @return array<Query>
-     */
-    public static function removeAggregate(array $queries): array
-    {
-        return array_values(array_filter($queries, function (Query $query) {
-            return !self::isAggregate($query);
-        }));
-    }
 }
