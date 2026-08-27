@@ -2,8 +2,6 @@
 
 namespace Utopia\Usage;
 
-use DateTimeImmutable;
-
 final readonly class SampleResult
 {
     /**
@@ -19,7 +17,7 @@ final readonly class SampleResult
         private array $discontinuities,
         private int $duplicateCount,
         private bool $truncated,
-        private DateTimeImmutable $watermark,
+        private SampleWatermark $watermark,
     ) {
     }
 
@@ -57,7 +55,7 @@ final readonly class SampleResult
         return $this->truncated;
     }
 
-    public function getWatermark(): DateTimeImmutable
+    public function getWatermark(): SampleWatermark
     {
         return $this->watermark;
     }
@@ -65,6 +63,7 @@ final readonly class SampleResult
     public function isComplete(): bool
     {
         return !$this->truncated
+            && !$this->watermark->isTruncated()
             && $this->conflicts === []
             && $this->gaps === []
             && $this->discontinuities === [];

@@ -85,12 +85,12 @@ class Usage
         return $this->adapter->addSamples($samples, $batchSize);
     }
 
-    public function getSampleWatermark(): \DateTimeImmutable
+    public function getSampleWatermark(SampleRange $range, int $limit): SampleWatermark
     {
-        return $this->adapter->getSampleWatermark();
+        return $this->adapter->getSampleWatermark($range, $limit);
     }
 
-    public function findSamples(SampleRange $range, \DateTimeImmutable $watermark, int $limit): SampleResult
+    public function findSamples(SampleRange $range, SampleWatermark $watermark, int $limit): SampleResult
     {
         return $this->adapter->findSamples($range, $watermark, $limit);
     }

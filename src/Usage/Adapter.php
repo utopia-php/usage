@@ -50,12 +50,16 @@ abstract class Adapter
         throw new \Exception($this->getName() . ' does not support canonical samples');
     }
 
-    public function getSampleWatermark(): \DateTimeImmutable
+    /**
+     * Capture at most $limit logical ingestion IDs from one exact range.
+     * Truncation is carried by the returned watermark and fails completeness.
+     */
+    public function getSampleWatermark(SampleRange $range, int $limit): SampleWatermark
     {
         throw new \Exception($this->getName() . ' does not support canonical samples');
     }
 
-    public function findSamples(SampleRange $range, \DateTimeImmutable $watermark, int $limit): SampleResult
+    public function findSamples(SampleRange $range, SampleWatermark $watermark, int $limit): SampleResult
     {
         throw new \Exception($this->getName() . ' does not support canonical samples');
     }

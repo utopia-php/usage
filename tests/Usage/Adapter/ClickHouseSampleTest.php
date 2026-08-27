@@ -39,6 +39,7 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
         $ddl = $this->queryRaw($adapter, "SHOW CREATE TABLE `{$database}`.`{$table}` FORMAT TabSeparatedRaw");
 
         foreach ([
+            '`ingestId` String',
             '`environment` LowCardinality(String)',
             '`region` LowCardinality(String)',
             '`projectInternalId` String',
@@ -51,7 +52,6 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
             "`intervalEnd` DateTime64(3, 'UTC')",
             '`value` Int64',
             '`eventVersion` UInt32',
-            "`ingestedAt` DateTime64(3, 'UTC') DEFAULT now64(3)",
         ] as $column) {
             $this->assertStringContainsString($column, $ddl);
         }
@@ -65,9 +65,10 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
         $this->assertTrue($this->usage->addSamples([$sample, $sample]));
         $this->assertTrue($this->usage->addSamples([$sample]));
 
+        $range = $this->range($key, firstSequence: 0, lastSequence: 0);
         $result = $this->usage->findSamples(
-            $this->range($key, firstSequence: 0, lastSequence: 0),
-            $this->usage->getSampleWatermark(),
+            $range,
+            $this->usage->getSampleWatermark($range, 10),
             10,
         );
 
@@ -99,9 +100,10 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
 
         $this->assertTrue($usage->addSamples([$this->sample($key, sequence: 0)]));
 
+        $range = $this->range($key, firstSequence: 0, lastSequence: 0);
         $result = $usage->findSamples(
-            $this->range($key, firstSequence: 0, lastSequence: 0),
-            $usage->getSampleWatermark(),
+            $range,
+            $usage->getSampleWatermark($range, 10),
             10,
         );
 
@@ -118,14 +120,37 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
             $this->sample($key, sequence: 0, value: 11),
         ]));
 
+        $range = $this->range($key, firstSequence: 0, lastSequence: 0);
         $result = $this->usage->findSamples(
-            $this->range($key, firstSequence: 0, lastSequence: 0),
-            $this->usage->getSampleWatermark(),
+            $range,
+            $this->usage->getSampleWatermark($range, 10),
             10,
         );
 
         $this->assertFalse($result->isComplete());
         $this->assertSame([0], $result->getConflicts());
+        $this->assertSame([], $result->getSamples());
+    }
+
+    public function testConflictingIntervalsReturnEvidenceWithoutSyntheticSample(): void
+    {
+        $key = bin2hex(random_bytes(8));
+
+        $this->assertTrue($this->usage->addSamples([
+            $this->sample($key, sequence: 0, value: 10, startMinute: 0),
+            $this->sample($key, sequence: 0, value: 11, startMinute: 2),
+        ]));
+
+        $range = $this->range($key, firstSequence: 0, lastSequence: 0, endMinute: 3);
+        $result = $this->usage->findSamples(
+            $range,
+            $this->usage->getSampleWatermark($range, 10),
+            10,
+        );
+
+        $this->assertFalse($result->isComplete());
+        $this->assertSame([0], $result->getConflicts());
+        $this->assertSame([], $result->getSamples());
     }
 
     public function testDetectsGapsWithoutExpandingEveryMissingSequence(): void
@@ -137,9 +162,10 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
             $this->sample($key, sequence: 4),
         ]));
 
+        $range = $this->range($key, firstSequence: 0, lastSequence: 4);
         $result = $this->usage->findSamples(
-            $this->range($key, firstSequence: 0, lastSequence: 4),
-            $this->usage->getSampleWatermark(),
+            $range,
+            $this->usage->getSampleWatermark($range, 10),
             10,
         );
 
@@ -158,9 +184,10 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
             $this->sample($key, sequence: 1, startMinute: 2),
         ]));
 
+        $range = $this->range($key, firstSequence: 0, lastSequence: 1, endMinute: 3);
         $result = $this->usage->findSamples(
-            $this->range($key, firstSequence: 0, lastSequence: 1, endMinute: 3),
-            $this->usage->getSampleWatermark(),
+            $range,
+            $this->usage->getSampleWatermark($range, 10),
             10,
         );
 
@@ -169,7 +196,7 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
         $this->assertSame([1], $result->getDiscontinuities());
     }
 
-    public function testReportsTruncationAndHonorsAStableWatermark(): void
+    public function testReportsTruncationAndHonorsAnExactWatermark(): void
     {
         $key = bin2hex(random_bytes(8));
 
@@ -179,17 +206,17 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
             $this->sample($key, sequence: 2),
         ]));
 
-        $watermark = $this->usage->getSampleWatermark();
-        usleep(10_000);
+        $range = $this->range($key, firstSequence: 0, lastSequence: 3);
+        $watermark = $this->usage->getSampleWatermark($range, 10);
         $this->assertTrue($this->usage->addSamples([$this->sample($key, sequence: 3)]));
 
         $bounded = $this->usage->findSamples(
-            $this->range($key, firstSequence: 0, lastSequence: 3),
+            $range,
             $watermark,
             2,
         );
         $watermarked = $this->usage->findSamples(
-            $this->range($key, firstSequence: 0, lastSequence: 3),
+            $range,
             $watermark,
             10,
         );
@@ -202,6 +229,117 @@ final class ClickHouseSampleTest extends ClickHouseTestCase
         $this->assertCount(3, $watermarked->getSamples());
         $this->assertSame(3, $watermarked->getGaps()[0]->first);
         $this->assertSame(3, $watermarked->getGaps()[0]->last);
+    }
+
+    public function testWatermarkEvidenceLimitFailsClosed(): void
+    {
+        $key = bin2hex(random_bytes(8));
+        $sample = $this->sample($key, sequence: 0);
+
+        $this->assertTrue($this->usage->addSamples([$sample, $sample, $sample]));
+
+        $range = $this->range($key, firstSequence: 0, lastSequence: 0);
+        $watermark = $this->usage->getSampleWatermark($range, 2);
+        $result = $this->usage->findSamples($range, $watermark, 10);
+
+        $this->assertTrue($watermark->isTruncated());
+        $this->assertFalse($result->isComplete());
+        $this->assertTrue($result->getWatermark()->isTruncated());
+    }
+
+    public function testTransportRetryAfterWatermarkCannotChangeSnapshot(): void
+    {
+        $key = bin2hex(random_bytes(8));
+        $sample = $this->sample($key, sequence: 0);
+        $range = $this->range($key, firstSequence: 0, lastSequence: 0);
+
+        $this->assertTrue($this->usage->addSamples([$sample]));
+        $watermark = $this->usage->getSampleWatermark($range, 10);
+        $this->assertCount(1, $watermark->getIngestIds());
+
+        $this->insertRawSample($sample, $watermark->getIngestIds()[0]);
+
+        $result = $this->usage->findSamples($range, $watermark, 10);
+
+        $this->assertTrue($result->isComplete());
+        $this->assertCount(1, $result->getSamples());
+        $this->assertSame(0, $result->getDuplicateCount());
+    }
+
+    public function testReusedIngestIdWithDifferentPayloadFailsClosed(): void
+    {
+        $key = bin2hex(random_bytes(8));
+        $sample = $this->sample($key, sequence: 0, value: 10);
+        $range = $this->range($key, firstSequence: 0, lastSequence: 0);
+
+        $this->assertTrue($this->usage->addSamples([$sample]));
+        $watermark = $this->usage->getSampleWatermark($range, 10);
+        $this->assertCount(1, $watermark->getIngestIds());
+
+        $this->insertRawSample(
+            $this->sample($key, sequence: 0, value: 11),
+            $watermark->getIngestIds()[0],
+        );
+
+        $result = $this->usage->findSamples($range, $watermark, 10);
+
+        $this->assertFalse($result->isComplete());
+        $this->assertSame([0], $result->getConflicts());
+        $this->assertSame([], $result->getSamples());
+    }
+
+    public function testRejectsWatermarkFromAnotherRange(): void
+    {
+        $key = bin2hex(random_bytes(8));
+        $range = $this->range($key, firstSequence: 0, lastSequence: 0);
+        $watermark = $this->usage->getSampleWatermark($range, 10);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Sample watermark does not match the requested range');
+
+        $this->usage->findSamples(
+            $this->range($key, firstSequence: 0, lastSequence: 1),
+            $watermark,
+            10,
+        );
+    }
+
+    private function insertRawSample(Sample $sample, string $ingestId): void
+    {
+        $adapter = $this->usage->getAdapter();
+        $this->assertInstanceOf(ClickHouseAdapter::class, $adapter);
+        $database = $this->databaseName($adapter);
+        $table = $this->resolveTableName($adapter, 'getSamplesTableName');
+        $sql = <<<SQL
+            INSERT INTO `{$database}`.`{$table}`
+                (id, payloadHash, ingestId, environment, region, projectInternalId,
+                 databaseInternalId, member, generation, sequence, metric,
+                 intervalStart, intervalEnd, value, eventVersion)
+            SELECT
+                {id:String}, {payloadHash:String}, {ingestId:String}, {environment:String},
+                {region:String}, {projectInternalId:String}, {databaseInternalId:String},
+                {member:String}, {generation:String}, {sequence:UInt64}, {metric:String},
+                {intervalStart:DateTime64(3)}, {intervalEnd:DateTime64(3)},
+                {value:Int64}, {eventVersion:UInt32}
+            SQL;
+
+        $this->queryRaw($adapter, $sql, [
+            'id' => $sample->getId(),
+            'payloadHash' => $sample->getPayloadHash(),
+            'ingestId' => $ingestId,
+            'environment' => $sample->environment,
+            'region' => $sample->region,
+            'projectInternalId' => $sample->projectInternalId,
+            'databaseInternalId' => $sample->databaseInternalId,
+            'member' => $sample->member,
+            'generation' => $sample->generation,
+            'sequence' => $sample->sequence,
+            'metric' => $sample->metric,
+            'intervalStart' => $sample->getFormattedIntervalStart(),
+            'intervalEnd' => $sample->getFormattedIntervalEnd(),
+            'value' => $sample->value,
+            'eventVersion' => $sample->eventVersion,
+        ]);
     }
 
     private function sample(string $key, int $sequence, int $value = 10, ?int $startMinute = null): Sample

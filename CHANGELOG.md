@@ -8,7 +8,9 @@
   canonical identity covers environment, region, project/database internal
   IDs, member, generation, sequence and metric. Identical retries are
   deduplicated at read time; conflicting payloads, sequence gaps, bounded-read
-  truncation and stable-watermark exclusions are explicit in `SampleResult`.
+  truncation and exact ingestion-ID watermark exclusions are explicit in
+  `SampleResult`. Conflict representatives are selected as one physical tuple,
+  never assembled from independent column aggregates.
 - Added `Usage::addSamples()`, `Usage::getSampleWatermark()` and
   `Usage::findSamples()`. Existing events, gauges and daily rollups are
   unchanged and are not used as a canonical sample source.
