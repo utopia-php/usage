@@ -185,6 +185,69 @@ $usage->addBatch([
 ], Usage::TYPE_GAUGE);
 ```
 
+### Canonical Samples
+
+Billable inputs that must survive request retries use the separate immutable
+sample ledger. A sample's identity is derived from its environment, region,
+project and database internal IDs, member, generation, sequence and metric.
+Retrying the same identity and payload is safe. Reusing an identity with a
+different interval, value or event version is returned as a conflict.
+The event ID is SHA-256 over those identity fields in the documented order,
+each encoded as its decimal byte length, `:`, then its UTF-8 value. The payload
+hash uses the same encoding over event ID, UTC millisecond interval bounds,
+value and event version.
+
+```php
+use Utopia\Usage\Sample;
+use Utopia\Usage\SampleRange;
+
+$sample = new Sample(
+    environment: 'production',
+    region: 'fra1',
+    projectInternalId: '101',
+    databaseInternalId: '202',
+    member: 'mysql-0',
+    generation: '01J...',
+    sequence: 42,
+    metric: 'bandwidth.inbound',
+    intervalStart: new DateTimeImmutable('2026-08-01T00:42:00Z'),
+    intervalEnd: new DateTimeImmutable('2026-08-01T00:43:00Z'),
+    value: 4096,
+    eventVersion: 1,
+);
+
+$usage->addSamples([$sample]);
+$watermark = $usage->getSampleWatermark();
+$result = $usage->findSamples(
+    new SampleRange(
+        environment: 'production',
+        region: 'fra1',
+        projectInternalId: '101',
+        databaseInternalId: '202',
+        member: 'mysql-0',
+        generation: '01J...',
+        metric: 'bandwidth.inbound',
+        firstSequence: 42,
+        lastSequence: 42,
+        intervalStart: new DateTimeImmutable('2026-08-01T00:42:00Z'),
+        intervalEnd: new DateTimeImmutable('2026-08-01T00:43:00Z'),
+    ),
+    $watermark,
+    limit: 100,
+);
+
+if (!$result->isComplete()) {
+    // Refuse billing. Inspect conflicts, compact gap ranges and truncation.
+}
+```
+
+`findSamples()` is bounded by an explicit row limit and reads no rows ingested
+after the supplied ClickHouse watermark. A result is complete only when it is
+not truncated and contains no conflicts, sequence gaps or interval-boundary
+discontinuities. The sample ledger does not make HTTP delivery or a producer's
+local spool durable; callers must retain a sample until the write is
+acknowledged and retry the identical payload.
+
 ## Querying Metrics
 
 ### Find with Query Objects
@@ -296,6 +359,7 @@ $usage->purge('project_123', [], Usage::TYPE_GAUGE);
 | `{ns}_usage_gauges` | MergeTree | Resource snapshot gauges |
 | `{ns}_usage_events_daily` | SummingMergeTree | Pre-aggregated daily event totals |
 | `{ns}_usage_events_daily_mv` | Materialized View | Auto-populates daily table on insert |
+| `{ns}_usage_samples` | MergeTree | Immutable canonical samples with retry/conflict evidence |
 
 ### Events Table Schema
 
@@ -378,7 +442,7 @@ coroutines.
 
 ## System Requirements
 
-Utopia Framework requires PHP 8.0 or later. We recommend using the latest PHP version whenever possible.
+Utopia Framework requires PHP 8.4 or later. We recommend using the latest PHP version whenever possible.
 
 ## Copyright and license
 

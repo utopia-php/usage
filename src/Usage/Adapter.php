@@ -38,6 +38,29 @@ abstract class Adapter
     abstract public function addBatch(array $metrics, string $type, int $batchSize = 1000): bool;
 
     /**
+     * Add immutable, canonically identified usage samples.
+     *
+     * Adapters that do not provide canonical sample storage leave this
+     * unsupported. Existing telemetry APIs are unaffected.
+     *
+     * @param list<Sample> $samples
+     */
+    public function addSamples(array $samples, int $batchSize = 1000): bool
+    {
+        throw new \Exception($this->getName() . ' does not support canonical samples');
+    }
+
+    public function getSampleWatermark(): \DateTimeImmutable
+    {
+        throw new \Exception($this->getName() . ' does not support canonical samples');
+    }
+
+    public function findSamples(SampleRange $range, \DateTimeImmutable $watermark, int $limit): SampleResult
+    {
+        throw new \Exception($this->getName() . ' does not support canonical samples');
+    }
+
+    /**
      * Get time series data for metrics with query-time aggregation.
      *
      * Groups data by the specified interval (1h or 1d) and applies

@@ -2,6 +2,17 @@
 
 ## Unreleased — query 0.6.x builder
 
+### Added
+
+- Added a separate immutable ClickHouse sample ledger for billable usage. A
+  canonical identity covers environment, region, project/database internal
+  IDs, member, generation, sequence and metric. Identical retries are
+  deduplicated at read time; conflicting payloads, sequence gaps, bounded-read
+  truncation and stable-watermark exclusions are explicit in `SampleResult`.
+- Added `Usage::addSamples()`, `Usage::getSampleWatermark()` and
+  `Usage::findSamples()`. Existing events, gauges and daily rollups are
+  unchanged and are not used as a canonical sample source.
+
 ### Breaking
 
 - Bumped `utopia-php/query` from `0.1.*` to `0.6.*`.
