@@ -185,6 +185,82 @@ $usage->addBatch([
 ], Usage::TYPE_GAUGE);
 ```
 
+### Canonical Samples
+
+Billable inputs that must survive request retries use the separate immutable
+sample ledger. A sample's identity is derived from its environment, region,
+project and database internal IDs, member, generation, sequence and metric.
+Retrying the same identity and payload is safe. Reusing an identity with a
+different interval, value or event version is returned as a conflict.
+The event ID is SHA-256 over those identity fields in the documented order,
+each encoded as its decimal byte length, `:`, then its UTF-8 value. The payload
+hash uses the same encoding over event ID, UTC millisecond interval bounds,
+value and event version.
+
+```php
+use Utopia\Usage\Sample;
+use Utopia\Usage\SampleRange;
+
+$sample = new Sample(
+    environment: 'production',
+    region: 'fra1',
+    projectInternalId: '101',
+    databaseInternalId: '202',
+    member: 'mysql-0',
+    generation: '01J...',
+    sequence: 42,
+    metric: 'bandwidth.inbound',
+    intervalStart: new DateTimeImmutable('2026-08-01T00:42:00Z'),
+    intervalEnd: new DateTimeImmutable('2026-08-01T00:43:00Z'),
+    value: 4096,
+    eventVersion: 1,
+);
+
+$range = new SampleRange(
+    environment: 'production',
+    region: 'fra1',
+    projectInternalId: '101',
+    databaseInternalId: '202',
+    member: 'mysql-0',
+    generation: '01J...',
+    metric: 'bandwidth.inbound',
+    firstSequence: 42,
+    lastSequence: 42,
+    intervalStart: new DateTimeImmutable('2026-08-01T00:42:00Z'),
+    intervalEnd: new DateTimeImmutable('2026-08-01T00:43:00Z'),
+);
+
+$usage->addSamples([$sample]);
+$watermark = $usage->getSampleWatermark($range, limit: 100);
+$result = $usage->findSamples(
+    $range,
+    $watermark,
+    limit: 100,
+);
+
+if (!$result->isComplete()) {
+    // Refuse billing. Inspect conflicts, compact gap ranges and truncation.
+}
+```
+
+Each supplied sample row receives an adapter-owned random ingestion ID before
+its request is sent. `getSampleWatermark()` performs one bounded ClickHouse
+snapshot read and captures each visible ingestion ID bound to its canonical ID
+and payload hash for that stream and range. `findSamples()` admits only those
+exact entry fingerprints, so later inserts or changed rows cannot cross the
+boundary even when their server timestamps would be identical. A transport
+retry of the same request retains its fingerprint and is counted once; a new
+logical retry gets a new ingestion ID and is included only when visible to the
+watermark query.
+
+Both the watermark evidence and `findSamples()` result are explicitly bounded.
+A result is complete only when neither bound is truncated and there are no
+conflicts, sequence gaps or interval-boundary discontinuities. Conflicting
+physical rows are never combined into a synthetic sample. The sample ledger
+does not make HTTP delivery or a producer's local spool durable; callers must
+retain a sample until the write is acknowledged and retry the identical
+payload.
+
 ## Querying Metrics
 
 ### Find with Query Objects
@@ -296,6 +372,7 @@ $usage->purge('project_123', [], Usage::TYPE_GAUGE);
 | `{ns}_usage_gauges` | MergeTree | Resource snapshot gauges |
 | `{ns}_usage_events_daily` | SummingMergeTree | Pre-aggregated daily event totals |
 | `{ns}_usage_events_daily_mv` | Materialized View | Auto-populates daily table on insert |
+| `{ns}_usage_samples` | MergeTree | Immutable canonical samples with retry/conflict evidence |
 
 ### Events Table Schema
 
@@ -378,7 +455,7 @@ coroutines.
 
 ## System Requirements
 
-Utopia Framework requires PHP 8.0 or later. We recommend using the latest PHP version whenever possible.
+Utopia Framework requires PHP 8.4 or later. We recommend using the latest PHP version whenever possible.
 
 ## Copyright and license
 

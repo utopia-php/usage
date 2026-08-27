@@ -78,6 +78,24 @@ class Usage
     }
 
     /**
+     * @param list<Sample> $samples
+     */
+    public function addSamples(array $samples, int $batchSize = 1000): bool
+    {
+        return $this->adapter->addSamples($samples, $batchSize);
+    }
+
+    public function getSampleWatermark(SampleRange $range, int $limit): SampleWatermark
+    {
+        return $this->adapter->getSampleWatermark($range, $limit);
+    }
+
+    public function findSamples(SampleRange $range, SampleWatermark $watermark, int $limit): SampleResult
+    {
+        return $this->adapter->findSamples($range, $watermark, $limit);
+    }
+
+    /**
      * Get time series data for metrics.
      *
      * @param string $tenant Tenant scope (shared-tables mode)

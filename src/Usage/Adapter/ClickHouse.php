@@ -4,6 +4,7 @@ namespace Utopia\Usage\Adapter;
 
 use ArrayObject;
 use DateTime;
+use DateTimeImmutable;
 use DateTimeZone;
 use Exception;
 use Psr\Http\Client\ClientInterface;
@@ -19,6 +20,11 @@ use Utopia\Query\Schema\ClickHouse as ClickHouseSchema;
 use Utopia\Query\Schema\ClickHouse\Engine;
 use Utopia\Query\Schema\Table\ClickHouse as ClickHouseTable;
 use Utopia\Usage\Metric;
+use Utopia\Usage\Sample;
+use Utopia\Usage\SampleGap;
+use Utopia\Usage\SampleRange;
+use Utopia\Usage\SampleResult;
+use Utopia\Usage\SampleWatermark;
 use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 use Utopia\Validator\Hostname;
@@ -54,6 +60,8 @@ class ClickHouse extends SQL
     private const DEFAULT_TABLE = self::COLLECTION;
 
     private const INSERT_BATCH_SIZE = 1_000;
+
+    private const int SAMPLE_BATCH_SIZE = 1_000;
 
     private const ROUTE_LOG_MAX = 1_000;
 
@@ -433,6 +441,11 @@ class ClickHouse extends SQL
         return $this->getTableName() . '_events_daily';
     }
 
+    private function getSamplesTableName(): string
+    {
+        return $this->getTableName() . '_samples';
+    }
+
     /**
      * Get the appropriate table name for a given type.
      *
@@ -616,7 +629,7 @@ class ClickHouse extends SQL
      * @param array<string> $data Array of JSON strings (one per row)
      * @throws Exception
      */
-    private function insert(string $table, string $sql, array $data): void
+    private function insert(string $table, string $sql, array $data, bool $durable = false): void
     {
         if (empty($data)) {
             return;
@@ -632,7 +645,7 @@ class ClickHouse extends SQL
         $queryParams = ['query' => $sql];
         if ($this->asyncInserts) {
             $queryParams['async_insert'] = '1';
-            $queryParams['wait_for_async_insert'] = $this->asyncInsertWait ? '1' : '0';
+            $queryParams['wait_for_async_insert'] = ($durable || $this->asyncInsertWait) ? '1' : '0';
         }
         $url = "{$scheme}://{$this->host}:{$this->port}/?" . http_build_query($queryParams);
 
@@ -920,7 +933,6 @@ class ClickHouse extends SQL
         $createDbSql = "CREATE DATABASE IF NOT EXISTS {$escapedDatabase}";
         $this->query($createDbSql);
 
-        // --- Events table ---
         $this->createTable(
             $this->getEventsTableName(),
             'event',
@@ -931,15 +943,12 @@ class ClickHouse extends SQL
 
         $this->applyRetention($this->getEventsTableName());
 
-        // --- Events daily table (SummingMergeTree) ---
         $this->createDailyTable();
 
         $this->applyRetention($this->getEventsDailyTableName());
 
-        // --- Events daily materialized view ---
         $this->createDailyMaterializedView();
 
-        // --- Gauges table ---
         $this->createTable(
             $this->getGaugesTableName(),
             'gauge',
@@ -948,7 +957,9 @@ class ClickHouse extends SQL
 
         $this->ensureGaugeDimColumns();
 
-        // --- Per-dim projections on the events / gauges base tables ---
+        $this->createSamplesTable();
+        $this->ensureSampleColumns();
+
         $this->setLightweightMutationProjectionMode($this->getEventsTableName());
         foreach (self::EVENT_PROJECTIONS as $projection) {
             $this->addProjection(
@@ -967,6 +978,64 @@ class ClickHouse extends SQL
                 'argMax(value, time) AS value'
             );
         }
+    }
+
+    /**
+     * Create the immutable canonical-sample ledger. Retries remain as raw
+     * physical rows; findSamples() groups by the canonical identity and
+     * exposes conflicting payloads instead of allowing them to affect totals.
+     */
+    private function createSamplesTable(): void
+    {
+        $tableName = $this->getSamplesTableName();
+        $table = $this->newSchema()->table($tableName);
+
+        $table->rawColumn('`id` String CODEC(ZSTD(3))');
+        $table->rawColumn('`payloadHash` String CODEC(ZSTD(3))');
+        $table->rawColumn('`ingestId` String CODEC(ZSTD(3))');
+        $table->rawColumn('`environment` LowCardinality(String)');
+        $table->rawColumn('`region` LowCardinality(String)');
+        $table->rawColumn('`projectInternalId` String CODEC(ZSTD(3))');
+        $table->rawColumn('`databaseInternalId` String CODEC(ZSTD(3))');
+        $table->rawColumn('`member` String CODEC(ZSTD(3))');
+        $table->rawColumn('`generation` String CODEC(ZSTD(3))');
+        $table->rawColumn('`sequence` UInt64');
+        $table->rawColumn('`metric` LowCardinality(String)');
+        $table->rawColumn("`intervalStart` DateTime64(3, 'UTC') CODEC(Delta(4), LZ4)");
+        $table->rawColumn("`intervalEnd` DateTime64(3, 'UTC') CODEC(Delta(4), LZ4)");
+        $table->rawColumn('`value` Int64');
+        $table->rawColumn('`eventVersion` UInt32');
+
+        $table->engine(Engine::MergeTree)
+            ->orderBy([
+                'environment',
+                'region',
+                'projectInternalId',
+                'databaseInternalId',
+                'member',
+                'generation',
+                'metric',
+                'sequence',
+                'id',
+                'payloadHash',
+                'ingestId',
+            ])
+            ->partitionBy('toYYYYMM(intervalStart)')
+            ->settings(['index_granularity' => 8192]);
+
+        $statement = $table->createIfNotExists();
+
+        $this->query($this->qualifyDdl($statement->query, $tableName));
+    }
+
+    /**
+     * Older pre-release tables have no exact snapshot identifier. Keep their
+     * default empty so watermark reads omit them and fail closed with gaps.
+     */
+    private function ensureSampleColumns(): void
+    {
+        $table = $this->buildTableReference($this->getSamplesTableName());
+        $this->query("ALTER TABLE {$table} ADD COLUMN IF NOT EXISTS `ingestId` String DEFAULT '' CODEC(ZSTD(3))");
     }
 
     /**
@@ -1677,6 +1746,327 @@ class ClickHouse extends SQL
         }
 
         return true;
+    }
+
+    /**
+     * @param list<Sample> $samples
+     */
+    #[\Override]
+    public function addSamples(array $samples, int $batchSize = self::SAMPLE_BATCH_SIZE): bool
+    {
+        if ($samples === []) {
+            return true;
+        }
+
+        $this->setOperationContext('addSamples()');
+
+        $batchSize = min(self::SAMPLE_BATCH_SIZE, max(1, $batchSize));
+        $tableName = $this->getSamplesTableName();
+        $columns = [
+            'id',
+            'payloadHash',
+            'ingestId',
+            'environment',
+            'region',
+            'projectInternalId',
+            'databaseInternalId',
+            'member',
+            'generation',
+            'sequence',
+            'metric',
+            'intervalStart',
+            'intervalEnd',
+            'value',
+            'eventVersion',
+        ];
+        $escapedColumns = implode(', ', array_map($this->escapeIdentifier(...), $columns));
+        $insertSql = 'INSERT INTO ' . $this->buildTableReference($tableName)
+            . " ({$escapedColumns}) FORMAT JSONEachRow";
+
+        foreach (array_chunk($samples, $batchSize) as $batch) {
+            $rows = [];
+
+            foreach ($batch as $sample) {
+                // The ID belongs to this logical row, not its HTTP attempt.
+                // A transport retry repeats the encoded body and therefore
+                // keeps the same ID; a later addSamples() call receives a new
+                // one and cannot cross an already captured watermark.
+                $rows[] = json_encode([
+                    'id' => $sample->getId(),
+                    'payloadHash' => $sample->getPayloadHash(),
+                    'ingestId' => bin2hex(random_bytes(16)),
+                    'environment' => $sample->environment,
+                    'region' => $sample->region,
+                    'projectInternalId' => $sample->projectInternalId,
+                    'databaseInternalId' => $sample->databaseInternalId,
+                    'member' => $sample->member,
+                    'generation' => $sample->generation,
+                    'sequence' => $sample->sequence,
+                    'metric' => $sample->metric,
+                    'intervalStart' => $sample->getFormattedIntervalStart(),
+                    'intervalEnd' => $sample->getFormattedIntervalEnd(),
+                    'value' => $sample->value,
+                    'eventVersion' => $sample->eventVersion,
+                ], JSON_THROW_ON_ERROR);
+            }
+
+            $this->insert($tableName, $insertSql, $rows, durable: true);
+        }
+
+        return true;
+    }
+
+    #[\Override]
+    public function getSampleWatermark(SampleRange $range, int $limit): SampleWatermark
+    {
+        if ($limit < 1 || $limit === PHP_INT_MAX) {
+            throw new \InvalidArgumentException('Sample watermark limit must be positive and leave room for truncation detection');
+        }
+
+        $this->setOperationContext('getSampleWatermark()');
+
+        $table = $this->buildTableReference($this->getSamplesTableName());
+        $sql = <<<SQL
+            SELECT concat(ingestId, ':', id, ':', payloadHash) AS entryId
+            FROM {$table}
+            WHERE environment = {environment:String}
+              AND region = {region:String}
+              AND projectInternalId = {projectInternalId:String}
+              AND databaseInternalId = {databaseInternalId:String}
+              AND member = {member:String}
+              AND generation = {generation:String}
+              AND metric = {metric:String}
+              AND sequence >= {firstSequence:UInt64}
+              AND sequence <= {lastSequence:UInt64}
+              AND ingestId != ''
+            LIMIT 1 BY entryId
+            LIMIT {queryLimit:UInt64}
+            FORMAT JSON
+            SQL;
+
+        $rows = $this->decodeRows($this->query($sql, [
+            'environment' => $range->environment,
+            'region' => $range->region,
+            'projectInternalId' => $range->projectInternalId,
+            'databaseInternalId' => $range->databaseInternalId,
+            'member' => $range->member,
+            'generation' => $range->generation,
+            'metric' => $range->metric,
+            'firstSequence' => $range->firstSequence,
+            'lastSequence' => $range->lastSequence,
+            'queryLimit' => $limit + 1,
+        ]));
+
+        $truncated = count($rows) > $limit;
+        if ($truncated) {
+            $rows = array_slice($rows, 0, $limit);
+        }
+
+        $entries = [];
+        foreach ($rows as $row) {
+            $entries[] = self::toStr($row['entryId'] ?? null);
+        }
+
+        return new SampleWatermark($range, $entries, $truncated);
+    }
+
+    #[\Override]
+    public function findSamples(SampleRange $range, SampleWatermark $watermark, int $limit): SampleResult
+    {
+        if ($limit < 1 || $limit === PHP_INT_MAX) {
+            throw new \InvalidArgumentException('Sample limit must be positive and leave room for truncation detection');
+        }
+
+        if (!$watermark->matches($range)) {
+            throw new \InvalidArgumentException('Sample watermark does not match the requested range');
+        }
+
+        $this->setOperationContext('findSamples()');
+
+        $table = $this->buildTableReference($this->getSamplesTableName());
+        $sql = <<<SQL
+            SELECT
+                environment,
+                region,
+                projectInternalId,
+                databaseInternalId,
+                member,
+                generation,
+                sequence,
+                metric,
+                argMin(
+                    tuple(intervalStart, intervalEnd, value, eventVersion, payloadHash),
+                    tuple(
+                        payloadHash,
+                        intervalStart,
+                        intervalEnd,
+                        value,
+                        eventVersion,
+                        concat(ingestId, ':', id, ':', payloadHash)
+                    )
+                ) AS observation,
+                uniqExact(concat(ingestId, ':', id, ':', payloadHash)) AS copies,
+                uniqExact(tuple(payloadHash, intervalStart, intervalEnd, value, eventVersion)) AS variants
+            FROM {$table}
+            WHERE environment = {environment:String}
+              AND region = {region:String}
+              AND projectInternalId = {projectInternalId:String}
+              AND databaseInternalId = {databaseInternalId:String}
+              AND member = {member:String}
+              AND generation = {generation:String}
+              AND metric = {metric:String}
+              AND sequence >= {firstSequence:UInt64}
+              AND sequence <= {lastSequence:UInt64}
+              AND has({entries:Array(String)}, concat(ingestId, ':', id, ':', payloadHash))
+            GROUP BY
+                environment,
+                region,
+                projectInternalId,
+                databaseInternalId,
+                member,
+                generation,
+                sequence,
+                metric
+            ORDER BY sequence ASC
+            LIMIT {queryLimit:UInt64}
+            FORMAT JSON
+            SQL;
+
+        $rows = $this->decodeRows($this->query($sql, [
+            'environment' => $range->environment,
+            'region' => $range->region,
+            'projectInternalId' => $range->projectInternalId,
+            'databaseInternalId' => $range->databaseInternalId,
+            'member' => $range->member,
+            'generation' => $range->generation,
+            'metric' => $range->metric,
+            'firstSequence' => $range->firstSequence,
+            'lastSequence' => $range->lastSequence,
+            'entries' => $watermark->getEntries() === []
+                ? '[]'
+                : "['" . implode("','", $watermark->getEntries()) . "']",
+            'queryLimit' => $limit + 1,
+        ]));
+
+        $truncated = count($rows) > $limit;
+        if ($truncated) {
+            $rows = array_slice($rows, 0, $limit);
+        }
+
+        $samples = [];
+        $conflicts = [];
+        $duplicates = 0;
+
+        foreach ($rows as $row) {
+            $sequence = self::toInt($row['sequence'] ?? null);
+            $copies = self::toInt($row['copies'] ?? null);
+            $variants = self::toInt($row['variants'] ?? null);
+            $duplicates += max(0, $copies - max(1, $variants));
+
+            if ($variants !== 1) {
+                $conflicts[] = $sequence;
+                continue;
+            }
+
+            $observation = $row['observation'] ?? null;
+            if (!is_array($observation) || count($observation) !== 5) {
+                $conflicts[] = $sequence;
+                continue;
+            }
+
+            try {
+                $sample = new Sample(
+                    environment: self::toStr($row['environment'] ?? null),
+                    region: self::toStr($row['region'] ?? null),
+                    projectInternalId: self::toStr($row['projectInternalId'] ?? null),
+                    databaseInternalId: self::toStr($row['databaseInternalId'] ?? null),
+                    member: self::toStr($row['member'] ?? null),
+                    generation: self::toStr($row['generation'] ?? null),
+                    sequence: $sequence,
+                    metric: self::toStr($row['metric'] ?? null),
+                    intervalStart: new DateTimeImmutable(self::toStr($observation[0] ?? null), new DateTimeZone('UTC')),
+                    intervalEnd: new DateTimeImmutable(self::toStr($observation[1] ?? null), new DateTimeZone('UTC')),
+                    value: self::toInt($observation[2] ?? null),
+                    eventVersion: self::toInt($observation[3] ?? null),
+                );
+            } catch (\InvalidArgumentException) {
+                $conflicts[] = $sequence;
+                continue;
+            }
+
+            if (
+                $sample->getPayloadHash() !== self::toStr($observation[4] ?? null)
+                || $sample->intervalStart < $range->intervalStart
+                || $sample->intervalEnd > $range->intervalEnd
+            ) {
+                $conflicts[] = $sequence;
+                continue;
+            }
+
+            $samples[] = $sample;
+        }
+
+        $gaps = $this->findSampleGaps($samples, $range->firstSequence, $range->lastSequence);
+        $discontinuities = $this->findSampleDiscontinuities($samples, $range);
+
+        return new SampleResult(
+            samples: $samples,
+            conflicts: array_values(array_unique($conflicts)),
+            gaps: $gaps,
+            discontinuities: $discontinuities,
+            duplicateCount: $duplicates,
+            truncated: $truncated,
+            watermark: $watermark,
+        );
+    }
+
+    /**
+     * @param list<Sample> $samples
+     * @return list<SampleGap>
+     */
+    private function findSampleGaps(array $samples, int $first, int $last): array
+    {
+        $gaps = [];
+        $expected = $first;
+
+        foreach ($samples as $sample) {
+            if ($sample->sequence > $expected) {
+                $gaps[] = new SampleGap($expected, $sample->sequence - 1);
+            }
+
+            $expected = $sample->sequence + 1;
+        }
+
+        if ($expected <= $last) {
+            $gaps[] = new SampleGap($expected, $last);
+        }
+
+        return $gaps;
+    }
+
+    /**
+     * @param list<Sample> $samples
+     * @return list<int>
+     */
+    private function findSampleDiscontinuities(array $samples, SampleRange $range): array
+    {
+        $discontinuities = [];
+        $expectedStart = $range->intervalStart;
+
+        foreach ($samples as $sample) {
+            if ($sample->intervalStart != $expectedStart) {
+                $discontinuities[] = $sample->sequence;
+            }
+
+            $expectedStart = $sample->intervalEnd;
+        }
+
+        if ($samples !== [] && $expectedStart != $range->intervalEnd) {
+            $last = $samples[array_key_last($samples)];
+            $discontinuities[] = $last->sequence;
+        }
+
+        return array_values(array_unique($discontinuities));
     }
 
     /**
