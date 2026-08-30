@@ -57,6 +57,31 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $this->assertStringContainsString('`sdkVersion` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
     }
 
+    public function testEventProjectionsLeadWithTenantAndKeyOnTheHourlyBucket(): void
+    {
+        $ddl = $this->showCreate($this->resolveTableName($this->adapter, 'getEventsTableName'));
+
+        // A projection is sorted by its GROUP BY order, so key order is the
+        // whole point of this assertion, not just its contents.
+        $this->assertStringContainsString(
+            "GROUP BY\n            tenant,\n            metric,\n            timeBucket,\n            path",
+            $ddl
+        );
+        $this->assertStringContainsString("toStartOfHour(time, 'UTC') AS timeBucket", $ddl);
+    }
+
+    public function testGaugeProjectionsLeadWithTenantAndKeepRawTime(): void
+    {
+        $ddl = $this->showCreate($this->resolveTableName($this->adapter, 'getGaugesTableName'));
+
+        // argMax picks the latest reading by `time`, so only the key order changes.
+        $this->assertStringContainsString(
+            "GROUP BY\n            tenant,\n            metric,\n            time,\n            service",
+            $ddl
+        );
+        $this->assertStringNotContainsString('timeBucket', $ddl);
+    }
+
     public function testEventsTableSwapsBloomForSetOnLowCardinality(): void
     {
         $ddl = $this->showCreate($this->resolveTableName($this->adapter, 'getEventsTableName'));
