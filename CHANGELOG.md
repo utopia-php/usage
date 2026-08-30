@@ -14,6 +14,13 @@
 - Added `Usage::addSamples()`, `Usage::getSampleWatermark()` and
   `Usage::findSamples()`. Existing events, gauges and daily rollups are
   unchanged and are not used as a canonical sample source.
+- ClickHouse reads now carry a `max_execution_time` cap and a `query_id`, and a
+  read the transport abandons is reaped with `KILL QUERY`. Previously a client
+  socket timeout left the query running to completion and retries stacked more
+  of them onto the cluster. Configurable through the new `readTimeout`
+  constructor argument (default 25s, `null` disables); the write path is
+  deliberately left uncapped, and a server that refuses the settings degrades to
+  an uncapped read.
 
 ### Breaking
 

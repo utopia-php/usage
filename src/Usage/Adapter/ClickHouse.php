@@ -65,6 +65,17 @@ class ClickHouse extends SQL
 
     private const ROUTE_LOG_MAX = 1_000;
 
+    /**
+     * Server-side wall-clock cap for reads, in seconds. Must stay below the
+     * transport's socket timeout (30s for both bundled utopia-php/client
+     * adapters): when the socket gives up first the query still runs to
+     * completion, and retries stack more of them onto the cluster.
+     */
+    private const DEFAULT_READ_TIMEOUT = 25;
+
+    /** ClickHouse error codes returned when a user may not change settings. */
+    private const SETTINGS_REJECTED_CODES = [115, 164];
+
     /** @var array<string, string> Maps interval strings to ClickHouse time functions */
     private const INTERVAL_FUNCTIONS = [
         '1h' => 'toStartOfHour',
@@ -135,6 +146,15 @@ class ClickHouse extends SQL
      */
     private ?string $nextQueryId = null;
 
+    /** @var int|null Server-side execution cap for reads in seconds; null disables it */
+    private readonly ?int $readTimeout;
+
+    /**
+     * Cleared for the instance's remaining life once the server rejects the read
+     * settings, so a restricted user degrades to uncapped reads.
+     */
+    private bool $readSettingsSupported = true;
+
     /**
      * Structured log entries recorded for each routing decision. Ops
      * dashboards read these to confirm rollup hit-rate.
@@ -183,6 +203,11 @@ class ClickHouse extends SQL
      *   events_daily tables. When set, setup() applies a TTL that drops rows
      *   older than the window; gauges are left untouched. Null disables TTL
      *   (default). Must be positive.
+     * @param  int|null  $readTimeout  Seconds a read may run server-side before
+     *   ClickHouse aborts it; the abandoned query is then killed by query_id.
+     *   Keep it below the injected client's socket timeout. Null disables both
+     *   the cap and the cancellation — use it for a `readonly = 1` user, which
+     *   is not allowed to change settings. Must be positive.
      */
     public function __construct(
         string $host,
@@ -197,12 +222,16 @@ class ClickHouse extends SQL
         bool $asyncInserts = false,
         bool $asyncInsertWait = true,
         float $dualReadSampleRate = 0.0,
-        ?int $retention = null
+        ?int $retention = null,
+        ?int $readTimeout = self::DEFAULT_READ_TIMEOUT
     ) {
         $this->validateHost($host);
         $this->validatePort($port);
         if ($retention !== null && $retention < 1) {
             throw new Exception('Retention must be a positive number of days');
+        }
+        if ($readTimeout !== null && $readTimeout < 1) {
+            throw new Exception('Read timeout must be a positive number of seconds');
         }
         if (!empty($namespace)) {
             $this->validateIdentifier($namespace, 'Namespace');
@@ -223,6 +252,7 @@ class ClickHouse extends SQL
         // over-trigger the parity sampler.
         $this->dualReadSampleRate = max(0.0, min(1.0, $dualReadSampleRate));
         $this->retention = $retention;
+        $this->readTimeout = $readTimeout;
 
         // `withConnectionReuse()` keeps the underlying cURL handle alive across
         // requests so the TCP/TLS handshake is paid once. Auth and database are
@@ -514,10 +544,11 @@ class ClickHouse extends SQL
      *
      * @param string $sql
      * @param array<string, mixed> $params
+     * @param array<string, string> $settings Per-query ClickHouse settings
      * @return string
      * @throws Exception
      */
-    private function query(string $sql, array $params = []): string
+    private function query(string $sql, array $params = [], array $settings = []): string
     {
         $queryId = $this->nextQueryId;
         $this->nextQueryId = null;
@@ -530,14 +561,18 @@ class ClickHouse extends SQL
         // string — avoids request-line length limits (HTTP 414) on large
         // `equal`/tag filters. ClickHouse does NOT parse
         // application/x-www-form-urlencoded bodies, so multipart is required.
-        // Only the tiny query_id, which has no size concern, stays in the URL.
+        // Only the tiny query_id and settings, which have no size concern,
+        // stay in the URL.
         $parts = ['query' => $sql];
         foreach ($params as $key => $value) {
             $parts['param_' . $key] = $this->formatParamValue($value);
         }
         $url = "{$scheme}://{$this->host}:{$this->port}/";
         if ($queryId !== null) {
-            $url .= '?' . http_build_query(['query_id' => $queryId]);
+            $settings['query_id'] = $queryId;
+        }
+        if (!empty($settings)) {
+            $url .= '?' . http_build_query($settings);
         }
 
         $this->requestCount++;
@@ -560,6 +595,72 @@ class ClickHouse extends SQL
         }
 
         return $bodyStr;
+    }
+
+    /**
+     * Execute a read under a server-side execution cap, tagged with a query_id
+     * so an abandoned read can be reaped. Writes deliberately do not go through
+     * here: starving ingest is worse than a slow read.
+     *
+     * @param array<string, mixed> $params
+     * @throws Exception
+     */
+    private function queryRead(string $sql, array $params = []): string
+    {
+        if ($this->readTimeout === null || !$this->readSettingsSupported) {
+            return $this->query($sql, $params);
+        }
+
+        // Respect an id pinned by the caller — benchmarks and routing tests
+        // correlate it against system.query_log.
+        $queryId = $this->nextQueryId ?? bin2hex(random_bytes(16));
+        $this->nextQueryId = $queryId;
+
+        try {
+            return $this->query($sql, $params, [
+                'max_execution_time' => (string) $this->readTimeout,
+                // A profile defaulting to `break` would return a silently
+                // truncated result set; usage totals must fail loudly instead.
+                'timeout_overflow_mode' => 'throw',
+            ]);
+        } catch (Exception $e) {
+            if ($this->isSettingsRejection($e)) {
+                $this->readSettingsSupported = false;
+                $this->nextQueryId = $queryId;
+                return $this->query($sql, $params);
+            }
+
+            $this->killQuery($queryId);
+            throw $e;
+        }
+    }
+
+    /**
+     * Reap a read the transport abandoned. ASYNC so it returns without waiting
+     * for the query to stop, and failures are swallowed so a missing KILL
+     * privilege can't mask the error the caller is already surfacing.
+     */
+    private function killQuery(string $queryId): void
+    {
+        try {
+            $this->query('KILL QUERY WHERE query_id = {queryId:String} ASYNC', ['queryId' => $queryId]);
+        } catch (Throwable) {
+        }
+    }
+
+    /**
+     * Whether ClickHouse refused the query because the user may not change
+     * settings (`readonly = 1`) or does not know them (older server).
+     */
+    private function isSettingsRejection(Exception $e): bool
+    {
+        foreach (self::SETTINGS_REJECTED_CODES as $code) {
+            if (str_contains($e->getMessage(), "Code: {$code}.")) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1844,7 +1945,7 @@ class ClickHouse extends SQL
             FORMAT JSON
             SQL;
 
-        $rows = $this->decodeRows($this->query($sql, [
+        $rows = $this->decodeRows($this->queryRead($sql, [
             'environment' => $range->environment,
             'region' => $range->region,
             'projectInternalId' => $range->projectInternalId,
@@ -1932,7 +2033,7 @@ class ClickHouse extends SQL
             FORMAT JSON
             SQL;
 
-        $rows = $this->decodeRows($this->query($sql, [
+        $rows = $this->decodeRows($this->queryRead($sql, [
             'environment' => $range->environment,
             'region' => $range->region,
             'projectInternalId' => $range->projectInternalId,
@@ -2310,7 +2411,7 @@ class ClickHouse extends SQL
         $statement = $builder->build();
         $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-        $result = $this->query($sql, array_merge($statement->namedBindings ?? [], $extraBindings));
+        $result = $this->queryRead($sql, array_merge($statement->namedBindings ?? [], $extraBindings));
 
         $rows = $this->parseResults($result, $type);
 
@@ -2417,7 +2518,7 @@ class ClickHouse extends SQL
         $statement = $builder->build();
         $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-        $result = $this->query($sql, $statement->namedBindings ?? []);
+        $result = $this->queryRead($sql, $statement->namedBindings ?? []);
 
         return $this->parseAggregatedResults($result, $type);
     }
@@ -2549,7 +2650,7 @@ class ClickHouse extends SQL
             $innerSql = $this->qualifyDdl($innerStatement->query, $tableName);
             $sql = "SELECT COUNT(*) as total FROM ({$innerSql}) sub FORMAT JSON";
 
-            $result = $this->query($sql, $innerStatement->namedBindings ?? []);
+            $result = $this->queryRead($sql, $innerStatement->namedBindings ?? []);
         } else {
             $builder = $this->newBuilder($type)
                 ->from($tableName)
@@ -2560,7 +2661,7 @@ class ClickHouse extends SQL
             $statement = $builder->build();
             $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-            $result = $this->query($sql, $statement->namedBindings ?? []);
+            $result = $this->queryRead($sql, $statement->namedBindings ?? []);
         }
 
         return $this->decodeTotal($result);
@@ -3223,7 +3324,7 @@ class ClickHouse extends SQL
             FORMAT JSON
         ";
 
-        $result = $this->query($sql, array_merge($rawStatement->namedBindings ?? [], $dailyBindings));
+        $result = $this->queryRead($sql, array_merge($rawStatement->namedBindings ?? [], $dailyBindings));
 
         return $this->decodeTotal($result);
     }
@@ -3254,7 +3355,7 @@ class ClickHouse extends SQL
         $statement = $builder->build();
         $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-        return $this->decodeTotal($this->query($sql, $statement->namedBindings ?? []));
+        return $this->decodeTotal($this->queryRead($sql, $statement->namedBindings ?? []));
     }
 
     /**
@@ -3304,7 +3405,7 @@ class ClickHouse extends SQL
         $statement = $builder->build();
         $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-        return $this->parseResults($this->query($sql, $statement->namedBindings ?? []), Usage::TYPE_EVENT);
+        return $this->parseResults($this->queryRead($sql, $statement->namedBindings ?? []), Usage::TYPE_EVENT);
     }
 
     /**
@@ -3351,7 +3452,7 @@ class ClickHouse extends SQL
         $statement = $builder->build();
         $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-        return $this->decodeTotal($this->query($sql, $statement->namedBindings ?? []));
+        return $this->decodeTotal($this->queryRead($sql, $statement->namedBindings ?? []));
     }
 
     /**
@@ -3395,7 +3496,7 @@ class ClickHouse extends SQL
         $statement = $builder->build();
         $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-        $result = $this->query($sql, $statement->namedBindings ?? []);
+        $result = $this->queryRead($sql, $statement->namedBindings ?? []);
         $rows = $this->decodeRows($result);
 
         foreach ($rows as $row) {
@@ -3545,7 +3646,7 @@ class ClickHouse extends SQL
         $statement = $builder->build();
         $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-        $result = $this->query($sql, $statement->namedBindings ?? []);
+        $result = $this->queryRead($sql, $statement->namedBindings ?? []);
         $rows = $this->decodeRows($result);
 
         // Initialize result structure
@@ -3751,7 +3852,7 @@ class ClickHouse extends SQL
         $statement = $builder->build();
         $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-        return $this->decodeTotal($this->query($sql, $statement->namedBindings ?? []));
+        return $this->decodeTotal($this->queryRead($sql, $statement->namedBindings ?? []));
     }
 
     /**
@@ -3812,7 +3913,7 @@ class ClickHouse extends SQL
             $statement = $builder->build();
             $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-            $result = $this->query($sql, $statement->namedBindings ?? []);
+            $result = $this->queryRead($sql, $statement->namedBindings ?? []);
             $rows = $this->decodeRows($result);
 
             foreach ($rows as $row) {

@@ -57,4 +57,19 @@ abstract class ClickHouseTestCase extends TestCase
         $raw = $method->invoke($adapter, $sql, $params);
         return is_string($raw) ? $raw : '';
     }
+
+    /**
+     * Run raw SQL through the private queryRead() method — the read wrapper
+     * that applies the execution cap, the query_id and the cancellation.
+     *
+     * @param array<string, mixed> $params
+     */
+    protected function queryReadRaw(ClickHouseAdapter $adapter, string $sql, array $params = []): string
+    {
+        $reflection = new ReflectionClass($adapter);
+        $method = $reflection->getMethod('queryRead');
+        $method->setAccessible(true);
+        $raw = $method->invoke($adapter, $sql, $params);
+        return is_string($raw) ? $raw : '';
+    }
 }
