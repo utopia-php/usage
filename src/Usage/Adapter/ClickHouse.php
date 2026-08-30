@@ -11,6 +11,8 @@ use Psr\Http\Client\ClientInterface;
 use Throwable;
 use Utopia\Client;
 use Utopia\Client\Adapter\Curl\Client as CurlAdapter;
+use Utopia\Client\Exception\ConnectionException;
+use Utopia\Client\Exception\DnsException;
 use Utopia\Psr7\Method as HttpMethod;
 use Utopia\Psr7\Request\Factory as RequestFactory;
 use Utopia\Query\Builder\ClickHouse as ClickHouseBuilder;
@@ -545,13 +547,13 @@ class ClickHouse extends SQL
      * @param string $sql
      * @param array<string, mixed> $params
      * @param array<string, string> $settings Per-query ClickHouse settings
+     * @param string|null $queryId Explicit query_id; falls back to the pinned one
      * @return string
      * @throws Exception
      */
-    private function query(string $sql, array $params = [], array $settings = []): string
+    private function query(string $sql, array $params = [], array $settings = [], ?string $queryId = null): string
     {
-        $queryId = $this->nextQueryId;
-        $this->nextQueryId = null;
+        $queryId ??= $this->consumeNextQueryId();
 
         $scheme = $this->secure ? 'https' : 'http';
 
@@ -611,10 +613,11 @@ class ClickHouse extends SQL
             return $this->query($sql, $params);
         }
 
-        // Respect an id pinned by the caller — benchmarks and routing tests
-        // correlate it against system.query_log.
-        $queryId = $this->nextQueryId ?? bin2hex(random_bytes(16));
-        $this->nextQueryId = $queryId;
+        // Take a pinned id — benchmarks and routing tests correlate one against
+        // system.query_log — and thread it through explicitly from here on. The
+        // shared slot must not hold an id across a request, or a concurrent
+        // coroutine could adopt it and be cancelled in this read's place.
+        $queryId = $this->consumeNextQueryId() ?? bin2hex(random_bytes(16));
 
         try {
             return $this->query($sql, $params, [
@@ -622,17 +625,45 @@ class ClickHouse extends SQL
                 // A profile defaulting to `break` would return a silently
                 // truncated result set; usage totals must fail loudly instead.
                 'timeout_overflow_mode' => 'throw',
-            ]);
+            ], $queryId);
         } catch (Exception $e) {
             if ($this->isSettingsRejection($e)) {
                 $this->readSettingsSupported = false;
-                $this->nextQueryId = $queryId;
-                return $this->query($sql, $params);
+                return $this->query($sql, $params, [], $queryId);
+            }
+
+            if (!$this->reachedServer($e)) {
+                throw $e;
             }
 
             $this->killQuery($queryId);
             throw $e;
         }
+    }
+
+    /**
+     * Take the caller's pinned id, if any. Read and clear in one step so a
+     * concurrent coroutine can't adopt an id that is already spoken for.
+     */
+    private function consumeNextQueryId(): ?string
+    {
+        $queryId = $this->nextQueryId;
+        $this->nextQueryId = null;
+
+        return $queryId;
+    }
+
+    /**
+     * Whether the failed request got as far as the server, and so may have left
+     * a query running. When the connection never opened there is nothing to
+     * cancel, and a KILL would only burn a second socket timeout against a host
+     * that is already down.
+     */
+    private function reachedServer(Exception $e): bool
+    {
+        $cause = $e->getPrevious();
+
+        return !($cause instanceof ConnectionException || $cause instanceof DnsException);
     }
 
     /**
@@ -643,7 +674,12 @@ class ClickHouse extends SQL
     private function killQuery(string $queryId): void
     {
         try {
-            $this->query('KILL QUERY WHERE query_id = {queryId:String} ASYNC', ['queryId' => $queryId]);
+            // Its own id, so the KILL never consumes one pinned for another read.
+            $this->query(
+                'KILL QUERY WHERE query_id = {queryId:String} ASYNC',
+                ['queryId' => $queryId],
+                queryId: bin2hex(random_bytes(16)),
+            );
         } catch (Throwable) {
         }
     }
