@@ -52,6 +52,28 @@ $usage = new Usage($adapter);
 $usage->setup(); // Creates events, gauges, and daily MV tables
 ```
 
+#### Read timeouts
+
+Reads run under a ClickHouse-side `max_execution_time` (`readTimeout`, 25s by
+default) and carry a `query_id`, so a read the client gives up on is aborted by
+the server and, failing that, reaped with `KILL QUERY`. Keep the cap **below**
+the injected client's socket timeout — 30s on both bundled `utopia-php/client`
+adapters — or the socket dies first and the query runs to completion anyway,
+with retries stacking more of them onto the cluster.
+
+```php
+$adapter = new ClickHouse(
+    host: 'clickhouse-server',
+    client: new Client((new CurlAdapter())->withTimeout(10.0)),
+    readTimeout: 8, // must stay under the client's 10s socket timeout
+);
+```
+
+Writes are never capped — starving ingest is worse than a slow read. Pass
+`readTimeout: null` for a `readonly = 1` ClickHouse user, which is not allowed
+to change settings; the adapter also detects that rejection at runtime and
+falls back to uncapped reads.
+
 ### Using Database Adapter
 
 ```php
