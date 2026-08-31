@@ -70,13 +70,16 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $this->assertStringContainsString("toStartOfHour(time, 'UTC') AS timeBucket", $ddl);
     }
 
-    public function testGaugeProjectionsLeadWithTenantAndKeepRawTime(): void
+    public function testGaugeProjectionsAreLeftOnTheirOriginalShape(): void
     {
         $ddl = $this->showCreate($this->resolveTableName($this->adapter, 'getGaugesTableName'));
 
-        // argMax picks the latest reading by `time`, so only the key order changes.
+        // Gauges are deliberately excluded from the events reshape: they show
+        // no measured read problem, and bucketing `time` away would only cost
+        // a migration, since argMax orders on the raw column. Pinned here so
+        // the exclusion is not "finished" without fresh measurements.
         $this->assertStringContainsString(
-            "GROUP BY\n            tenant,\n            metric,\n            time,\n            service",
+            "GROUP BY\n            metric,\n            time,\n            tenant,\n            service",
             $ddl
         );
         $this->assertStringNotContainsString('timeBucket', $ddl);

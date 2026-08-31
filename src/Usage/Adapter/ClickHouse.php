@@ -1028,13 +1028,9 @@ class ClickHouse extends SQL
 
     /**
      * Per-dim projection slate for gauges. The projection stores
-     * argMax(value, time) per ([tenant,] metric, time, dims) tuple; the
+     * argMax(value, time) per (metric, time, [tenant,] dims) tuple; the
      * ClickHouse optimizer rewrites grouped argMax reads against the base
      * table to read from the projection.
-     *
-     * Gauges keep raw `time` rather than an hourly bucket: argMax picks the
-     * latest reading by `time`, so bucketing it away would leave grouped
-     * argMax reads with nothing to order on and stop them routing.
      *
      * @var array<array{name: string, dims: array<int, string>}>
      */
@@ -1095,12 +1091,10 @@ class ClickHouse extends SQL
 
         $this->setLightweightMutationProjectionMode($this->getEventsTableName());
         foreach (self::EVENT_PROJECTIONS as $projection) {
-            $this->addProjection(
+            $this->addEventProjection(
                 $this->getEventsTableName(),
                 $projection['name'],
-                $projection['dims'],
-                'sum(value) AS value',
-                hourly: true
+                $projection['dims']
             );
         }
         $this->setLightweightMutationProjectionMode($this->getGaugesTableName());
@@ -1109,8 +1103,7 @@ class ClickHouse extends SQL
                 $this->getGaugesTableName(),
                 $projection['name'],
                 $projection['dims'],
-                'argMax(value, time) AS value',
-                hourly: false
+                'argMax(value, time) AS value'
             );
         }
     }
@@ -1266,10 +1259,45 @@ class ClickHouse extends SQL
 
     /**
      * Idempotently add a projection to a base table. Projection columns are
-     * ([tenant,] metric, time key, ...dims, aggregate) and the GROUP BY shape
+     * (metric, time, [tenant,] ...dims, aggregate) and the GROUP BY shape
      * matches; the ClickHouse optimizer picks this projection for any
      * grouped query whose GROUP BY is a subset of those keys and whose
-     * filters are expressible on the projection columns.
+     * filters are expressible on the projection columns. Raw `time` is
+     * kept in the projection (not `toStartOfDay`) so `WHERE time BETWEEN`
+     * filters can match the projection without query rewriting.
+     *
+     * @param array<int, string> $dims
+     */
+    private function addProjection(string $baseTable, string $name, array $dims, string $aggregateExpr): void
+    {
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($baseTable);
+
+        $selectParts = ['metric', 'time'];
+        $groupParts = ['metric', 'time'];
+        if ($this->sharedTables) {
+            $selectParts[] = 'tenant';
+            $groupParts[] = 'tenant';
+        }
+        foreach ($dims as $dim) {
+            $selectParts[] = $this->escapeIdentifier($dim);
+            $groupParts[] = $this->escapeIdentifier($dim);
+        }
+        $selectParts[] = $aggregateExpr;
+
+        $selectSql = implode(', ', $selectParts);
+        $groupSql = implode(', ', $groupParts);
+
+        $sql = "ALTER TABLE {$escapedTable} ADD PROJECTION IF NOT EXISTS {$name} ("
+            . "SELECT {$selectSql} "
+            . "GROUP BY {$groupSql}"
+            . ")";
+
+        $this->query($sql);
+    }
+
+    /**
+     * Idempotently add an event projection, keyed
+     * (tenant, metric, hourly bucket, ...dims).
      *
      * A projection is sorted by its GROUP BY order, so tenant has to lead it
      * for the same reason it leads the base table's ORDER BY: without that,
@@ -1278,14 +1306,13 @@ class ClickHouse extends SQL
      * reading 344 marks, which is not better than the original table with
      * 26 marks").
      *
-     * $hourly keys the projection on EVENT_TIME_BUCKET instead of raw
-     * `time`. Raw millisecond `time` groups almost nothing, which makes the
-     * projection a full-size copy of the table; the hourly key makes it
-     * O(distinct tenant × metric × hour × dim) instead of O(rows).
+     * Keying on EVENT_TIME_BUCKET rather than raw millisecond `time` — which
+     * groups almost nothing, leaving a full-size copy of the table — makes
+     * the projection O(distinct tenant × metric × hour × dim).
      *
      * @param array<int, string> $dims
      */
-    private function addProjection(string $baseTable, string $name, array $dims, string $aggregateExpr, bool $hourly): void
+    private function addEventProjection(string $baseTable, string $name, array $dims): void
     {
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($baseTable);
 
@@ -1297,13 +1324,13 @@ class ClickHouse extends SQL
         }
         $selectParts[] = 'metric';
         $groupParts[] = 'metric';
-        $selectParts[] = $hourly ? self::EVENT_TIME_BUCKET . ' AS `timeBucket`' : 'time';
-        $groupParts[] = $hourly ? '`timeBucket`' : 'time';
+        $selectParts[] = self::EVENT_TIME_BUCKET . ' AS `timeBucket`';
+        $groupParts[] = '`timeBucket`';
         foreach ($dims as $dim) {
             $selectParts[] = $this->escapeIdentifier($dim);
             $groupParts[] = $this->escapeIdentifier($dim);
         }
-        $selectParts[] = $aggregateExpr;
+        $selectParts[] = 'sum(value) AS value';
 
         $selectSql = implode(', ', $selectParts);
         $groupSql = implode(', ', $groupParts);
