@@ -57,6 +57,30 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
     }
 
     /**
+     * Start of the containing hour. The event projections are keyed on
+     * toStartOfHour(time), so only a bound on an hour boundary can be
+     * re-expressed on the bucket without moving the window edge — everything
+     * else keeps the raw predicate and reads the base table.
+     */
+    private function hourAligned(string $modifier): string
+    {
+        $dt = new DateTime($modifier, new DateTimeZone('UTC'));
+        return $dt->setTime((int) $dt->format('H'), 0, 0)->format('Y-m-d H:i:s');
+    }
+
+    /**
+     * Last representable instant of the containing hour. An *inclusive* upper
+     * bound is only expressible on the bucket one tick below a boundary:
+     * `<= 13:59:59.999` is `< 14:00`, whereas `<= 14:00:00.000` would need the
+     * single instant 14:00 out of a bucket the projection stores whole.
+     */
+    private function hourEnd(string $modifier): string
+    {
+        $dt = new DateTime($modifier, new DateTimeZone('UTC'));
+        return $dt->setTime((int) $dt->format('H'), 59, 59)->format('Y-m-d H:i:s.') . '999';
+    }
+
+    /**
      * @param array<string, string> $tags
      */
     private function seedHistoricalRow(string $metric, int $value, string $modifier, array $tags = []): void
@@ -104,8 +128,8 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
      */
     public function testTopNGroupedQueryRoutesToMatchingProjection(array $dims, string $expectedProjection): void
     {
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = $this->hourAligned('-7 days');
+        $end = $this->hourEnd('-2 days');
 
         $queries = [];
         foreach ($dims as $dim) {
@@ -126,8 +150,8 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
     public function testMultiDimNotInAnyProjectionFallsBackToTable(): void
     {
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = $this->hourAligned('-7 days');
+        $end = $this->hourEnd('-2 days');
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
@@ -147,8 +171,8 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         // resourceType is a column on the events table but not in p_by_path's
         // projection; the optimizer cannot satisfy this query from the
         // projection and must scan the base table.
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = $this->hourAligned('-7 days');
+        $end = $this->hourEnd('-2 days');
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
@@ -165,12 +189,10 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
     public function testSubDayIntervalStillRoutesToProjection(): void
     {
-        // Projections retain raw `time`, so the 1h bucket query
-        // toStartOfInterval(time, 1 HOUR) can still be satisfied from
-        // the projection — and that's a net win over scanning the base
-        // table.
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+        // The 1h bucket is the projection's own key, so this is the shape it
+        // serves most directly.
+        $start = $this->hourAligned('-7 days');
+        $end = $this->hourEnd('-2 days');
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
@@ -187,8 +209,8 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
     public function testWindowStraddlesTodayStillRoutesToProjection(): void
     {
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('+1 hour'))->format('Y-m-d H:i:s');
+        $start = $this->hourAligned('-7 days');
+        $end = $this->hourEnd('+2 hours');
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
@@ -204,6 +226,171 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         // Projections are derived in the same write transaction as the
         // parent insert, so straddle-today windows still route through
         // them — no hybrid plumbing needed.
+        $this->assertProjectionUsed($queryId, 'p_by_path');
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function coarseIntervalProvider(): array
+    {
+        return ['1d' => ['1d'], '1w' => ['1w'], '1M' => ['1M']];
+    }
+
+    /**
+     * @dataProvider coarseIntervalProvider
+     */
+    public function testCoarseIntervalRoutesThroughTheHourlyBucket(string $interval): void
+    {
+        // Every routable bucket is a whole number of hours, so composing it over
+        // the projection's key yields the same value the base table would.
+        $start = $this->hourAligned('-7 days');
+        $end = $this->hourEnd('-2 days');
+
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
+        $rolled = $this->usage->find('1', [
+            UsageQuery::groupByInterval('time', $interval),
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', [$this->metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
+        $this->assertProjectionUsed($queryId, 'p_by_path');
+    }
+
+    public function testSubHourIntervalReadsTheBaseTable(): void
+    {
+        // A 15m bucket needs detail the hourly projection has already summed
+        // away, so the read stays on the base table.
+        $start = $this->hourAligned('-7 days');
+        $end = $this->hourEnd('-2 days');
+
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
+        $rolled = $this->usage->find('1', [
+            UsageQuery::groupByInterval('time', '15m'),
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', [$this->metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
+        $this->assertNoProjectionUsed($queryId);
+    }
+
+    public function testMidHourWindowKeepsRawPredicateAndTotals(): void
+    {
+        // The window edge cannot be expressed on the bucket, so the rewrite is
+        // declined: slower, but the caller's boundary is not moved.
+        $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(13, 37, 21)->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days', new DateTimeZone('UTC')))->setTime(9, 14, 3)->format('Y-m-d H:i:s');
+
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
+        $rolled = $this->usage->find('1', [
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', [$this->metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+            Query::limit(50),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
+        $this->assertNoProjectionUsed($queryId);
+    }
+
+    public function testDayIntervalBucketsMatchAnUnbucketedDayRollup(): void
+    {
+        // The day bucket is composed over the projection's hourly key rather
+        // than taken from raw `time`. That only holds if every bucket value
+        // survives the composition, so compare bucket-for-bucket against a
+        // direct base-table scan rather than just the grand total.
+        foreach (['-5 days -2 hours', '-5 days -9 hours', '-4 days -1 hour', '-4 days -17 hours'] as $offset) {
+            $this->seedHistoricalRow($this->metric, 7, $offset, ['path' => '/v1/a']);
+        }
+
+        $start = $this->hourAligned('-7 days');
+        $end = $this->hourEnd('-2 days');
+
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
+        $rolled = $this->usage->find('1', [
+            UsageQuery::groupByInterval('time', '1d'),
+            Query::equal('metric', [$this->metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertProjectionUsed($queryId, 'p_by_path');
+        $this->assertNotEmpty($rolled);
+        $this->assertSame($this->rawDayBuckets($start, $end), $this->bucketsOf($rolled));
+    }
+
+    public function testTimeSeriesDayIntervalRoutesAndMatchesRawScan(): void
+    {
+        foreach (['-5 days -2 hours', '-5 days -9 hours', '-4 days -1 hour'] as $offset) {
+            $this->seedHistoricalRow($this->metric, 7, $offset, ['path' => '/v1/a']);
+        }
+
+        $start = $this->hourAligned('-7 days');
+        $end = $this->hourEnd('-2 days');
+
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
+        $series = $this->usage->getTimeSeries('1', [$this->metric], '1d', $start, $end, [], false, Usage::TYPE_EVENT);
+
+        $this->assertProjectionUsed($queryId, 'p_by_path');
+
+        $points = [];
+        foreach ($series[$this->metric]['data'] as $point) {
+            $points[(string) $point['date']] = (int) $point['value'];
+        }
+        $this->assertNotEmpty($points);
+        $this->assertSame($this->rawDayBuckets($start, $end), $points);
+    }
+
+    public function testGaugeReadKeepsTheRawTimePredicate(): void
+    {
+        // Gauge projections still key on raw `time`, so gauge reads are left
+        // on their original predicate — the billing gauge rollups included.
+        $start = $this->hourAligned('-7 days');
+        $end = $this->hourEnd('-2 days');
+
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
+        $this->usage->find('1', [
+            UsageQuery::groupBy('resourceId'),
+            Query::equal('metric', [$this->metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_GAUGE);
+
+        $this->assertStringNotContainsString('toStartOfHour', $this->queryTextFor($queryId));
+    }
+
+    public function testInclusiveEndOfDayUpperBoundRoutes(): void
+    {
+        // `<= 23:59:59.999` is `< midnight`, which is on an hour boundary —
+        // the shape callers reach for when they mean "through the end of the
+        // day" still routes.
+        $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days', new DateTimeZone('UTC')))->setTime(23, 59, 59)->format('Y-m-d H:i:s.') . '999';
+
+        $queryId = bin2hex(random_bytes(8));
+        $this->adapter->setNextQueryId($queryId);
+        $rolled = $this->usage->find('1', [
+            UsageQuery::groupBy('path'),
+            Query::equal('metric', [$this->metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+            Query::limit(50),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
         $this->assertProjectionUsed($queryId, 'p_by_path');
     }
 
@@ -233,6 +420,70 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             Query::lessThanEqual('time', $end),
         ], 'value', Usage::TYPE_EVENT);
         return is_int($result) ? $result : 0;
+    }
+
+    /**
+     * Day totals read straight off the base table with projections disabled —
+     * the reference the composed day bucket has to reproduce exactly.
+     *
+     * @return array<string, int>
+     */
+    private function rawDayBuckets(string $start, string $end): array
+    {
+        $database = $this->databaseName($this->adapter);
+        $table = $this->resolveTableName($this->adapter, 'getEventsTableName');
+
+        $raw = $this->queryRaw($this->adapter, "SELECT toStartOfDay(`time`, 'UTC') AS bucket, sum(`value`) AS value "
+            . "FROM `{$database}`.`{$table}` "
+            . "WHERE `tenant` = '1' AND `metric` = '" . addslashes($this->metric) . "' "
+            . "AND `time` >= '{$start}' AND `time` <= '{$end}' "
+            . 'GROUP BY bucket ORDER BY bucket ASC '
+            . 'SETTINGS optimize_use_projections = 0 FORMAT JSON');
+
+        $json = json_decode($raw, true);
+        $out = [];
+        $data = (is_array($json) && is_array($json['data'] ?? null)) ? $json['data'] : [];
+        foreach ($data as $row) {
+            if (!is_array($row) || !is_string($row['bucket'] ?? null) || !is_numeric($row['value'] ?? null)) {
+                continue;
+            }
+            $out[str_replace(' ', 'T', $row['bucket']) . '+00:00'] = (int) $row['value'];
+        }
+        return $out;
+    }
+
+    /**
+     * @param array<\Utopia\Usage\Metric> $metrics
+     * @return array<string, int>
+     */
+    private function bucketsOf(array $metrics): array
+    {
+        $out = [];
+        foreach ($metrics as $metric) {
+            $time = $metric->getAttribute('time');
+            $value = $metric->getValue(0);
+            $out[is_string($time) ? $time : ''] = is_numeric($value) ? (int) $value : 0;
+        }
+        ksort($out);
+        return $out;
+    }
+
+    private function queryTextFor(string $queryId): string
+    {
+        $this->queryRaw($this->adapter, 'SYSTEM FLUSH LOGS');
+
+        $escaped = addslashes($queryId);
+        $raw = $this->queryRaw($this->adapter, "SELECT query FROM system.query_log "
+            . "WHERE query_id = '{$escaped}' AND type = 'QueryFinish' "
+            . 'ORDER BY event_time DESC LIMIT 1 FORMAT JSON');
+
+        $json = json_decode($raw, true);
+        $data = (is_array($json) && is_array($json['data'] ?? null)) ? $json['data'] : [];
+        $row = $data[0] ?? null;
+        if (is_array($row) && is_string($row['query'] ?? null)) {
+            return $row['query'];
+        }
+        return '';
     }
 
     /**
@@ -301,8 +552,8 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
     public function testIdFilterForcesRaw(): void
     {
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = $this->hourAligned('-7 days');
+        $end = $this->hourEnd('-2 days');
 
         $route = $this->routeFor([
             Query::equal('metric', [$this->metric]),
@@ -316,8 +567,8 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
 
     public function testValueFilterForcesRaw(): void
     {
-        $start = (new DateTime('-7 days'))->format('Y-m-d H:i:s');
-        $end = (new DateTime('-2 days'))->format('Y-m-d H:i:s');
+        $start = $this->hourAligned('-7 days');
+        $end = $this->hourEnd('-2 days');
 
         $route = $this->routeFor([
             Query::equal('metric', [$this->metric]),

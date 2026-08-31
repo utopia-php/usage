@@ -57,6 +57,34 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $this->assertStringContainsString('`sdkVersion` LowCardinality(Nullable(String)) CODEC(ZSTD(3))', $ddl);
     }
 
+    public function testEventProjectionsLeadWithTenantAndKeyOnTheHourlyBucket(): void
+    {
+        $ddl = $this->showCreate($this->resolveTableName($this->adapter, 'getEventsTableName'));
+
+        // A projection is sorted by its GROUP BY order, so key order is the
+        // whole point of this assertion, not just its contents.
+        $this->assertStringContainsString(
+            "GROUP BY\n            tenant,\n            metric,\n            timeBucket,\n            path",
+            $ddl
+        );
+        $this->assertStringContainsString("toStartOfHour(time, 'UTC') AS timeBucket", $ddl);
+    }
+
+    public function testGaugeProjectionsAreLeftOnTheirOriginalShape(): void
+    {
+        $ddl = $this->showCreate($this->resolveTableName($this->adapter, 'getGaugesTableName'));
+
+        // Gauges are deliberately excluded from the events reshape: they show
+        // no measured read problem, and bucketing `time` away would only cost
+        // a migration, since argMax orders on the raw column. Pinned here so
+        // the exclusion is not "finished" without fresh measurements.
+        $this->assertStringContainsString(
+            "GROUP BY\n            metric,\n            time,\n            tenant,\n            service",
+            $ddl
+        );
+        $this->assertStringNotContainsString('timeBucket', $ddl);
+    }
+
     public function testEventsTableSwapsBloomForSetOnLowCardinality(): void
     {
         $ddl = $this->showCreate($this->resolveTableName($this->adapter, 'getEventsTableName'));

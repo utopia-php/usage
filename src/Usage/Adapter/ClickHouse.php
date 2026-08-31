@@ -826,6 +826,102 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Re-express `time` filters on the hourly bucket so a grouped read can route.
+     * Only hour-aligned bounds are exactly expressible; anything else returns null
+     * and keeps the raw predicate, so no caller's window shifts.
+     *
+     * @param array<Query> $filters
+     * @return array{filters: array<int, Query>, conditions: array<int, string>, bindings: array<string, string>}|null
+     */
+    private function bucketAlignedFilters(array $filters): ?array
+    {
+        $kept = [];
+        $lower = null;
+        $upper = null;
+
+        foreach ($filters as $query) {
+            if ($query->getAttribute() !== 'time') {
+                $kept[] = $query;
+                continue;
+            }
+
+            $values = $query->getValues();
+
+            // Half-open [lower, upper) in epoch ms. An unreadable bound aborts rather
+            // than being dropped, which would silently widen the window.
+            $from = null;
+            $to = null;
+            switch ($query->getMethod()) {
+                case Method::GreaterThanEqual:
+                    $from = $this->toEpochMillis($values[0] ?? null);
+                    break;
+                case Method::GreaterThan:
+                    $from = $this->toEpochMillis($values[0] ?? null);
+                    $from = $from === null ? null : $from + 1;
+                    break;
+                case Method::LessThan:
+                    $to = $this->toEpochMillis($values[0] ?? null);
+                    break;
+                case Method::LessThanEqual:
+                    $to = $this->toEpochMillis($values[0] ?? null);
+                    $to = $to === null ? null : $to + 1;
+                    break;
+                case Method::Between:
+                    $from = $this->toEpochMillis($values[0] ?? null);
+                    $to = $this->toEpochMillis($values[1] ?? null);
+                    if ($from === null || $to === null) {
+                        return null;
+                    }
+                    $to++;
+                    break;
+                default:
+                    return null;
+            }
+
+            if ($from === null && $to === null) {
+                return null;
+            }
+
+            $lower = $from === null ? $lower : ($lower === null ? $from : max($lower, $from));
+            $upper = $to === null ? $upper : ($upper === null ? $to : min($upper, $to));
+        }
+
+        $conditions = [];
+        $bindings = [];
+        foreach ([['bucketFrom', '>=', $lower], ['bucketTo', '<', $upper]] as [$name, $operator, $bound]) {
+            if ($bound === null) {
+                continue;
+            }
+            if ($bound % 3_600_000 !== 0) {
+                return null;
+            }
+            $conditions[] = self::EVENT_TIME_BUCKET . " {$operator} {{$name}:" . $this->getParamType('time') . '}';
+            $bindings[$name] = (new DateTimeImmutable('@' . \intdiv($bound, 1000)))->format('Y-m-d H:i:s.v');
+        }
+
+        return ['filters' => $kept, 'conditions' => $conditions, 'bindings' => $bindings];
+    }
+
+    /**
+     * Null for anything unreadable, which aborts the rewrite rather than guessing.
+     */
+    private function toEpochMillis(mixed $value): ?int
+    {
+        $text = $this->stringifyTime($value);
+        if ($text === null) {
+            return null;
+        }
+
+        try {
+            $dt = new DateTimeImmutable($text, new DateTimeZone('UTC'));
+        } catch (Exception $e) {
+            return null;
+        }
+
+        return $dt->getTimestamp() * 1000 + (int) $dt->format('v');
+    }
+
+    /**
      * Walk an array of Query objects and rewrite `time` values into ClickHouse
      * wire format (`Y-m-d H:i:s.v`). The builder forwards values verbatim, so
      * datetime normalisation must happen up front before the values reach the
@@ -880,6 +976,12 @@ class ClickHouse extends SQL
 
         return self::toInt($rows[0]['total']);
     }
+
+    /** Reads must emit this verbatim to route; the optimizer matches on the exact expression. */
+    private const EVENT_TIME_BUCKET = "toStartOfHour(`time`, 'UTC')";
+
+    /** Sub-hour intervals need detail the bucket summed away. @var list<string> */
+    private const BUCKET_ROUTABLE_INTERVALS = ['1h', '1d', '1w', '1M'];
 
     /**
      * Per-dim projection slate. Each entry declares an `ADD PROJECTION` on
@@ -962,11 +1064,10 @@ class ClickHouse extends SQL
 
         $this->setLightweightMutationProjectionMode($this->getEventsTableName());
         foreach (self::EVENT_PROJECTIONS as $projection) {
-            $this->addProjection(
+            $this->addEventProjection(
                 $this->getEventsTableName(),
                 $projection['name'],
-                $projection['dims'],
-                'sum(value) AS value'
+                $projection['dims']
             );
         }
         $this->setLightweightMutationProjectionMode($this->getGaugesTableName());
@@ -1155,6 +1256,45 @@ class ClickHouse extends SQL
             $groupParts[] = $this->escapeIdentifier($dim);
         }
         $selectParts[] = $aggregateExpr;
+
+        $selectSql = implode(', ', $selectParts);
+        $groupSql = implode(', ', $groupParts);
+
+        $sql = "ALTER TABLE {$escapedTable} ADD PROJECTION IF NOT EXISTS {$name} ("
+            . "SELECT {$selectSql} "
+            . "GROUP BY {$groupSql}"
+            . ")";
+
+        $this->query($sql);
+    }
+
+    /**
+     * Keyed (tenant, metric, hourly bucket, ...dims).
+     *
+     * Tenant leads because a projection is sorted by its GROUP BY order; the hourly
+     * key keeps it O(tenant × metric × hour × dim) instead of a copy of the table.
+     *
+     * @param array<int, string> $dims
+     */
+    private function addEventProjection(string $baseTable, string $name, array $dims): void
+    {
+        $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($baseTable);
+
+        $selectParts = [];
+        $groupParts = [];
+        if ($this->sharedTables) {
+            $selectParts[] = 'tenant';
+            $groupParts[] = 'tenant';
+        }
+        $selectParts[] = 'metric';
+        $groupParts[] = 'metric';
+        $selectParts[] = self::EVENT_TIME_BUCKET . ' AS `timeBucket`';
+        $groupParts[] = '`timeBucket`';
+        foreach ($dims as $dim) {
+            $selectParts[] = $this->escapeIdentifier($dim);
+            $groupParts[] = $this->escapeIdentifier($dim);
+        }
+        $selectParts[] = 'sum(value) AS value';
 
         $selectSql = implode(', ', $selectParts);
         $groupSql = implode(', ', $groupParts);
@@ -2363,11 +2503,21 @@ class ClickHouse extends SQL
 
         $groupParts = ['`metric`'];
 
+        // Only events carry an hourly key, and only hour-or-coarser derives from it.
+        $bucketed = null;
+        if (
+            $type === Usage::TYPE_EVENT
+            && (!$hasInterval || in_array($parsed['groupByInterval'], self::BUCKET_ROUTABLE_INTERVALS, true))
+        ) {
+            $bucketed = $this->bucketAlignedFilters($parsed['filters']);
+        }
+        $timeExpr = $bucketed === null ? '`time`' : self::EVENT_TIME_BUCKET;
+
         // Bucket column is only emitted when time bucketing is requested.
         // Without it the result is a flat aggregate per (metric, …dims).
         if ($hasInterval) {
             $intervalSql = UsageQuery::VALID_INTERVALS[$parsed['groupByInterval']];
-            $builder->selectRaw("toStartOfInterval(`time`, {$intervalSql}) AS `bucket`");
+            $builder->selectRaw("toStartOfInterval({$timeExpr}, {$intervalSql}) AS `bucket`");
             $groupParts[] = '`bucket`';
         }
 
@@ -2375,6 +2525,15 @@ class ClickHouse extends SQL
             $escapedDim = $this->escapeIdentifier($dim);
             $builder->selectRaw($escapedDim);
             $groupParts[] = $escapedDim;
+        }
+
+        $bucketBindings = [];
+        if ($bucketed !== null) {
+            $parsed['filters'] = $bucketed['filters'];
+            $bucketBindings = $bucketed['bindings'];
+            foreach ($bucketed['conditions'] as $condition) {
+                $builder->whereRaw($condition);
+            }
         }
 
         $this->applyFilters($builder, $tenant, $parsed);
@@ -2417,7 +2576,7 @@ class ClickHouse extends SQL
         $statement = $builder->build();
         $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-        $result = $this->query($sql, $statement->namedBindings ?? []);
+        $result = $this->query($sql, array_merge($statement->namedBindings ?? [], $bucketBindings));
 
         return $this->parseAggregatedResults($result, $type);
     }
@@ -3528,24 +3687,40 @@ class ClickHouse extends SQL
             ? 'SUM(`value`) AS `agg_value`'
             : 'argMax(`value`, `time`) AS `agg_value`';
 
+        $window = Query::between('time', $this->formatDateTime($startDate), $this->formatDateTime($endDate));
+
+        // Hour-or-coarser, so both re-express on the hourly key when bounds align.
+        $bucketed = $type === Usage::TYPE_EVENT
+            ? $this->bucketAlignedFilters(array_merge($parsed['filters'], [$window]))
+            : null;
+        $timeExpr = $bucketed === null ? '`time`' : self::EVENT_TIME_BUCKET;
+
         $builder = $this->newBuilder($type)
             ->from($tableName)
             ->select(['metric'])
-            ->selectRaw("{$timeFunction}(`time`, 'UTC') AS `bucket`")
+            ->selectRaw("{$timeFunction}({$timeExpr}, 'UTC') AS `bucket`")
             ->selectRaw($valueExpr)
-            ->filter([
-                Query::equal('metric', $metrics),
-                Query::between('time', $this->formatDateTime($startDate), $this->formatDateTime($endDate)),
-            ])
+            ->filter([Query::equal('metric', $metrics)])
             ->groupByRaw('`metric`, `bucket`')
             ->orderByRaw('`bucket` ASC');
+
+        $bucketBindings = [];
+        if ($bucketed === null) {
+            $builder->filter([$window]);
+        } else {
+            $parsed['filters'] = $bucketed['filters'];
+            $bucketBindings = $bucketed['bindings'];
+            foreach ($bucketed['conditions'] as $condition) {
+                $builder->whereRaw($condition);
+            }
+        }
 
         $this->applyFilters($builder, $tenant, $parsed);
 
         $statement = $builder->build();
         $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-        $result = $this->query($sql, $statement->namedBindings ?? []);
+        $result = $this->query($sql, array_merge($statement->namedBindings ?? [], $bucketBindings));
         $rows = $this->decodeRows($result);
 
         // Initialize result structure
