@@ -229,18 +229,28 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         $this->assertProjectionUsed($queryId, 'p_by_path');
     }
 
-    public function testDayIntervalRoutesThroughTheHourlyBucket(): void
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function coarseIntervalProvider(): array
     {
-        // toStartOfDay(time) does not match the projection's key, but
-        // composing the day bucket over that key does — and yields the same
-        // value, because a day boundary is also an hour boundary.
+        return ['1d' => ['1d'], '1w' => ['1w'], '1M' => ['1M']];
+    }
+
+    /**
+     * @dataProvider coarseIntervalProvider
+     */
+    public function testCoarseIntervalRoutesThroughTheHourlyBucket(string $interval): void
+    {
+        // Every routable bucket is a whole number of hours, so composing it over
+        // the projection's key yields the same value the base table would.
         $start = $this->hourAligned('-7 days');
         $end = $this->hourEnd('-2 days');
 
         $queryId = bin2hex(random_bytes(8));
         $this->adapter->setNextQueryId($queryId);
         $rolled = $this->usage->find('1', [
-            UsageQuery::groupByInterval('time', '1d'),
+            UsageQuery::groupByInterval('time', $interval),
             UsageQuery::groupBy('path'),
             Query::equal('metric', [$this->metric]),
             Query::greaterThanEqual('time', $start),
