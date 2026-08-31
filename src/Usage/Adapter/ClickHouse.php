@@ -826,17 +826,9 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Re-express the `time` filters on EVENT_TIME_BUCKET so a grouped read
-     * can be served from a projection, which stores the hourly key and not
-     * raw `time`.
-     *
-     * Only bounds already sitting on an hour boundary can be rewritten: for
-     * `time >= 13:37` neither `bucket >= 13:37` (drops the partial first
-     * hour) nor `bucket >= 13:00` (adds it) returns the caller's rows.
-     * Anything not expressible exactly returns null, and the caller keeps its
-     * raw predicate — the read stays on the base table, with the same result
-     * it returns today. That is what keeps day-aligned billing windows and
-     * arbitrary console windows alike safe from a boundary shift.
+     * Re-express `time` filters on the hourly bucket so a grouped read can route.
+     * Only hour-aligned bounds are exactly expressible; anything else returns null
+     * and keeps the raw predicate, so no caller's window shifts.
      *
      * @param array<Query> $filters
      * @return array{filters: array<int, Query>, conditions: array<int, string>, bindings: array<string, string>}|null
@@ -855,11 +847,8 @@ class ClickHouse extends SQL
 
             $values = $query->getValues();
 
-            // Bounds are canonicalised to a half-open [lower, upper) window in
-            // epoch milliseconds — the column's own resolution — so `> x` and
-            // `<= y` reduce to the same two comparisons as `>= x` and `< y`.
-            // An unreadable bound aborts the rewrite rather than being
-            // dropped, which would silently widen the window.
+            // Half-open [lower, upper) in epoch ms. An unreadable bound aborts rather
+            // than being dropped, which would silently widen the window.
             $from = null;
             $to = null;
             switch ($query->getMethod()) {
@@ -914,9 +903,7 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Epoch milliseconds for an already wire-formatted `time` value. Null for
-     * anything that can't be read as a UTC timestamp, which aborts the
-     * bucket rewrite rather than guessing a boundary.
+     * Null for anything unreadable, which aborts the rewrite rather than guessing.
      */
     private function toEpochMillis(mixed $value): ?int
     {
@@ -990,24 +977,10 @@ class ClickHouse extends SQL
         return self::toInt($rows[0]['total']);
     }
 
-    /**
-     * Hourly key the event projections are built on. The optimizer matches a
-     * projection on the exact grouping expression, so a read that wants to
-     * route has to emit this verbatim — `toStartOfInterval(time, INTERVAL 1
-     * HOUR)` computes the same value but does not match, and a predicate on
-     * raw `time` cannot be evaluated at all because the column is not stored.
-     * Composing over it (`toStartOfDay(<bucket>)`) does match, which is how
-     * the coarser intervals route.
-     */
+    /** Reads must emit this verbatim to route; the optimizer matches on the exact expression. */
     private const EVENT_TIME_BUCKET = "toStartOfHour(`time`, 'UTC')";
 
-    /**
-     * Intervals a read can serve off EVENT_TIME_BUCKET. Anything finer than
-     * an hour would need sub-bucket detail the projection has already summed
-     * away, so those keep reading the base table.
-     *
-     * @var list<string>
-     */
+    /** Sub-hour intervals need detail the bucket summed away. @var list<string> */
     private const BUCKET_ROUTABLE_INTERVALS = ['1h', '1d', '1w', '1M'];
 
     /**
@@ -1296,19 +1269,10 @@ class ClickHouse extends SQL
     }
 
     /**
-     * Idempotently add an event projection, keyed
-     * (tenant, metric, hourly bucket, ...dims).
+     * Keyed (tenant, metric, hourly bucket, ...dims).
      *
-     * A projection is sorted by its GROUP BY order, so tenant has to lead it
-     * for the same reason it leads the base table's ORDER BY: without that,
-     * a single tenant's rows are smeared across every granule and the
-     * optimizer rejects the projection outright ("usable but requires
-     * reading 344 marks, which is not better than the original table with
-     * 26 marks").
-     *
-     * Keying on EVENT_TIME_BUCKET rather than raw millisecond `time` — which
-     * groups almost nothing, leaving a full-size copy of the table — makes
-     * the projection O(distinct tenant × metric × hour × dim).
+     * Tenant leads because a projection is sorted by its GROUP BY order; the hourly
+     * key keeps it O(tenant × metric × hour × dim) instead of a copy of the table.
      *
      * @param array<int, string> $dims
      */
@@ -2539,9 +2503,7 @@ class ClickHouse extends SQL
 
         $groupParts = ['`metric`'];
 
-        // Only the event projections carry an hourly key, and only intervals
-        // of an hour or coarser can be derived from it. Everything else keeps
-        // reading raw `time`.
+        // Only events carry an hourly key, and only hour-or-coarser derives from it.
         $bucketed = null;
         if (
             $type === Usage::TYPE_EVENT
@@ -3727,9 +3689,7 @@ class ClickHouse extends SQL
 
         $window = Query::between('time', $this->formatDateTime($startDate), $this->formatDateTime($endDate));
 
-        // Both intervals here are an hour or coarser, so on events the window
-        // and the bucket can be re-expressed on the projection's hourly key
-        // whenever the caller's bounds land on an hour boundary.
+        // Hour-or-coarser, so both re-express on the hourly key when bounds align.
         $bucketed = $type === Usage::TYPE_EVENT
             ? $this->bucketAlignedFilters(array_merge($parsed['filters'], [$window]))
             : null;
