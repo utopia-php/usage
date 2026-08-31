@@ -828,12 +828,152 @@ class ClickHouse extends SQL
     /**
      * Re-express `time` filters on the hourly bucket so a grouped read can route.
      * Only hour-aligned bounds are exactly expressible; anything else returns null
-     * and keeps the raw predicate, so no caller's window shifts.
+     * and leaves the caller to split the window or keep the raw predicate, so no
+     * caller's window shifts.
      *
      * @param array<Query> $filters
      * @return array{filters: array<int, Query>, conditions: array<int, string>, bindings: array<string, string>}|null
      */
     private function bucketAlignedFilters(array $filters): ?array
+    {
+        $window = $this->timeWindowBounds($filters);
+        if ($window === null) {
+            return null;
+        }
+
+        $conditions = [];
+        $bindings = [];
+        foreach ([['bucketFrom', '>=', $window['lower']], ['bucketTo', '<', $window['upper']]] as [$name, $operator, $bound]) {
+            if ($bound === null) {
+                continue;
+            }
+            if ($bound % self::HOUR_MILLIS !== 0) {
+                return null;
+            }
+            $conditions[] = self::EVENT_TIME_BUCKET . " {$operator} {{$name}:" . $this->getParamType('time') . '}';
+            $bindings[$name] = $this->epochMillisToWire($bound);
+        }
+
+        return ['filters' => $window['filters'], 'conditions' => $conditions, 'bindings' => $bindings];
+    }
+
+    /**
+     * Whether some projection can serve this shape: it has to hold the grouped
+     * dims and every filtered column, or the optimizer falls back to the base
+     * table. Splitting such a read would buy three base-table branches instead
+     * of one, so the caller keeps its single query.
+     *
+     * @param array{filters: array<Query>, groupBy?: array<int, string>} $parsed
+     */
+    private function eventProjectionCovers(array $parsed): bool
+    {
+        $dims = array_values($parsed['groupBy'] ?? []);
+
+        $filtered = [];
+        foreach ($parsed['filters'] as $filter) {
+            $filtered[] = $filter->getAttribute();
+        }
+
+        foreach (self::EVENT_PROJECTIONS as $projection) {
+            if ($dims !== [] && $dims !== $projection['dims']) {
+                continue;
+            }
+            if (array_diff($filtered, array_merge(['tenant', 'metric', 'time'], $projection['dims'])) === []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Split a window whose edges fall mid-hour into an hour-aligned interior —
+     * the only part expressible on the projection's key — plus the one or two
+     * partial hours either side, which stay on raw `time`. Null when there is no
+     * whole hour to gain, leaving the caller on its single unsplit query.
+     *
+     * @param array<Query> $filters
+     * @return array{filters: array<int, Query>, branches: array<int, array{timeExpr: string, conditions: array<int, string>, bindings: array<string, string>}>}|null
+     */
+    private function splitEventWindow(array $filters): ?array
+    {
+        $window = $this->timeWindowBounds($filters);
+        if ($window === null) {
+            return null;
+        }
+
+        $lower = $window['lower'];
+        $upper = $window['upper'];
+
+        // intdiv truncates toward zero, so a pre-epoch bound would round the wrong way.
+        if (($lower ?? 0) < 0 || ($upper ?? 0) < 0) {
+            return null;
+        }
+
+        $interiorFrom = $lower === null ? null : \intdiv($lower + self::HOUR_MILLIS - 1, self::HOUR_MILLIS) * self::HOUR_MILLIS;
+        $interiorTo = $upper === null ? null : \intdiv($upper, self::HOUR_MILLIS) * self::HOUR_MILLIS;
+
+        // No whole hour between the edges — a single partial hour is cheaper unsplit.
+        if ($interiorFrom !== null && $interiorTo !== null && $interiorFrom >= $interiorTo) {
+            return null;
+        }
+
+        $edges = [];
+        if ($lower !== null && $lower !== $interiorFrom) {
+            $edges[] = ['head', $lower, $interiorFrom];
+        }
+        if ($upper !== null && $upper !== $interiorTo) {
+            $edges[] = ['tail', $interiorTo, $upper];
+        }
+        if ($edges === []) {
+            return null;
+        }
+
+        $branches = [$this->windowBranch(self::EVENT_TIME_BUCKET, 'bucket', $interiorFrom, $interiorTo)];
+        foreach ($edges as [$name, $from, $to]) {
+            $branches[] = $this->windowBranch('`time`', $name, $from, $to);
+        }
+
+        return ['filters' => $window['filters'], 'branches' => $branches];
+    }
+
+    /**
+     * Half-open bound predicates for one branch of a split window. Placeholders
+     * are named per branch so the merged statement has no collisions.
+     *
+     * @return array{timeExpr: string, conditions: array<int, string>, bindings: array<string, string>}
+     */
+    private function windowBranch(string $timeExpr, string $name, ?int $from, ?int $to): array
+    {
+        $conditions = [];
+        $bindings = [];
+        foreach ([[$name . 'From', '>=', $from], [$name . 'To', '<', $to]] as [$param, $operator, $bound]) {
+            if ($bound === null) {
+                continue;
+            }
+            $conditions[] = "{$timeExpr} {$operator} {{$param}:" . $this->getParamType('time') . '}';
+            $bindings[$param] = $this->epochMillisToWire($bound);
+        }
+
+        return ['timeExpr' => $timeExpr, 'conditions' => $conditions, 'bindings' => $bindings];
+    }
+
+    /** Wire format for an epoch-ms instant, keeping the millisecond part an edge bound carries. */
+    private function epochMillisToWire(int $millis): string
+    {
+        return (new DateTimeImmutable('@' . \intdiv($millis, 1000)))->format('Y-m-d H:i:s')
+            . '.' . str_pad((string) ($millis % 1000), 3, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * Reduce the `time` filters to one half-open [lower, upper) window in epoch
+     * ms and hand back the remaining filters. Null for anything unreadable —
+     * dropping a bound would silently widen the window.
+     *
+     * @param array<Query> $filters
+     * @return array{filters: array<int, Query>, lower: ?int, upper: ?int}|null
+     */
+    private function timeWindowBounds(array $filters): ?array
     {
         $kept = [];
         $lower = null;
@@ -886,20 +1026,7 @@ class ClickHouse extends SQL
             $upper = $to === null ? $upper : ($upper === null ? $to : min($upper, $to));
         }
 
-        $conditions = [];
-        $bindings = [];
-        foreach ([['bucketFrom', '>=', $lower], ['bucketTo', '<', $upper]] as [$name, $operator, $bound]) {
-            if ($bound === null) {
-                continue;
-            }
-            if ($bound % 3_600_000 !== 0) {
-                return null;
-            }
-            $conditions[] = self::EVENT_TIME_BUCKET . " {$operator} {{$name}:" . $this->getParamType('time') . '}';
-            $bindings[$name] = (new DateTimeImmutable('@' . \intdiv($bound, 1000)))->format('Y-m-d H:i:s.v');
-        }
-
-        return ['filters' => $kept, 'conditions' => $conditions, 'bindings' => $bindings];
+        return ['filters' => $kept, 'lower' => $lower, 'upper' => $upper];
     }
 
     /**
@@ -980,6 +1107,9 @@ class ClickHouse extends SQL
     /** Reads must emit this verbatim to route; the optimizer matches on the exact expression. */
     private const EVENT_TIME_BUCKET = "toStartOfHour(`time`, 'UTC')";
 
+    /** Width of that bucket, in the epoch milliseconds window bounds are reduced to. */
+    private const HOUR_MILLIS = 3_600_000;
+
     /** Sub-hour intervals need detail the bucket summed away. @var list<string> */
     private const BUCKET_ROUTABLE_INTERVALS = ['1h', '1d', '1w', '1M'];
 
@@ -988,8 +1118,16 @@ class ClickHouse extends SQL
      * the base events table. The ClickHouse optimizer transparently routes
      * grouped reads whose GROUP BY shape matches.
      *
-     * The (method, status) cross-product is bounded (~180 keys) so the two
-     * dims share a single projection; everything else is single-dim.
+     * Single-dim throughout: the console asks for these as separate breakdowns,
+     * and a shared (method, status) projection keys the cross-product — 19.2M
+     * rows on a 100M-row fixture against 1.15M + 2.55M for the two alone.
+     * ip, hostname, city and resourceId are left off as too high-cardinality.
+     *
+     * `path` is the outlier already here: it holds resource ids rather than
+     * route templates, so its key count tracks a customer's resource count and
+     * can approach the base table (48% of the rows at 30k paths per tenant),
+     * which buys the split little. Measure before assuming it still earns its
+     * ingest cost.
      *
      * @var array<array{name: string, dims: array<int, string>}>
      */
@@ -997,6 +1135,13 @@ class ClickHouse extends SQL
         ['name' => 'p_by_path', 'dims' => ['path']],
         ['name' => 'p_by_country', 'dims' => ['country']],
         ['name' => 'p_by_service', 'dims' => ['service']],
+        ['name' => 'p_by_method', 'dims' => ['method']],
+        ['name' => 'p_by_status', 'dims' => ['status']],
+        ['name' => 'p_by_clientType', 'dims' => ['clientType']],
+        ['name' => 'p_by_clientName', 'dims' => ['clientName']],
+        ['name' => 'p_by_deviceName', 'dims' => ['deviceName']],
+        ['name' => 'p_by_osName', 'dims' => ['osName']],
+        ['name' => 'p_by_sdk', 'dims' => ['sdk']],
     ];
 
     /**
@@ -2496,74 +2641,40 @@ class ClickHouse extends SQL
             $valueExpr = 'max(`value`) AS `value`';
         }
 
-        $builder = $this->newBuilder($type)
-            ->from($tableName)
-            ->select(['metric'])
-            ->selectRaw($valueExpr);
-
-        $groupParts = ['`metric`'];
-
         // Only events carry an hourly key, and only hour-or-coarser derives from it.
         $bucketed = null;
+        $split = null;
         if (
             $type === Usage::TYPE_EVENT
             && (!$hasInterval || in_array($parsed['groupByInterval'], self::BUCKET_ROUTABLE_INTERVALS, true))
         ) {
             $bucketed = $this->bucketAlignedFilters($parsed['filters']);
-        }
-        $timeExpr = $bucketed === null ? '`time`' : self::EVENT_TIME_BUCKET;
-
-        // Bucket column is only emitted when time bucketing is requested.
-        // Without it the result is a flat aggregate per (metric, …dims).
-        if ($hasInterval) {
-            $intervalSql = UsageQuery::VALID_INTERVALS[$parsed['groupByInterval']];
-            $builder->selectRaw("toStartOfInterval({$timeExpr}, {$intervalSql}) AS `bucket`");
-            $groupParts[] = '`bucket`';
-        }
-
-        foreach ($parsed['groupBy'] ?? [] as $dim) {
-            $escapedDim = $this->escapeIdentifier($dim);
-            $builder->selectRaw($escapedDim);
-            $groupParts[] = $escapedDim;
-        }
-
-        $bucketBindings = [];
-        if ($bucketed !== null) {
-            $parsed['filters'] = $bucketed['filters'];
-            $bucketBindings = $bucketed['bindings'];
-            foreach ($bucketed['conditions'] as $condition) {
-                $builder->whereRaw($condition);
+            // Splitting is only worth three branches when one of them can route:
+            // the projections store sum(value), so `max` has nothing to reach.
+            if ($bucketed === null && !isset($parsed['aggregate']) && $this->eventProjectionCovers($parsed)) {
+                $split = $this->splitEventWindow($parsed['filters']);
             }
         }
 
-        $this->applyFilters($builder, $tenant, $parsed);
+        if ($split !== null) {
+            $result = $this->querySplitAggregate($tenant, $parsed, $split, $tableName, $type, $valueExpr);
 
-        $builder->groupByRaw(implode(', ', $groupParts));
+            return $this->parseAggregatedResults($result, $type);
+        }
 
-        // Default ORDER BY:
-        // - With time bucketing: bucket ASC (chronological time series).
-        // - Dim-only: value DESC (top-N table semantics).
-        // For caller-supplied ORDER BY, `time` is rewritten to `bucket`
-        // only when bucket is present; otherwise sorting by time is
-        // invalid (the column is no longer in the SELECT after GROUP BY).
-        $orderAttributes = $parsed['orderAttributes'];
-        if (!empty($orderAttributes)) {
-            foreach ($orderAttributes as $entry) {
-                $attribute = $entry['attribute'];
-                if ($attribute === 'time') {
-                    if (!$hasInterval) {
-                        throw new Exception(
-                            'orderBy("time") requires groupByInterval — without time bucketing the result has no time column'
-                        );
-                    }
-                    $attribute = 'bucket';
-                }
-                $builder->orderByRaw($this->escapeIdentifier($attribute) . ' ' . $entry['direction']);
-            }
-        } elseif ($hasInterval) {
-            $builder->orderByRaw('`bucket` ASC');
-        } else {
-            $builder->orderByRaw('`value` DESC');
+        $builder = $this->aggregateBranchBuilder(
+            $tenant,
+            $parsed,
+            $bucketed === null ? $parsed['filters'] : $bucketed['filters'],
+            $tableName,
+            $type,
+            $valueExpr,
+            $bucketed === null ? '`time`' : self::EVENT_TIME_BUCKET,
+            $bucketed === null ? [] : $bucketed['conditions'],
+        );
+
+        foreach ($this->aggregateOrderClauses($parsed, $hasInterval) as $clause) {
+            $builder->orderByRaw($clause);
         }
 
         if (isset($parsed['limit'])) {
@@ -2576,9 +2687,175 @@ class ClickHouse extends SQL
         $statement = $builder->build();
         $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
 
-        $result = $this->query($sql, array_merge($statement->namedBindings ?? [], $bucketBindings));
+        $result = $this->query($sql, array_merge($statement->namedBindings ?? [], $bucketed['bindings'] ?? []));
 
         return $this->parseAggregatedResults($result, $type);
+    }
+
+    /**
+     * One grouped branch of an aggregated read. Branches differ only in the time
+     * expression they bucket on and the bounds they carry, so the SELECT and
+     * GROUP BY shape — which decides whether a projection can serve them — is
+     * built in one place.
+     *
+     * @param array{groupByInterval?: string, groupBy?: array<int, string>} $parsed
+     * @param array<Query> $filters
+     * @param array<int, string> $conditions
+     * @throws Exception
+     */
+    private function aggregateBranchBuilder(
+        ?string $tenant,
+        array $parsed,
+        array $filters,
+        string $tableName,
+        string $type,
+        string $valueExpr,
+        string $timeExpr,
+        array $conditions,
+    ): ClickHouseBuilder {
+        $builder = $this->newBuilder($type)
+            ->from($tableName)
+            ->select(['metric'])
+            ->selectRaw($valueExpr);
+
+        // Bucket column is only emitted when time bucketing is requested.
+        // Without it the result is a flat aggregate per (metric, …dims).
+        if (isset($parsed['groupByInterval'])) {
+            $intervalSql = UsageQuery::VALID_INTERVALS[$parsed['groupByInterval']];
+            $builder->selectRaw("toStartOfInterval({$timeExpr}, {$intervalSql}) AS `bucket`");
+        }
+
+        foreach ($parsed['groupBy'] ?? [] as $dim) {
+            $builder->selectRaw($this->escapeIdentifier($dim));
+        }
+
+        foreach ($conditions as $condition) {
+            $builder->whereRaw($condition);
+        }
+
+        $this->applyFilters($builder, $tenant, ['filters' => $filters]);
+
+        $builder->groupByRaw(implode(', ', $this->aggregateGroupParts($parsed)));
+
+        return $builder;
+    }
+
+    /**
+     * @param array{groupByInterval?: string, groupBy?: array<int, string>} $parsed
+     * @return array<int, string>
+     */
+    private function aggregateGroupParts(array $parsed): array
+    {
+        $parts = ['`metric`'];
+
+        if (isset($parsed['groupByInterval'])) {
+            $parts[] = '`bucket`';
+        }
+
+        foreach ($parsed['groupBy'] ?? [] as $dim) {
+            $parts[] = $this->escapeIdentifier($dim);
+        }
+
+        return $parts;
+    }
+
+    /**
+     * Default ORDER BY:
+     * - With time bucketing: bucket ASC (chronological time series).
+     * - Dim-only: value DESC (top-N table semantics).
+     * For caller-supplied ORDER BY, `time` is rewritten to `bucket`
+     * only when bucket is present; otherwise sorting by time is
+     * invalid (the column is no longer in the SELECT after GROUP BY).
+     *
+     * @param array{orderAttributes: array<int, array{attribute: string, direction: string}>} $parsed
+     * @return array<int, string>
+     * @throws Exception
+     */
+    private function aggregateOrderClauses(array $parsed, bool $hasInterval): array
+    {
+        if (empty($parsed['orderAttributes'])) {
+            return [$hasInterval ? '`bucket` ASC' : '`value` DESC'];
+        }
+
+        $clauses = [];
+        foreach ($parsed['orderAttributes'] as $entry) {
+            $attribute = $entry['attribute'];
+            if ($attribute === 'time') {
+                if (!$hasInterval) {
+                    throw new Exception(
+                        'orderBy("time") requires groupByInterval — without time bucketing the result has no time column'
+                    );
+                }
+                $attribute = 'bucket';
+            }
+            $clauses[] = $this->escapeIdentifier($attribute) . ' ' . $entry['direction'];
+        }
+
+        return $clauses;
+    }
+
+    /**
+     * Read a mid-hour window as an hour-aligned interior — which routes to a
+     * projection — UNION ALL its partial edge hours off the base table, summed
+     * back together outside. The branches partition the window, so re-summing
+     * outside is exact; ORDER BY / LIMIT move out with it because no single
+     * branch holds a whole group.
+     *
+     * @param array{groupByInterval?: string, groupBy?: array<int, string>, orderAttributes: array<int, array{attribute: string, direction: string}>, limit?: int, offset?: int} $parsed
+     * @param array{filters: array<int, Query>, branches: array<int, array{timeExpr: string, conditions: array<int, string>, bindings: array<string, string>}>} $split
+     * @throws Exception
+     */
+    private function querySplitAggregate(
+        ?string $tenant,
+        array $parsed,
+        array $split,
+        string $tableName,
+        string $type,
+        string $valueExpr,
+    ): string {
+        $branches = [];
+        $bindings = [];
+
+        foreach ($split['branches'] as $index => $branch) {
+            $statement = $this->aggregateBranchBuilder(
+                $tenant,
+                $parsed,
+                $split['filters'],
+                $tableName,
+                $type,
+                $valueExpr,
+                $branch['timeExpr'],
+                $branch['conditions'],
+            )->build();
+
+            // Each branch numbers its own bindings from param0, so they are
+            // renamed apart before the branches become one statement.
+            [$branchSql, $renamed] = $this->prefixNamedBindings(
+                $this->qualifyDdl($statement->query, $tableName),
+                $statement->namedBindings ?? [],
+                'b' . $index . '_',
+            );
+
+            $branches[] = $branchSql;
+            $bindings = array_merge($bindings, $renamed, $branch['bindings']);
+        }
+
+        $groupParts = $this->aggregateGroupParts($parsed);
+        $selectParts = array_merge([$groupParts[0], $valueExpr], array_slice($groupParts, 1));
+
+        $sql = 'SELECT ' . implode(', ', $selectParts)
+            . ' FROM (' . implode(' UNION ALL ', $branches) . ')'
+            . ' GROUP BY ' . implode(', ', $groupParts)
+            . ' ORDER BY ' . implode(', ', $this->aggregateOrderClauses($parsed, isset($parsed['groupByInterval'])));
+
+        if (isset($parsed['limit'])) {
+            $sql .= ' LIMIT ' . (int) $parsed['limit'];
+        }
+        if (isset($parsed['offset'])) {
+            $sql .= ' OFFSET ' . (int) $parsed['offset'];
+        }
+
+        return $this->query($sql . ' FORMAT JSON', $bindings);
     }
 
     /**

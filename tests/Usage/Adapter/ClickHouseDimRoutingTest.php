@@ -12,8 +12,8 @@ use Utopia\Usage\Usage;
 use Utopia\Usage\UsageQuery;
 
 /**
- * Routing tests for the per-dim projection slate: p_by_path, p_by_country,
- * p_by_service. Each grouped scenario asserts:
+ * Routing tests for the per-dim projection slate. Each grouped scenario
+ * asserts:
  *   (a) the totals match the raw scan, and
  *   (b) the ClickHouse optimizer picked the matching projection per
  *       `system.query_log.projections`.
@@ -119,6 +119,8 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             'by_path'    => [['path'], 'p_by_path'],
             'by_country' => [['country'], 'p_by_country'],
             'by_service' => [['service'], 'p_by_service'],
+            'by_method'  => [['method'], 'p_by_method'],
+            'by_status'  => [['status'], 'p_by_status'],
         ];
     }
 
@@ -282,10 +284,11 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         $this->assertNoProjectionUsed($queryId);
     }
 
-    public function testMidHourWindowKeepsRawPredicateAndTotals(): void
+    public function testMidHourWindowSplitsSoTheInteriorRoutes(): void
     {
-        // The window edge cannot be expressed on the bucket, so the rewrite is
-        // declined: slower, but the caller's boundary is not moved.
+        // Neither edge is expressible on the bucket, so the whole hours between
+        // them are read from the projection and the two partial hours from the
+        // base table — without moving the caller's boundary.
         $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(13, 37, 21)->format('Y-m-d H:i:s');
         $end = (new DateTime('-2 days', new DateTimeZone('UTC')))->setTime(9, 14, 3)->format('Y-m-d H:i:s');
 
@@ -300,7 +303,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         ], Usage::TYPE_EVENT);
 
         $this->assertSame($this->rawTotal($start, $end), $this->totalOf($rolled));
-        $this->assertNoProjectionUsed($queryId);
+        $this->assertProjectionUsed($queryId, 'p_by_path');
     }
 
     public function testDayIntervalBucketsMatchAnUnbucketedDayRollup(): void
@@ -325,7 +328,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             Query::lessThanEqual('time', $end),
         ], Usage::TYPE_EVENT);
 
-        $this->assertProjectionUsed($queryId, 'p_by_path');
+        $this->assertAnyProjectionUsed($queryId);
         $this->assertNotEmpty($rolled);
         $this->assertSame($this->rawDayBuckets($start, $end), $this->bucketsOf($rolled));
     }
@@ -343,7 +346,7 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
         $this->adapter->setNextQueryId($queryId);
         $series = $this->usage->getTimeSeries('1', [$this->metric], '1d', $start, $end, [], false, Usage::TYPE_EVENT);
 
-        $this->assertProjectionUsed($queryId, 'p_by_path');
+        $this->assertAnyProjectionUsed($queryId);
 
         $points = [];
         foreach ($series[$this->metric]['data'] as $point) {
@@ -511,6 +514,12 @@ class ClickHouseDimRoutingTest extends ClickHouseTestCase
             $matches,
             "expected projection {$projectionName} to fire for query_id {$queryId}; saw: " . implode(', ', $projections)
         );
+    }
+
+    /** A read with no dimension can be served by any projection in the slate. */
+    private function assertAnyProjectionUsed(string $queryId): void
+    {
+        $this->assertNotEmpty($this->projectionsForQueryId($queryId), "expected a projection to fire for query_id {$queryId}");
     }
 
     private function assertNoProjectionUsed(string $queryId): void
