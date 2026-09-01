@@ -303,6 +303,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
             'connectionUsageType', 'autonomousSystemNumber',
             'sdk', 'sdkVersion',
             'ordinal',
+            'category', 'outcome',
         ];
 
         $baseKey = ['id', 'metric', 'value', 'time', 'tenant'];

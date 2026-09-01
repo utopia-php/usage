@@ -617,6 +617,7 @@ class MetricTest extends TestCase
             'clientEngine', 'clientEngineVersion',
             'sdk', 'sdkVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
+            'category', 'outcome',
         ];
         $this->assertSame($expected, Metric::EVENT_COLUMNS);
     }

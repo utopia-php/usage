@@ -64,6 +64,11 @@ class Metric extends ArrayObject
         // sdk identity
         'sdk', 'sdkVersion',
         'deviceName', 'deviceBrand', 'deviceModel',
+        // metric-scoped: what the row is about, and how it ended.
+        // Named `category`, not `type`: the SQL adapter already writes a `type`
+        // column holding 'event'/'gauge', and a dimension of that name silently
+        // overwrote it through array_merge.
+        'category', 'outcome',
     ];
 
     /**
@@ -670,6 +675,13 @@ class Metric extends ArrayObject
             // sdk identity
             $stringColumn('sdk', 256),
             $stringColumn('sdkVersion', 255),
+            // metric-scoped dimensions. `category` is whatever the metric is
+            // broken down by — a messaging channel, a calling code — and
+            // `outcome` is how the attempt ended. Both are read with `metric`
+            // pinned, so the same column carries different value spaces across
+            // metrics, the way resourceId already carries ids of every kind.
+            $stringColumn('category', 64),
+            $stringColumn('outcome', 32),
             $stringColumn('deviceName', 256),
             $stringColumn('deviceBrand', 256),
             $stringColumn('deviceModel', 255),
@@ -756,6 +768,7 @@ class Metric extends ArrayObject
     public static function getEventIndexes(): array
     {
         $indexed = [
+            'category', 'outcome',
             'path', 'method', 'status',
             'service', 'resourceType', 'resourceId', 'resourceInternalId',
             'teamId', 'teamInternalId',
@@ -763,7 +776,7 @@ class Metric extends ArrayObject
             'osName', 'clientType', 'clientName', 'deviceName',
         ];
 
-        $setIndexed = ['status', 'method', 'country', 'service', 'clientType', 'osName'];
+        $setIndexed = ['status', 'method', 'country', 'service', 'clientType', 'osName', 'category', 'outcome'];
 
         return array_map(
             static function (string $col) use ($setIndexed): array {
