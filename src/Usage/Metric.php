@@ -54,8 +54,11 @@ class Metric extends ArrayObject
         'service', 'resourceType', 'resourceId', 'resourceInternalId',
         'teamId', 'teamInternalId',
         'country', 'region', 'hostname', 'ip',
+        // request attributes (firewall rule matching)
+        'protocol', 'accept', 'acceptLanguage', 'cookie', 'queryKeys',
         // premium geo
         'city', 'continentCode', 'subdivisions',
+        'postalCode', 'latitude', 'longitude', 'timeZone', 'weatherCode',
         'isp', 'autonomousSystemNumber', 'autonomousSystemOrganization',
         'connectionType', 'connectionUsageType', 'connectionOrganization',
         'osCode', 'osName', 'osVersion',
@@ -88,7 +91,9 @@ class Metric extends ArrayObject
      * - resourceType / resourceId / resourceInternalId: resource identity
      * - teamId / teamInternalId: owning team identity
      * - country / region / hostname / ip: geographic + caller origin
+     * - protocol / accept / acceptLanguage / cookie / queryKeys: request attributes (firewall rule matching)
      * - city / continentCode / subdivisions: premium geo location fields
+     * - postalCode / latitude / longitude / timeZone / weatherCode: premium geo location fields
      * - isp / autonomousSystemNumber / autonomousSystemOrganization: premium network origin
      * - connectionType / connectionUsageType / connectionOrganization: premium connection intelligence
      * - osCode / osName / osVersion: parsed user-agent OS fields
@@ -648,10 +653,24 @@ class Metric extends ArrayObject
             $stringColumn('region', 64),
             $stringColumn('hostname', 255),
             $stringColumn('ip', 45),
+            // request attributes (firewall rule matching)
+            $stringColumn('protocol', 16),
+            $stringColumn('accept', 1024),
+            $stringColumn('acceptLanguage', 256),
+            // Cookie headers are large; size > maxVarchar (16381) makes this a
+            // TEXT column, stored off-page so it costs ~20 bytes toward the
+            // MariaDB 65535 row-size limit instead of size*4.
+            $stringColumn('cookie', 65535),
+            $stringColumn('queryKeys', 1024),
             // premium geo
             $stringColumn('city', 256),
             $stringColumn('continentCode', 2),
             $stringColumn('subdivisions', 256),
+            $stringColumn('postalCode', 32),
+            $stringColumn('latitude', 32),
+            $stringColumn('longitude', 32),
+            $stringColumn('timeZone', 64),
+            $stringColumn('weatherCode', 16),
             $stringColumn('isp', 256),
             $stringColumn('autonomousSystemNumber', 255),
             $stringColumn('autonomousSystemOrganization', 256),

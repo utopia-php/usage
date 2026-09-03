@@ -14,7 +14,7 @@ class MetricTest extends TestCase
     {
         $schema = Metric::getEventSchema();
 
-        // 3 core (metric, value, time) + 24 dimension columns from EVENT_COLUMNS.
+        // 3 core (metric, value, time) + one column per EVENT_COLUMNS entry.
         $this->assertCount(3 + count(Metric::EVENT_COLUMNS), $schema);
 
         $metricAttr = $schema[0];
@@ -609,7 +609,9 @@ class MetricTest extends TestCase
             'service', 'resourceType', 'resourceId', 'resourceInternalId',
             'teamId', 'teamInternalId',
             'country', 'region', 'hostname', 'ip',
+            'protocol', 'accept', 'acceptLanguage', 'cookie', 'queryKeys',
             'city', 'continentCode', 'subdivisions',
+            'postalCode', 'latitude', 'longitude', 'timeZone', 'weatherCode',
             'isp', 'autonomousSystemNumber', 'autonomousSystemOrganization',
             'connectionType', 'connectionUsageType', 'connectionOrganization',
             'osCode', 'osName', 'osVersion',
