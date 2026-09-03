@@ -74,6 +74,39 @@ class ClickHouseColumnTypeTest extends TestCase
     }
 
     /**
+     * Low-cardinality request-attribute and premium-geo dims added in #36/#37
+     * must map to LowCardinality(Nullable(String)).
+     */
+    public function testLowCardinalityRequestAndGeoColumns(): void
+    {
+        foreach (['protocol', 'timeZone', 'weatherCode'] as $col) {
+            $this->assertSame(
+                'LowCardinality(Nullable(String))',
+                $this->columnType($col),
+                "{$col} should be LowCardinality(Nullable(String))"
+            );
+        }
+    }
+
+    /**
+     * High-cardinality request-attribute and premium-geo dims added in #36/#37
+     * must fall through to plain Nullable(String).
+     */
+    public function testHighCardinalityRequestAndGeoColumns(): void
+    {
+        foreach ([
+            'accept', 'acceptLanguage', 'queryKeys',
+            'postalCode', 'latitude', 'longitude',
+        ] as $col) {
+            $this->assertSame(
+                'Nullable(String)',
+                $this->columnType($col),
+                "{$col} should be plain Nullable(String)"
+            );
+        }
+    }
+
+    /**
      * SDK dims must map to LowCardinality(Nullable(String)).
      */
     public function testLowCardinalitySdkColumns(): void

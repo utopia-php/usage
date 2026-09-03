@@ -299,8 +299,10 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
             'clientEngine', 'clientEngineVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
             'hostname', 'ip',
+            'protocol',
             'continentCode', 'subdivisions', 'connectionType',
             'connectionUsageType', 'autonomousSystemNumber',
+            'timeZone', 'weatherCode',
             'sdk', 'sdkVersion',
             'ordinal',
         ];
