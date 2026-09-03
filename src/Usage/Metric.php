@@ -657,7 +657,10 @@ class Metric extends ArrayObject
             $stringColumn('protocol', 16),
             $stringColumn('accept', 1024),
             $stringColumn('acceptLanguage', 256),
-            $stringColumn('cookie', 8192),
+            // Cookie headers are large; size > maxVarchar (16381) makes this a
+            // TEXT column, stored off-page so it costs ~20 bytes toward the
+            // MariaDB 65535 row-size limit instead of size*4.
+            $stringColumn('cookie', 65535),
             $stringColumn('queryKeys', 1024),
             // premium geo
             $stringColumn('city', 256),
