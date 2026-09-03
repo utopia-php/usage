@@ -609,7 +609,7 @@ class MetricTest extends TestCase
             'service', 'resourceType', 'resourceId', 'resourceInternalId',
             'teamId', 'teamInternalId',
             'country', 'region', 'hostname', 'ip',
-            'protocol', 'accept', 'acceptLanguage', 'cookie', 'queryKeys',
+            'protocol', 'accept', 'acceptLanguage', 'queryKeys',
             'city', 'continentCode', 'subdivisions',
             'postalCode', 'latitude', 'longitude', 'timeZone', 'weatherCode',
             'isp', 'autonomousSystemNumber', 'autonomousSystemOrganization',
