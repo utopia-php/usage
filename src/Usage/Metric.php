@@ -55,7 +55,7 @@ class Metric extends ArrayObject
         'teamId', 'teamInternalId',
         'country', 'region', 'hostname', 'ip',
         // request attributes (firewall rule matching)
-        'protocol', 'accept', 'acceptLanguage', 'cookie', 'queryKeys',
+        'protocol', 'accept', 'acceptLanguage', 'queryKeys',
         // premium geo
         'city', 'continentCode', 'subdivisions',
         'postalCode', 'latitude', 'longitude', 'timeZone', 'weatherCode',
@@ -91,7 +91,7 @@ class Metric extends ArrayObject
      * - resourceType / resourceId / resourceInternalId: resource identity
      * - teamId / teamInternalId: owning team identity
      * - country / region / hostname / ip: geographic + caller origin
-     * - protocol / accept / acceptLanguage / cookie / queryKeys: request attributes (firewall rule matching)
+     * - protocol / accept / acceptLanguage / queryKeys: request attributes (firewall rule matching)
      * - city / continentCode / subdivisions: premium geo location fields
      * - postalCode / latitude / longitude / timeZone / weatherCode: premium geo location fields
      * - isp / autonomousSystemNumber / autonomousSystemOrganization: premium network origin
@@ -657,10 +657,6 @@ class Metric extends ArrayObject
             $stringColumn('protocol', 16),
             $stringColumn('accept', 1024),
             $stringColumn('acceptLanguage', 256),
-            // Cookie headers are large; size > maxVarchar (16381) makes this a
-            // TEXT column, stored off-page so it costs ~20 bytes toward the
-            // MariaDB 65535 row-size limit instead of size*4.
-            $stringColumn('cookie', 65535),
             $stringColumn('queryKeys', 1024),
             // premium geo
             $stringColumn('city', 256),
