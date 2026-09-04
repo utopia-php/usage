@@ -1797,7 +1797,7 @@ class ClickHouse extends SQL
             'connectionUsageType', 'autonomousSystemNumber',
             // sdk identity
             'sdk', 'sdkVersion',
-            // gauge replica ordinal
+            // replica ordinal (events and gauges)
             'ordinal',
         ];
 
