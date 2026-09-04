@@ -149,6 +149,18 @@ class ClickHouseBackfillTest extends ClickHouseTestCase
         $this->usage->backfillDaily($from, $to);
     }
 
+    public function testBackfillRejectsNonUtcMidnightOffsets(): void
+    {
+        // Midnight in +05:00 is 19:00 UTC — accepting it would backfill a
+        // different range than the caller intended.
+        $to = (new DateTime('today', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+
+        $this->expectException(Exception::class);
+        $this->expectExceptionMessage('UTC midnights');
+
+        $this->usage->backfillDaily('2026-07-01 00:00:00+05:00', $to);
+    }
+
     public function testBackfillRejectsAnInvertedWindow(): void
     {
         [$from, $to] = $this->window();

@@ -1659,13 +1659,24 @@ class ClickHouse extends SQL
      * when it does unless $force is passed, after the caller has cleared the
      * range itself.
      *
+     * Single-operator migration primitive, not a concurrent API: the overlap
+     * check and the INSERT are separate statements with no lock, so two
+     * concurrent calls for the same empty window can both pass the check and
+     * double the rollup. Run one backfill at a time, and verify with a
+     * raw-vs-rollup parity read before routing traffic at the window.
+     *
      * @throws Exception
      */
     public function backfillDaily(string $from, string $to, bool $force = false): void
     {
         try {
-            $fromDt = new DateTime($from, new DateTimeZone('UTC'));
-            $toDt = new DateTime($to, new DateTimeZone('UTC'));
+            // The constructor's timezone argument is ignored when the string
+            // carries its own offset, and the bindings are formatted without
+            // one — so normalize to UTC first. A bound like
+            // '2026-01-01 00:00:00+05:00' is midnight only in its own zone;
+            // after normalization it is 19:00 UTC and correctly refused.
+            $fromDt = (new DateTime($from, new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('UTC'));
+            $toDt = (new DateTime($to, new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('UTC'));
         } catch (Throwable $e) {
             throw new Exception("backfillDaily() bounds must be valid datetimes: {$e->getMessage()}", 0, $e);
         }
