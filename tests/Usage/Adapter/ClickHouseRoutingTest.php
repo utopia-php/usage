@@ -394,6 +394,69 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $this->assertSame(10, $dailySum, 'daily MV row must survive a value-only purge');
     }
 
+    public function testClosedDayWindowRoutesTotalBatchToDaily(): void
+    {
+        $this->adapter->clearRouteLog();
+
+        $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+
+        $rawSum = $this->sumRaw('routed.metric', $start, $end);
+
+        $totals = $this->usage->getTotalBatch('1', ['routed.metric', 'routed.absent'], [
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('getTotalBatch', $log[0]['operation']);
+        $this->assertSame('daily', $log[0]['route']);
+        $this->assertSame($rawSum, $totals['routed.metric'], 'the daily rollup must re-aggregate to the same batch total as raw');
+        $this->assertSame(0, $totals['routed.absent'], 'an absent metric still comes back as zero');
+    }
+
+    public function testOpenWindowRoutesTotalBatchToHybrid(): void
+    {
+        $this->adapter->clearRouteLog();
+
+        $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $end = (new DateTime('+1 day', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+
+        $rawSum = $this->sumRaw('routed.metric', $start, $end);
+
+        $totals = $this->usage->getTotalBatch('1', ['routed.metric'], [
+            Query::greaterThanEqual('time', $start),
+            Query::lessThan('time', $end),
+        ], Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('getTotalBatch', $log[0]['operation']);
+        $this->assertSame('hybrid', $log[0]['route']);
+        $this->assertSame($rawSum, $totals['routed.metric'], 'closed days from the rollup plus today from raw must equal the raw batch total');
+    }
+
+    public function testNonRollupFilterKeepsTotalBatchOnRaw(): void
+    {
+        $this->adapter->clearRouteLog();
+
+        $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $end = (new DateTime('-2 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+
+        $totals = $this->usage->getTotalBatch('1', ['routed.metric'], [
+            Query::greaterThanEqual('time', $start),
+            Query::lessThanEqual('time', $end),
+            Query::equal('path', ['/v1/a']),
+        ], Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('getTotalBatch', $log[0]['operation']);
+        $this->assertSame('raw', $log[0]['route'], 'a filter column the rollup does not carry must fall back to the raw table');
+        $this->assertSame(100, $totals['routed.metric']);
+    }
+
     private function sumRaw(string $metric, string $start, string $end): int
     {
         $reflection = new ReflectionClass($this->adapter);

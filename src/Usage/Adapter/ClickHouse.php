@@ -1644,6 +1644,88 @@ class ClickHouse extends SQL
     }
 
     /**
+     * Backfill the daily rollup from the raw events table for [$from, $to).
+     *
+     * The daily materialized view only aggregates rows inserted after it was
+     * created; windows before that are absent from the rollup, so every read
+     * routed to it under-counts. This runs the exact aggregation the view
+     * body runs, bounded to the window, making backfilled days
+     * indistinguishable from view-produced ones.
+     *
+     * Both bounds must be UTC midnights: SummingMergeTree folds duplicate
+     * keys by adding them, so a partial day written here would double-count
+     * against rows the view produced for that day. For the same reason the
+     * window must not overlap rows already in the rollup — the call refuses
+     * when it does unless $force is passed, after the caller has cleared the
+     * range itself.
+     *
+     * @throws Exception
+     */
+    public function backfillDaily(string $from, string $to, bool $force = false): void
+    {
+        try {
+            $fromDt = new DateTime($from, new DateTimeZone('UTC'));
+            $toDt = new DateTime($to, new DateTimeZone('UTC'));
+        } catch (Throwable $e) {
+            throw new Exception("backfillDaily() bounds must be valid datetimes: {$e->getMessage()}", 0, $e);
+        }
+
+        if (!$this->isDayAligned($fromDt) || !$this->isDayAligned($toDt)) {
+            throw new Exception('backfillDaily() bounds must be UTC midnights: a partial day double-counts against rows the daily view already produced for that day.');
+        }
+        if ($fromDt >= $toDt) {
+            throw new Exception('backfillDaily() needs an ascending half-open window.');
+        }
+
+        $this->setOperationContext('backfillDaily()');
+
+        $eventsTable = $this->buildTableReference($this->getEventsTableName());
+        $dailyTable = $this->buildTableReference($this->getEventsDailyTableName());
+
+        $bindings = [
+            'bf_from' => $fromDt->format('Y-m-d H:i:s.v'),
+            'bf_to' => $toDt->format('Y-m-d H:i:s.v'),
+        ];
+        $window = 'time >= {bf_from:DateTime64(3)} AND time < {bf_to:DateTime64(3)}';
+
+        if (!$force) {
+            $existing = $this->decodeTotal($this->query(
+                "SELECT count() AS total FROM {$dailyTable} WHERE {$window} FORMAT JSON",
+                $bindings,
+            ));
+            if ($existing > 0) {
+                throw new Exception("backfillDaily() window already holds {$existing} rollup rows and inserting again would double-count. Clear the range first, or pass force after doing so.");
+            }
+        }
+
+        // Mirrors createDailyMaterializedView()'s body exactly, plus the bound.
+        $dimensions = 'resourceType, resourceId, resourceInternalId, teamId, teamInternalId';
+
+        if ($this->sharedTables) {
+            $columns = "metric, value, time, tenant, {$dimensions}";
+            $innerSelect = "metric, tenant, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
+            $innerGroupBy = "metric, tenant, {$dimensions}, d";
+            $outerSelect = "metric, value, d as time, tenant, {$dimensions}";
+        } else {
+            $columns = "metric, value, time, {$dimensions}";
+            $innerSelect = "metric, {$dimensions}, sum(value) as value, toStartOfDay(time, 'UTC') as d";
+            $innerGroupBy = "metric, {$dimensions}, d";
+            $outerSelect = "metric, value, d as time, {$dimensions}";
+        }
+
+        $sql = "INSERT INTO {$dailyTable} ({$columns})"
+            . " SELECT {$outerSelect}"
+            . " FROM ("
+            . " SELECT {$innerSelect}"
+            . " FROM {$eventsTable}"
+            . " WHERE {$window}"
+            . " GROUP BY {$innerGroupBy}"
+            . " )";
+
+        $this->query($sql, $bindings);
+    }
+
+    /**
      * Validate that an attribute name exists in the schema for a given type.
      *
      * @param string $attributeName
@@ -4244,37 +4326,18 @@ class ClickHouse extends SQL
         }
 
         foreach ($typesToQuery as $queryType) {
-            $tableName = $this->getTableForType($queryType);
+            // Event totals route like sum()/getTotal(): closed-day windows
+            // read the daily rollup, open ones read rollup + today's raw tail.
+            // Gauges have no rollup and always read their own table.
+            $typeTotals = $queryType === Usage::TYPE_EVENT
+                ? $this->routedTotalBatch($tenant, $metrics, $queries)
+                : $this->totalBatchFromTable($tenant, $metrics, $queries, $queryType);
 
-            $parsed = $this->parseQueries($tenant, $queries, $queryType);
-
-            $valueExpr = $queryType === Usage::TYPE_EVENT
-                ? 'SUM(`value`) AS `agg_val`'
-                : 'argMax(`value`, `time`) AS `agg_val`';
-
-            $builder = $this->newBuilder($queryType)
-                ->from($tableName)
-                ->select(['metric'])
-                ->selectRaw($valueExpr)
-                ->filter([Query::equal('metric', $metrics)])
-                ->groupByRaw('`metric`');
-
-            $this->applyFilters($builder, $tenant, $parsed);
-
-            $statement = $builder->build();
-            $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
-
-            $result = $this->query($sql, $statement->namedBindings ?? []);
-            $rows = $this->decodeRows($result);
-
-            foreach ($rows as $row) {
-                $metricName = self::toStr($row['metric'] ?? null);
-
+            foreach ($typeTotals as $metricName => $rowValue) {
                 if (!isset($totals[$metricName])) {
                     continue;
                 }
 
-                $rowValue = self::toInt($row['agg_val'] ?? null);
                 if ($rowValue === 0) {
                     continue;
                 }
@@ -4294,6 +4357,198 @@ class ClickHouse extends SQL
         }
 
         return $totals;
+    }
+
+    /**
+     * One grouped total per metric from a single physical table: SUM for the
+     * raw events table, latest-sample argMax for gauges.
+     *
+     * @param array<string> $metrics
+     * @param array<Query> $queries
+     * @return array<string, int>
+     * @throws Exception
+     */
+    private function totalBatchFromTable(string $tenant, array $metrics, array $queries, string $type): array
+    {
+        $tableName = $this->getTableForType($type);
+
+        $parsed = $this->parseQueries($tenant, $queries, $type);
+
+        $valueExpr = $type === Usage::TYPE_EVENT
+            ? 'SUM(`value`) AS `agg_val`'
+            : 'argMax(`value`, `time`) AS `agg_val`';
+
+        $builder = $this->newBuilder($type)
+            ->from($tableName)
+            ->select(['metric'])
+            ->selectRaw($valueExpr)
+            ->filter([Query::equal('metric', $metrics)])
+            ->groupByRaw('`metric`');
+
+        $this->applyFilters($builder, $tenant, $parsed);
+
+        $statement = $builder->build();
+        $sql = $this->qualifyDdl($statement->query, $tableName) . ' FORMAT JSON';
+
+        $totalsByMetric = [];
+        foreach ($this->decodeRows($this->query($sql, $statement->namedBindings ?? [])) as $row) {
+            $totalsByMetric[self::toStr($row['metric'] ?? null)] = self::toInt($row['agg_val'] ?? null);
+        }
+
+        return $totalsByMetric;
+    }
+
+    /**
+     * Routed batched event totals: the same source selection sum()/getTotal()
+     * use, applied to one grouped-by-metric query, with the decision recorded
+     * in the route log under `getTotalBatch`.
+     *
+     * @param array<string> $metrics
+     * @param array<Query> $queries
+     * @return array<string, int>
+     * @throws Exception
+     */
+    private function routedTotalBatch(string $tenant, array $metrics, array $queries): array
+    {
+        $plan = $this->extractRoutingPlan(array_merge($queries, [Query::equal('metric', $metrics)]));
+        $route = $this->selectAggregateSource($plan);
+        $this->recordRoute('getTotalBatch', $plan, $route);
+
+        if ($route === 'daily') {
+            $totalsByMetric = $this->sumDailyBatch($tenant, $metrics, $this->translateInclusiveMidnightForDaily($queries));
+            $this->maybeDualReadBatch($tenant, $metrics, $queries, $route, $plan, $totalsByMetric);
+            return $totalsByMetric;
+        }
+        if ($route === 'hybrid') {
+            $totalsByMetric = $this->totalBatchHybrid($tenant, $metrics, $queries);
+            $this->maybeDualReadBatch($tenant, $metrics, $queries, $route, $plan, $totalsByMetric);
+            return $totalsByMetric;
+        }
+
+        return $this->totalBatchFromTable($tenant, $metrics, $queries, Usage::TYPE_EVENT);
+    }
+
+    /**
+     * Hybrid batched event totals: closed days per metric from the daily
+     * rollup, today's partial from the raw events table, folded by an outer
+     * per-metric SUM over UNION ALL — the batched shape of
+     * sumHybridDailyAndRaw().
+     *
+     * @param array<string> $metrics
+     * @param array<Query> $queries
+     * @return array<string, int>
+     * @throws Exception
+     */
+    private function totalBatchHybrid(string $tenant, array $metrics, array $queries): array
+    {
+        $startOfToday = (new DateTime('today', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
+
+        $dailyTableName = $this->getEventsDailyTableName();
+        $eventsTableName = $this->getEventsTableName();
+
+        $split = $this->splitTimeQueries($queries);
+
+        $rawQueries = array_merge($queries, [Query::greaterThanEqual('time', $startOfToday)]);
+        $dailyQueries = array_merge(
+            $split['nonTime'],
+            $this->buildDailyTimeQueries($split['time']),
+            [Query::lessThan('time', $startOfToday)],
+        );
+
+        $rawParsed = $this->parseQueries($tenant, $rawQueries, Usage::TYPE_EVENT);
+        $dailyParsed = $this->parseQueries($tenant, $dailyQueries, Usage::TYPE_EVENT);
+
+        $rawBuilder = $this->newBuilder(Usage::TYPE_EVENT)
+            ->from($eventsTableName)
+            ->select(['metric'])
+            ->selectRaw('SUM(`value`) AS `total`')
+            ->filter([Query::equal('metric', $metrics)])
+            ->groupByRaw('`metric`');
+        $this->applyFilters($rawBuilder, $tenant, $rawParsed);
+        $rawStatement = $rawBuilder->build();
+        $rawSql = $this->qualifyDdl($rawStatement->query, $eventsTableName);
+
+        $dailyBuilder = $this->newBuilder(Usage::TYPE_EVENT)
+            ->from($dailyTableName)
+            ->select(['metric'])
+            ->selectRaw('SUM(`value`) AS `total`')
+            ->filter([Query::equal('metric', $metrics)])
+            ->groupByRaw('`metric`');
+        $this->applyFilters($dailyBuilder, $tenant, $dailyParsed);
+        $dailyStatement = $dailyBuilder->build();
+        [$dailySql, $dailyBindings] = $this->prefixNamedBindings(
+            $this->qualifyDdl($dailyStatement->query, $dailyTableName),
+            $dailyStatement->namedBindings ?? [],
+            'd_',
+        );
+
+        $sql = "
+            SELECT `metric`, sum(`total`) AS `agg_val` FROM (
+                {$dailySql}
+                UNION ALL
+                {$rawSql}
+            )
+            GROUP BY `metric`
+            FORMAT JSON
+        ";
+
+        $result = $this->query($sql, array_merge($rawStatement->namedBindings ?? [], $dailyBindings));
+
+        $totalsByMetric = [];
+        foreach ($this->decodeRows($result) as $row) {
+            $totalsByMetric[self::toStr($row['metric'] ?? null)] = self::toInt($row['agg_val'] ?? null);
+        }
+
+        return $totalsByMetric;
+    }
+
+    /**
+     * Batched twin of maybeDualRead(): with the same sampling, re-run the
+     * batch against the raw events table and log a warning per metric whose
+     * routed total diverges.
+     *
+     * @param array<string> $metrics
+     * @param array<Query> $queries
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
+     * @param array<string, int> $rolledTotals
+     */
+    private function maybeDualReadBatch(string $tenant, array $metrics, array $queries, string $route, array $plan, array $rolledTotals): void
+    {
+        if ($this->dualReadSampleRate <= 0.0) {
+            return;
+        }
+        if (mt_rand() / mt_getrandmax() > $this->dualReadSampleRate) {
+            return;
+        }
+
+        try {
+            $rawTotals = $this->totalBatchFromTable($tenant, $metrics, $queries, Usage::TYPE_EVENT);
+        } catch (Throwable $e) {
+            return;
+        }
+
+        foreach ($metrics as $metric) {
+            $rawTotal = $rawTotals[$metric] ?? 0;
+            $rolledTotal = $rolledTotals[$metric] ?? 0;
+
+            if ($rawTotal === 0 && $rolledTotal === 0) {
+                continue;
+            }
+
+            $denominator = $rawTotal === 0 ? max(abs($rolledTotal), 1) : abs($rawTotal);
+            $delta = abs($rolledTotal - $rawTotal) / $denominator;
+            if ($delta > 0.01) {
+                $this->appendRouteLogEntry([
+                    'operation' => 'dual_read_warning',
+                    'metric' => $metric,
+                    'route' => $route . ':delta=' . round($delta, 4),
+                    'start' => $plan['start'],
+                    'end' => $plan['end'],
+                    'dimensions' => $plan['dimensions'],
+                    'interval' => $plan['interval'],
+                ]);
+            }
+        }
     }
 
     /**
