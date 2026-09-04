@@ -70,19 +70,27 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $this->assertStringContainsString("toStartOfHour(time, 'UTC') AS timeBucket", $ddl);
     }
 
-    public function testGaugeProjectionsAreLeftOnTheirOriginalShape(): void
+    public function testGaugeProjectionsCarryBothTheWindowedAndLatestSlates(): void
     {
         $ddl = $this->showCreate($this->resolveTableName($this->adapter, 'getGaugesTableName'));
 
-        // Gauges are deliberately excluded from the events reshape: they show
-        // no measured read problem, and bucketing `time` away would only cost
-        // a migration, since argMax orders on the raw column. Pinned here so
-        // the exclusion is not "finished" without fresh measurements.
+        // The windowed slate keeps its original time-keyed shape — windowed
+        // grouped reads need the time predicate expressible on the projection.
         $this->assertStringContainsString(
             "GROUP BY\n            metric,\n            time,\n            tenant,\n            service",
             $ddl
         );
         $this->assertStringNotContainsString('timeBucket', $ddl);
+
+        // The fresh measurements the old pin asked for arrived: unwindowed
+        // grouped latest-value reads (the billing prefetch) read ~300k rows
+        // per query against the time-keyed slate and force_optimize_projection
+        // refuses it. The latest slate answers them at one state per series:
+        // keyed (tenant, metric, dims), no time key.
+        $this->assertStringContainsString(
+            "PROJECTION p_latest_by_service\n    (\n        SELECT\n            tenant,\n            metric,\n            service,\n            argMax(value, time) AS value\n        GROUP BY\n            tenant,\n            metric,\n            service",
+            $ddl
+        );
     }
 
     public function testEventsTableSwapsBloomForSetOnLowCardinality(): void

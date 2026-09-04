@@ -1152,6 +1152,23 @@ class ClickHouse extends SQL
      *
      * @var array<array{name: string, dims: array<int, string>}>
      */
+    /**
+     * Latest-value slate: keyed (tenant, metric, dims) with NO time key, one
+     * argMax state per series. Serves unwindowed grouped latest-value reads
+     * (the billing prefetch shape) at one row per group — production
+     * measurement without it: ~300k rows read per grouped gauge read, and
+     * force_optimize_projection refuses the time-keyed slate for these
+     * queries (PROJECTION_NOT_USED). Existing installs must
+     * ALTER TABLE ... MATERIALIZE PROJECTION each p_latest_* once (setup()
+     * only attaches them for parts written afterwards).
+     */
+    private const GAUGE_LATEST_PROJECTIONS = [
+        ['name' => 'p_latest_by_service', 'dims' => ['service']],
+        ['name' => 'p_latest_by_resourceType', 'dims' => ['resourceType']],
+        ['name' => 'p_latest_by_resourceId', 'dims' => ['resourceId']],
+        ['name' => 'p_latest_by_resourceType_resourceId', 'dims' => ['resourceType', 'resourceId']],
+    ];
+
     private const GAUGE_PROJECTIONS = [
         ['name' => 'p_by_service', 'dims' => ['service']],
         ['name' => 'p_by_resourceType', 'dims' => ['resourceType']],
@@ -1222,6 +1239,15 @@ class ClickHouse extends SQL
                 $projection['name'],
                 $projection['dims'],
                 'argMax(value, time) AS value'
+            );
+        }
+        foreach (self::GAUGE_LATEST_PROJECTIONS as $projection) {
+            $this->addProjection(
+                $this->getGaugesTableName(),
+                $projection['name'],
+                $projection['dims'],
+                'argMax(value, time) AS value',
+                includeTimeKey: false,
             );
         }
     }
@@ -1386,15 +1412,26 @@ class ClickHouse extends SQL
      *
      * @param array<int, string> $dims
      */
-    private function addProjection(string $baseTable, string $name, array $dims, string $aggregateExpr): void
+    private function addProjection(string $baseTable, string $name, array $dims, string $aggregateExpr, bool $includeTimeKey = true): void
     {
         $escapedTable = $this->escapeIdentifier($this->database) . '.' . $this->escapeIdentifier($baseTable);
 
-        $selectParts = ['metric', 'time'];
-        $groupParts = ['metric', 'time'];
+        // Two key shapes, one per read family. With `time` in the keys the
+        // projection has one row per sample — narrow-column but 1:1 with the
+        // base table — which is what windowed grouped reads need (the time
+        // predicate must be expressible on the projection). WITHOUT `time`
+        // the projection holds one aggregate state per series, so an
+        // unwindowed latest-value read (the billing prefetch shape) collapses
+        // to one row per group instead of re-aggregating every sample.
+        $selectParts = $includeTimeKey ? ['metric', 'time'] : [];
+        $groupParts = $includeTimeKey ? ['metric', 'time'] : [];
         if ($this->sharedTables) {
             $selectParts[] = 'tenant';
             $groupParts[] = 'tenant';
+        }
+        if (!$includeTimeKey) {
+            $selectParts[] = 'metric';
+            $groupParts[] = 'metric';
         }
         foreach ($dims as $dim) {
             $selectParts[] = $this->escapeIdentifier($dim);
@@ -3140,6 +3177,11 @@ class ClickHouse extends SQL
             $this->maybeDualRead($tenant, $queries, $route, $plan, $total);
             return $total;
         }
+        if ($route === 'split') {
+            $total = $this->sumSplitDailyAndRaw($tenant, $queries, $plan);
+            $this->maybeDualRead($tenant, $queries, $route, $plan, $total);
+            return $total;
+        }
 
         return $this->sumFromTable($tenant, $queries, 'value', Usage::TYPE_EVENT);
     }
@@ -3148,7 +3190,7 @@ class ClickHouse extends SQL
      * Snapshot of the parsed query shape relevant for routing.
      *
      * @param array<Query> $queries
-     * @return array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns: array<int, string>, hasCursor: bool}
+     * @return array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns: array<int, string>, hasCursor: bool, hasIrregularTimeFilter: bool, endInclusive: bool}
      */
     private function extractRoutingPlan(array $queries): array
     {
@@ -3160,6 +3202,8 @@ class ClickHouse extends SQL
         $interval = null;
         $orderColumns = [];
         $hasCursor = false;
+        $hasIrregularTimeFilter = false;
+        $endInclusive = false;
 
         foreach ($queries as $query) {
             $method = $query->getMethod();
@@ -3221,10 +3265,27 @@ class ClickHouse extends SQL
                 if ($method === Method::GreaterThanEqual || $method === Method::GreaterThan) {
                     $start = $this->tightenLowerBound($start, $this->stringifyTime($values[0] ?? null));
                 } elseif ($method === Method::LessThanEqual || $method === Method::LessThan) {
-                    $end = $this->tightenUpperBound($end, $this->stringifyTime($values[0] ?? null));
+                    $candidate = $this->stringifyTime($values[0] ?? null);
+                    $tightened = $this->tightenUpperBound($end, $candidate);
+                    if ($tightened !== $end) {
+                        $endInclusive = $method === Method::LessThanEqual;
+                    }
+                    $end = $tightened;
                 } elseif ($method === Method::Between) {
                     $start = $this->tightenLowerBound($start, $this->stringifyTime($values[0] ?? null));
-                    $end = $this->tightenUpperBound($end, $this->stringifyTime($values[1] ?? null));
+                    $candidate = $this->stringifyTime($values[1] ?? null);
+                    $tightened = $this->tightenUpperBound($end, $candidate);
+                    if ($tightened !== $end) {
+                        // Between's upper bound is inclusive.
+                        $endInclusive = true;
+                    }
+                    $end = $tightened;
+                } else {
+                    // A time filter that is not a window bound (notBetween,
+                    // equal, ...) carves shapes a day-granularity rollup
+                    // cannot honor: a mid-day hole is invisible at day rows,
+                    // and the split route's interior would drop it entirely.
+                    $hasIrregularTimeFilter = true;
                 }
             }
         }
@@ -3238,6 +3299,8 @@ class ClickHouse extends SQL
             'interval' => $interval,
             'orderColumns' => $orderColumns,
             'hasCursor' => $hasCursor,
+            'hasIrregularTimeFilter' => $hasIrregularTimeFilter,
+            'endInclusive' => $endInclusive,
         ];
     }
 
@@ -3254,7 +3317,7 @@ class ClickHouse extends SQL
      * table and the ClickHouse optimizer transparently picks the
      * matching projection.
      *
-     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool, hasIrregularTimeFilter?: bool, endInclusive?: bool} $plan
      */
     private function selectAggregateSource(array $plan): string
     {
@@ -3267,6 +3330,10 @@ class ClickHouse extends SQL
         }
 
         if (!empty($plan['hasCursor'])) {
+            return 'raw';
+        }
+
+        if (!empty($plan['hasIrregularTimeFilter'])) {
             return 'raw';
         }
 
@@ -3297,18 +3364,62 @@ class ClickHouse extends SQL
         }
 
         if (!$this->isDayAligned($startDt)) {
-            return 'raw';
+            return $this->splitInterior($startDt, $endDt, $boundaryDt) !== null ? 'split' : 'raw';
         }
 
         if ($endDt >= $boundaryDt) {
             return 'hybrid';
         }
 
-        if (!$this->isDayAligned($endDt)) {
-            return 'raw';
+        if (!$this->isDayAligned($endDt) || !empty($plan['endInclusive'])) {
+            // A day-aligned but INCLUSIVE upper bound covers the midnight
+            // instant itself, and a daily row cannot represent it: the bucket
+            // for that day holds the whole day, so 'daily' would either drop
+            // the instant (translating <= to <) or over-count the day. Split
+            // reads the interior from the rollup and that instant from raw.
+            return $this->splitInterior($startDt, $endDt, $boundaryDt) !== null ? 'split' : 'raw';
         }
 
         return 'daily';
+    }
+
+    /**
+     * Interior [from, to) of a window: the whole UTC days the daily rollup can
+     * answer. From = the start ceiled to the next midnight (null start = the
+     * rollup's full history), to = the end floored to midnight and capped at
+     * today (the running day always reads raw). Null when no whole day fits —
+     * a sub-day window has no rollup-answerable interior.
+     *
+     * This is what makes routing reach the windows production actually uses:
+     * billing cycles are anchored at the moment a team upgraded (0 of 451k
+     * production teams have midnight-aligned invoice dates), so day-aligned
+     * routes alone never fire for billing.
+     *
+     * @return array{0: ?string, 1: string}|null [interiorFrom|null, interiorTo)
+     */
+    private function splitInterior(?DateTime $startDt, DateTime $endDt, DateTime $boundaryDt): ?array
+    {
+        $from = null;
+        if ($startDt !== null) {
+            $from = (clone $startDt);
+            if ($from->format('H:i:s.u') !== '00:00:00.000000') {
+                $from->setTime(0, 0, 0, 0)->modify('+1 day');
+            }
+        }
+
+        $to = (clone $endDt)->setTime(0, 0, 0, 0);
+        if ($to > $boundaryDt) {
+            $to = clone $boundaryDt;
+        }
+
+        if ($from !== null && $from >= $to) {
+            return null;
+        }
+
+        return [
+            $from?->format('Y-m-d H:i:s.v'),
+            $to->format('Y-m-d H:i:s.v'),
+        ];
     }
 
     /**
@@ -3621,7 +3732,7 @@ class ClickHouse extends SQL
     }
 
     /**
-     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool, hasIrregularTimeFilter?: bool, endInclusive?: bool} $plan
      */
     private function recordRoute(string $operation, array $plan, string $route): void
     {
@@ -3660,7 +3771,7 @@ class ClickHouse extends SQL
      *
      * @param array<Query> $queries
      * @param string $route
-     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool, hasIrregularTimeFilter?: bool, endInclusive?: bool} $plan
      */
     private function maybeDualRead(string $tenant, array $queries, string $route, array $plan, int $rolledTotal): void
     {
@@ -3755,6 +3866,147 @@ class ClickHouse extends SQL
         $result = $this->query($sql, array_merge($rawStatement->namedBindings ?? [], $dailyBindings));
 
         return $this->decodeTotal($result);
+    }
+
+    /**
+     * Split flat-sum: the interior whole days from the daily rollup, the
+     * sub-day head and tail edges from the raw events table, folded by an
+     * outer SUM over UNION ALL. This is the route production windows
+     * actually take — billing cycles are anchored at upgrade time, never
+     * midnight, so the day-aligned 'daily'/'hybrid' routes cannot fire for
+     * them. Measured on the largest production tenant (30-day window):
+     * 282M rows raw vs 6.7M rows split, identical totals.
+     *
+     * @param array<Query> $queries
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool, hasIrregularTimeFilter?: bool, endInclusive?: bool} $plan
+     */
+    private function sumSplitDailyAndRaw(string $tenant, array $queries, array $plan): int
+    {
+        [$branches, $bindings] = $this->splitBranchStatements($tenant, $queries, $plan, null);
+
+        $sql = "
+            SELECT sum(total) AS total FROM (
+                " . implode("\n                UNION ALL\n                ", $branches) . "
+            )
+            FORMAT JSON
+        ";
+
+        return $this->decodeTotal($this->query($sql, $bindings));
+    }
+
+    /**
+     * Split batched event totals: the batch shape of sumSplitDailyAndRaw(),
+     * grouped by metric on every branch and re-folded per metric outside.
+     *
+     * @param array<string> $metrics
+     * @param array<Query> $queries
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool, hasIrregularTimeFilter?: bool, endInclusive?: bool} $plan
+     * @return array<string, int>
+     */
+    private function totalBatchSplit(string $tenant, array $metrics, array $queries, array $plan): array
+    {
+        [$branches, $bindings] = $this->splitBranchStatements($tenant, $queries, $plan, $metrics);
+
+        $sql = "
+            SELECT `metric`, sum(`total`) AS `agg_val` FROM (
+                " . implode("\n                UNION ALL\n                ", $branches) . "
+            )
+            GROUP BY `metric`
+            FORMAT JSON
+        ";
+
+        $totalsByMetric = [];
+        foreach ($this->decodeRows($this->query($sql, $bindings)) as $row) {
+            $totalsByMetric[self::toStr($row['metric'] ?? null)] = self::toInt($row['agg_val'] ?? null);
+        }
+
+        return $totalsByMetric;
+    }
+
+    /**
+     * Compile the split branches: the daily rollup over the interior whole
+     * days, and the raw events table over the sub-day edges. The edges keep
+     * the caller's original time filters (preserving their inclusivity) with
+     * the interior boundary ANDed on, so head ∪ interior ∪ tail partitions
+     * the window exactly. Each branch's bindings are prefixed so the merged
+     * statement has no placeholder collisions. A null $metrics compiles the
+     * flat-sum shape; a list compiles the grouped-by-metric batch shape.
+     *
+     * @param array<Query> $queries
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool, hasIrregularTimeFilter?: bool, endInclusive?: bool} $plan
+     * @param array<string>|null $metrics
+     * @return array{0: array<int, string>, 1: array<string, mixed>}
+     * @throws Exception
+     */
+    private function splitBranchStatements(string $tenant, array $queries, array $plan, ?array $metrics): array
+    {
+        $boundaryDt = new DateTime('today', new DateTimeZone('UTC'));
+        $endDt = new DateTime((string) $plan['end'], new DateTimeZone('UTC'));
+        $startDt = $plan['start'] !== null ? new DateTime($plan['start'], new DateTimeZone('UTC')) : null;
+
+        $interior = $this->splitInterior($startDt, $endDt, $boundaryDt);
+        if ($interior === null) {
+            // Unreachable: selectAggregateSource() only returns 'split' when
+            // an interior exists. Fail loudly rather than mis-aggregate.
+            throw new Exception('Split route selected for a window with no whole interior day.');
+        }
+        [$interiorFrom, $interiorTo] = $interior;
+
+        $split = $this->splitTimeQueries($queries);
+
+        $branchQueryLists = [];
+
+        $dailyQueries = $split['nonTime'];
+        if ($interiorFrom !== null) {
+            $dailyQueries[] = Query::greaterThanEqual('time', $interiorFrom);
+        }
+        $dailyQueries[] = Query::lessThan('time', $interiorTo);
+        $branchQueryLists[] = [true, $dailyQueries];
+
+        if ($interiorFrom !== null && $startDt !== null && $startDt->format('Y-m-d H:i:s.v') !== $interiorFrom) {
+            $branchQueryLists[] = [false, array_merge($queries, [Query::lessThan('time', $interiorFrom)])];
+        }
+
+        // The tail carries the caller's own upper bound, so an inclusive
+        // bound resolves to exactly the boundary instant ([midnight, midnight])
+        // — the rows the interior's half-open upper edge excludes.
+        if ($endDt->format('Y-m-d H:i:s.v') !== $interiorTo || !empty($plan['endInclusive'])) {
+            $branchQueryLists[] = [false, array_merge($queries, [Query::greaterThanEqual('time', $interiorTo)])];
+        }
+
+        $dailyTableName = $this->getEventsDailyTableName();
+        $eventsTableName = $this->getEventsTableName();
+
+        $branches = [];
+        $bindings = [];
+        foreach ($branchQueryLists as $index => [$isDaily, $branchQueries]) {
+            $tableName = $isDaily ? $dailyTableName : $eventsTableName;
+            $parsed = $this->parseQueries($tenant, $branchQueries, Usage::TYPE_EVENT);
+
+            $builder = $this->newBuilder(Usage::TYPE_EVENT)->from($tableName);
+            if ($metrics === null) {
+                $builder->sum('value', 'total');
+            } else {
+                $builder
+                    ->select(['metric'])
+                    ->selectRaw('SUM(`value`) AS `total`')
+                    ->filter([Query::equal('metric', $metrics)])
+                    ->groupByRaw('`metric`');
+            }
+            $this->applyFilters($builder, $tenant, $parsed);
+
+            $statement = $builder->build();
+            [$branchSql, $branchBindings] = $this->prefixNamedBindings(
+                $this->qualifyDdl($statement->query, $tableName),
+                $statement->namedBindings ?? [],
+                'b' . $index . '_',
+            );
+
+            $branches[] = $branchSql;
+            $bindings = array_merge($bindings, $branchBindings);
+        }
+
+        return [$branches, $bindings];
     }
 
     /**
@@ -4435,6 +4687,11 @@ class ClickHouse extends SQL
             $this->maybeDualReadBatch($tenant, $metrics, $queries, $route, $plan, $totalsByMetric);
             return $totalsByMetric;
         }
+        if ($route === 'split') {
+            $totalsByMetric = $this->totalBatchSplit($tenant, $metrics, $queries, $plan);
+            $this->maybeDualReadBatch($tenant, $metrics, $queries, $route, $plan, $totalsByMetric);
+            return $totalsByMetric;
+        }
 
         return $this->totalBatchFromTable($tenant, $metrics, $queries, Usage::TYPE_EVENT);
     }
@@ -4520,7 +4777,7 @@ class ClickHouse extends SQL
      *
      * @param array<string> $metrics
      * @param array<Query> $queries
-     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool} $plan
+     * @param array{metric: ?string, start: ?string, end: ?string, filterColumns: array<int, string>, dimensions: array<int, string>, interval: ?string, orderColumns?: array<int, string>, hasCursor?: bool, hasIrregularTimeFilter?: bool, endInclusive?: bool} $plan
      * @param array<string, int> $rolledTotals
      */
     private function maybeDualReadBatch(string $tenant, array $metrics, array $queries, string $route, array $plan, array $rolledTotals): void

@@ -91,21 +91,29 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('daily', $log[0]['route']);
+        $this->assertSame('split', $log[0]['route'], 'an inclusive midnight bound needs the boundary instant read raw; the interior still comes from the rollup');
         $this->assertSame($rawSum, $sum, 'daily MV must re-aggregate to the same total as raw');
     }
 
-    public function testInclusiveMidnightUpperBoundExcludesEndDayOnDailyRoute(): void
+    public function testInclusiveMidnightUpperBoundExcludesTheEndDayButKeepsTheMidnightInstant(): void
     {
-        $this->adapter->clearRouteLog();
-
+        // Two rows on the end day: one at 14:00 (must be excluded — the bound
+        // is midnight, not end-of-day) and one at exactly midnight (must be
+        // included — the bound is inclusive). A day-granularity rollup row
+        // cannot express that difference: routing this window to 'daily'
+        // translated `<= midnight` into `< midnight` and silently dropped the
+        // midnight row, under-billing by its value. It now routes 'split':
+        // interior days from the rollup, the boundary instant from raw.
         $this->seedHistoricalRow('routed.metric', 9999, '-2 days +14 hours', ['path' => '/v1/late']);
 
         $start = (new DateTime('-7 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
         $end = (new DateTime('-2 days', new DateTimeZone('UTC')))->setTime(0, 0, 0)->format('Y-m-d H:i:s');
 
+        $this->seedHistoricalRowAt('routed.metric', 42, $end);
+
         $rawSum = $this->sumRaw('routed.metric', $start, $end);
 
+        $this->adapter->clearRouteLog();
         $sum = $this->usage->sum('1', [
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
@@ -114,23 +122,24 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('daily', $log[0]['route']);
-        $this->assertSame($rawSum, $sum, 'daily MV must not include the end-day full-day row for inclusive-midnight upper bounds');
-        $this->assertSame(300, $sum);
+        $this->assertSame('split', $log[0]['route']);
+        $this->assertSame($rawSum, $sum, 'the routed read must match raw exactly at an inclusive midnight bound');
+        $this->assertSame(342, $sum, 'the 300 interior + the 42 row at exactly midnight, never the 9999 mid-end-day row');
     }
 
-    public function testMidDayClosedWindowFallsBackToRaw(): void
+    public function testMidDayClosedWindowRoutesSplit(): void
     {
-        // Daily rows are stored at midnight; a mid-day caller bound
-        // would exclude the partial first day and over-include the
-        // last day if forwarded to the daily MV. Routing must reject
-        // non-day-aligned bounds and fall through to the raw scan.
-        $this->adapter->clearRouteLog();
-
+        // Daily rows are stored at midnight; a mid-day caller bound cannot be
+        // forwarded to the daily MV wholesale. It routes 'split' instead: the
+        // interior whole days from the rollup, the partial edge days from raw
+        // — never over- or under-including the edges.
         $start = (new DateTime('-7 days 12:30:00', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
         $end = (new DateTime('-2 days 12:30:00', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
 
-        $this->usage->sum('1', [
+        $rawSum = $this->sumRaw('routed.metric', $start, $end);
+
+        $this->adapter->clearRouteLog();
+        $sum = $this->usage->sum('1', [
             Query::equal('metric', ['routed.metric']),
             Query::greaterThanEqual('time', $start),
             Query::lessThanEqual('time', $end),
@@ -138,7 +147,8 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route']);
+        $this->assertSame('split', $log[0]['route']);
+        $this->assertSame($rawSum, $sum, 'split must equal the raw scan over the same mid-day bounds');
     }
 
     public function testWindowStraddlesTodayRoutesHybrid(): void
@@ -239,7 +249,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('raw', $log[0]['route'], 'a mid-day start with a hybrid window must fall back to raw');
+        $this->assertSame('split', $log[0]['route'], 'a mid-day start with a straddling window routes split: rollup interior, raw edges');
         $this->assertSame(0, $sum, 'pre-start events on the same day must not be included in the result');
     }
 
@@ -281,7 +291,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
 
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
-        $this->assertSame('daily', $log[0]['route']);
+        $this->assertSame('split', $log[0]['route'], 'tightest bound is an inclusive midnight, which routes split');
         $this->assertSame($startTighter, $log[0]['start']);
         $this->assertSame($endTighter, $log[0]['end']);
     }
@@ -411,7 +421,7 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $log = $this->adapter->getRouteLog();
         $this->assertCount(1, $log);
         $this->assertSame('getTotalBatch', $log[0]['operation']);
-        $this->assertSame('daily', $log[0]['route']);
+        $this->assertSame('split', $log[0]['route'], 'an inclusive midnight bound needs the boundary instant read raw; the interior still comes from the rollup');
         $this->assertSame($rawSum, $totals['routed.metric'], 'the daily rollup must re-aggregate to the same batch total as raw');
         $this->assertSame(0, $totals['routed.absent'], 'an absent metric still comes back as zero');
     }
@@ -455,6 +465,158 @@ class ClickHouseRoutingTest extends ClickHouseTestCase
         $this->assertSame('getTotalBatch', $log[0]['operation']);
         $this->assertSame('raw', $log[0]['route'], 'a filter column the rollup does not carry must fall back to the raw table');
         $this->assertSame(100, $totals['routed.metric']);
+    }
+
+    public function testNonAlignedWindowRoutesSumToSplit(): void
+    {
+        // Billing-shaped window: mid-day start, mid-day end — 0 of 451k
+        // production teams have midnight-aligned invoice dates, so this is
+        // the shape routing must serve or it serves nothing.
+        $day = fn (int $back, string $time): string =>
+            (new DateTime("-{$back} days", new DateTimeZone('UTC')))->format('Y-m-d') . ' ' . $time;
+
+        $start = $day(7, '14:30:00');
+        $end = $day(1, '10:00:00');
+
+        // Boundary-precise seeds: excluded-before, head edge, interior, tail
+        // edge, excluded-after.
+        $this->seedHistoricalRowAt('routed.metric', 1000, $day(7, '10:00:00'));
+        $this->seedHistoricalRowAt('routed.metric', 3, $day(7, '18:00:00'));
+        $this->seedHistoricalRowAt('routed.metric', 7, $day(4, '12:00:00'));
+        $this->seedHistoricalRowAt('routed.metric', 13, $day(1, '08:00:00'));
+        $this->seedHistoricalRowAt('routed.metric', 5000, $day(1, '11:30:00'));
+
+        $queries = [
+            Query::equal('metric', ['routed.metric']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThan('time', $end),
+        ];
+
+        $rawSum = $this->sumRawHalfOpen('routed.metric', $start, $end);
+
+        $this->adapter->clearRouteLog();
+        $sum = $this->usage->sum('1', $queries, 'value', Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('split', $log[0]['route']);
+        $this->assertSame($rawSum, $sum, 'daily interior + raw edges must partition the window exactly');
+    }
+
+    public function testNonAlignedWindowRoutesTotalBatchToSplit(): void
+    {
+        $day = fn (int $back, string $time): string =>
+            (new DateTime("-{$back} days", new DateTimeZone('UTC')))->format('Y-m-d') . ' ' . $time;
+
+        $start = $day(7, '14:30:00');
+        $end = $day(1, '10:00:00');
+
+        $this->seedHistoricalRowAt('routed.metric', 3, $day(7, '18:00:00'));
+        $this->seedHistoricalRowAt('routed.other', 21, $day(4, '12:00:00'));
+        $this->seedHistoricalRowAt('routed.other', 9, $day(1, '08:00:00'));
+
+        $queries = [
+            Query::greaterThanEqual('time', $start),
+            Query::lessThan('time', $end),
+        ];
+
+        $expected = [
+            'routed.metric' => $this->sumRawHalfOpen('routed.metric', $start, $end),
+            'routed.other' => $this->sumRawHalfOpen('routed.other', $start, $end),
+        ];
+
+        $this->adapter->clearRouteLog();
+        $totals = $this->usage->getTotalBatch('1', ['routed.metric', 'routed.other'], $queries, Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('getTotalBatch', $log[0]['operation']);
+        $this->assertSame('split', $log[0]['route']);
+        $this->assertSame($expected, ['routed.metric' => $totals['routed.metric'], 'routed.other' => $totals['routed.other']]);
+    }
+
+    public function testIrregularTimeFilterStaysRaw(): void
+    {
+        // A notBetween carves a mid-day hole inside the window. Day-granularity
+        // rollup rows cannot honor it, and the split interior would drop it —
+        // both would over-count, so it must stay raw. Value-checked: the raw
+        // path applies the hole, and routed reads must match it.
+        $day = fn (int $back, string $time): string =>
+            (new DateTime("-{$back} days", new DateTimeZone('UTC')))->format('Y-m-d') . ' ' . $time;
+
+        $start = $day(7, '00:00:00');
+        $end = $day(2, '00:00:00');
+
+        $this->seedHistoricalRowAt('routed.metric', 40, $day(4, '11:00:00'));
+
+        $this->adapter->clearRouteLog();
+        $sum = $this->usage->sum('1', [
+            Query::equal('metric', ['routed.metric']),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThan('time', $end),
+            Query::notBetween('time', $day(4, '10:00:00'), $day(4, '12:00:00')),
+        ], 'value', Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('raw', $log[0]['route'], 'a non-window time filter cannot be expressed on day rows');
+
+        $rawWithoutHole = $this->sumRawHalfOpen('routed.metric', $start, $end);
+        $this->assertSame($rawWithoutHole - 40, $sum, 'the mid-day hole must exclude the seeded row');
+    }
+
+    public function testSubDayWindowStaysRaw(): void
+    {
+        $day = fn (int $back, string $time): string =>
+            (new DateTime("-{$back} days", new DateTimeZone('UTC')))->format('Y-m-d') . ' ' . $time;
+
+        $this->adapter->clearRouteLog();
+
+        $this->usage->sum('1', [
+            Query::equal('metric', ['routed.metric']),
+            Query::greaterThanEqual('time', $day(1, '10:00:00')),
+            Query::lessThan('time', $day(1, '14:00:00')),
+        ], 'value', Usage::TYPE_EVENT);
+
+        $log = $this->adapter->getRouteLog();
+        $this->assertCount(1, $log);
+        $this->assertSame('raw', $log[0]['route'], 'a window with no whole interior day has nothing the rollup can answer');
+    }
+
+    /**
+     * Raw ground truth over a half-open window, matching the routed calls.
+     */
+    private function sumRawHalfOpen(string $metric, string $start, string $end): int
+    {
+        $reflection = new ReflectionClass($this->adapter);
+        $sumFromTable = $reflection->getMethod('sumFromTable');
+        $sumFromTable->setAccessible(true);
+        $result = $sumFromTable->invoke($this->adapter, '1', [
+            Query::equal('metric', [$metric]),
+            Query::greaterThanEqual('time', $start),
+            Query::lessThan('time', $end),
+        ], 'value', Usage::TYPE_EVENT);
+        $this->adapter->clearRouteLog();
+        return is_int($result) ? $result : 0;
+    }
+
+    /**
+     * Seed one raw event row at an absolute UTC timestamp.
+     */
+    private function seedHistoricalRowAt(string $metric, int $value, string $timestamp): void
+    {
+        $eventsTable = $this->resolveTableName($this->adapter, 'getEventsTableName');
+        $database = $this->databaseName($this->adapter);
+        $id = bin2hex(random_bytes(16));
+        $this->queryRaw($this->adapter, sprintf(
+            "INSERT INTO `%s`.`%s` (id, metric, value, time, tenant) VALUES ('%s', '%s', %d, '%s.000', '1')",
+            $database,
+            $eventsTable,
+            $id,
+            addslashes($metric),
+            $value,
+            $timestamp,
+        ));
     }
 
     private function sumRaw(string $metric, string $start, string $end): int
