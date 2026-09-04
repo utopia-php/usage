@@ -79,9 +79,8 @@ class Database extends SQL
 
         // Event schema is a superset of the gauge schema for the dimensions
         // that exist in both (resourceId, resourceInternalId, teamId,
-        // teamInternalId), so a single Database collection backed by the
-        // event schema works for both types. Gauge-only columns (ordinal)
-        // are appended below.
+        // teamInternalId, ordinal), so a single Database collection backed
+        // by the event schema works for both types.
         $attributes = $this->getAttributeDocuments(Usage::TYPE_EVENT);
         $indexes = $this->getIndexDocuments(Usage::TYPE_EVENT);
 
@@ -89,10 +88,6 @@ class Database extends SQL
         // ClickHouse uses separate tables instead, so this lives in the Database adapter only.
         $attributes[] = Attribute::string(key: 'type', size: 16);
         $indexes[] = Index::key(key: 'index-type', attributes: ['type']);
-
-        // Gauge-only replica ordinal dimension.
-        $attributes[] = Attribute::string(key: 'ordinal', size: 255);
-        $indexes[] = Index::key(key: 'index-ordinal', attributes: ['ordinal']);
 
         try {
             $this->db->createCollection(new Collection(

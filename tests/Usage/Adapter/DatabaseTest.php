@@ -345,7 +345,6 @@ class DatabaseTest extends TestCase
         return [
             ...Metric::getEventSchema(),
             ['$id' => 'type', 'type' => ColumnType::String->value, 'size' => 16, 'required' => false, 'signed' => true, 'array' => false, 'filters' => []],
-            ['$id' => 'ordinal', 'type' => ColumnType::String->value, 'size' => 255, 'required' => false, 'signed' => true, 'array' => false, 'filters' => []],
         ];
     }
 
@@ -357,7 +356,6 @@ class DatabaseTest extends TestCase
         return [
             ...Metric::getEventIndexes(),
             ['$id' => 'index-type', 'type' => IndexType::Key->value, 'attributes' => ['type']],
-            ['$id' => 'index-ordinal', 'type' => IndexType::Key->value, 'attributes' => ['ordinal']],
         ];
     }
 

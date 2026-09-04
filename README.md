@@ -101,7 +101,7 @@ $tenant->addBatch([
 Events are request-level metrics like bandwidth, executions, API calls. They are summed when aggregated.
 
 Event-specific columns (see `Metric::EVENT_COLUMNS`): `path`, `method`, `status`,
-`service`, `resource`, `resourceId`, `resourceInternalId`, `teamId`,
+`service`, `resource`, `resourceId`, `resourceInternalId`, `ordinal`, `teamId`,
 `teamInternalId`, `country`, `region`, `hostname`, `osCode`, `osName`,
 `osVersion`, `clientType`, `clientCode`, `clientName`, `clientVersion`,
 `clientEngine`, `clientEngineVersion`, `deviceName`, `deviceBrand`,
