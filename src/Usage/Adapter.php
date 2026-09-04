@@ -218,4 +218,19 @@ abstract class Adapter
      * @return array<string, int> Metric name => sum value
      */
     abstract public function sumDailyBatch(string $tenant, array $metrics, array $queries = []): array;
+
+    /**
+     * Backfill the pre-aggregated daily events table from the raw events
+     * table for the half-open, UTC-midnight-aligned window [$from, $to).
+     *
+     * Only meaningful on adapters that maintain a daily rollup; the base
+     * refuses so a mis-wired caller fails loudly instead of silently
+     * backfilling nothing.
+     *
+     * @throws \Exception
+     */
+    public function backfillDaily(string $from, string $to, bool $force = false): void
+    {
+        throw new \Exception(static::class . ' does not maintain a daily rollup to backfill.');
+    }
 }

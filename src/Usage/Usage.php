@@ -287,4 +287,17 @@ class Usage
     {
         return $this->adapter->sumDailyBatch($tenant, $metrics, $queries);
     }
+
+    /**
+     * Backfill the pre-aggregated daily events table from the raw events
+     * table for the half-open, UTC-midnight-aligned window [$from, $to).
+     * Refuses a window that already holds rollup rows unless $force is
+     * passed after the caller cleared the range.
+     *
+     * @throws \Exception
+     */
+    public function backfillDaily(string $from, string $to, bool $force = false): void
+    {
+        $this->adapter->backfillDaily($from, $to, $force);
+    }
 }
