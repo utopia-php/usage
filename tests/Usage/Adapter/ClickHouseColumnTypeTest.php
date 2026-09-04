@@ -88,8 +88,8 @@ class ClickHouseColumnTypeTest extends TestCase
     }
 
     /**
-     * The gauge replica ordinal holds a handful of distinct values, so it
-     * must map to LowCardinality(Nullable(String)).
+     * The replica ordinal holds a handful of distinct values, so it
+     * must map to LowCardinality(Nullable(String)) on both tables.
      */
     public function testLowCardinalityOrdinalColumn(): void
     {
@@ -97,6 +97,11 @@ class ClickHouseColumnTypeTest extends TestCase
             'LowCardinality(Nullable(String))',
             $this->columnType('ordinal', 'gauge'),
             'ordinal should be LowCardinality(Nullable(String))'
+        );
+        $this->assertSame(
+            'LowCardinality(Nullable(String))',
+            $this->columnType('ordinal', 'event'),
+            'event ordinal should be LowCardinality(Nullable(String))'
         );
     }
 }
