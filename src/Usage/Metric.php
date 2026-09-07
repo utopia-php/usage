@@ -776,9 +776,17 @@ class Metric extends ArrayObject
             'teamId', 'teamInternalId',
             'country', 'region', 'hostname', 'ip',
             'osName', 'clientType', 'clientName', 'deviceName',
+            // request attributes (firewall rule matching)
+            'protocol', 'accept', 'acceptLanguage', 'queryKeys',
+            // premium geo
+            'postalCode', 'latitude', 'longitude', 'timeZone', 'weatherCode',
         ];
 
-        $setIndexed = ['status', 'method', 'country', 'service', 'clientType', 'osName'];
+        $setIndexed = [
+            'status', 'method', 'country', 'service', 'clientType', 'osName',
+            // low-cardinality request/geo dims filtered by equality
+            'protocol', 'timeZone', 'weatherCode',
+        ];
 
         return array_map(
             static function (string $col) use ($setIndexed): array {

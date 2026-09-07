@@ -100,6 +100,17 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $this->assertStringContainsString('`index-hostname` hostname TYPE bloom_filter', $ddl);
         $this->assertStringContainsString('`index-resourceId` resourceId TYPE bloom_filter', $ddl);
         $this->assertStringContainsString('`index-teamId` teamId TYPE bloom_filter', $ddl);
+
+        // request-attribute + premium-geo dims added for firewall/console filtering:
+        // low-cardinality equality dims get set(0), high-cardinality ones bloom_filter.
+        $this->assertStringContainsString('`index-protocol` protocol TYPE set(0)', $ddl);
+        $this->assertStringContainsString('`index-timeZone` timeZone TYPE set(0)', $ddl);
+        $this->assertStringContainsString('`index-weatherCode` weatherCode TYPE set(0)', $ddl);
+
+        $this->assertStringContainsString('`index-accept` accept TYPE bloom_filter', $ddl);
+        $this->assertStringContainsString('`index-acceptLanguage` acceptLanguage TYPE bloom_filter', $ddl);
+        $this->assertStringContainsString('`index-queryKeys` queryKeys TYPE bloom_filter', $ddl);
+        $this->assertStringContainsString('`index-postalCode` postalCode TYPE bloom_filter', $ddl);
     }
 
     public function testDailyTableMatchesPrePrSchema(): void

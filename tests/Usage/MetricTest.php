@@ -103,6 +103,8 @@ class MetricTest extends TestCase
             'resourceId', 'resourceInternalId', 'teamId', 'teamInternalId',
             'country', 'region', 'hostname', 'ip',
             'osName', 'clientType', 'clientName', 'deviceName',
+            'protocol', 'accept', 'acceptLanguage', 'queryKeys',
+            'postalCode', 'latitude', 'longitude', 'timeZone', 'weatherCode',
         ] as $col) {
             $this->assertContains($col, $indexed, "Event indexes missing {$col}");
         }
