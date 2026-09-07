@@ -788,16 +788,25 @@ class Metric extends ArrayObject
             'protocol', 'timeZone', 'weatherCode',
         ];
 
+        // Columns whose full length exceeds the SQL adapter's max index key
+        // length (768 bytes) must be indexed on a prefix; ClickHouse ignores
+        // the prefix and indexes the whole value.
+        $prefixed = [
+            'path' => 255,
+            'accept' => 255,
+            'queryKeys' => 255,
+        ];
+
         return array_map(
-            static function (string $col) use ($setIndexed): array {
+            static function (string $col) use ($setIndexed, $prefixed): array {
                 $entry = [
                     '$id' => 'index-' . $col,
                     'type' => 'key',
                     'attributes' => [$col],
                     'indexType' => in_array($col, $setIndexed, true) ? 'set(0)' : 'bloom_filter',
                 ];
-                if ($col === 'path') {
-                    $entry['lengths'] = [255];
+                if (isset($prefixed[$col])) {
+                    $entry['lengths'] = [$prefixed[$col]];
                 }
                 return $entry;
             },
