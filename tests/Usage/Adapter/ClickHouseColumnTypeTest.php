@@ -79,10 +79,7 @@ class ClickHouseColumnTypeTest extends TestCase
      */
     public function testLowCardinalityRequestAndGeoColumns(): void
     {
-        foreach ([
-            'protocol', 'accept', 'acceptLanguage', 'queryKeys',
-            'timeZone', 'weatherCode',
-        ] as $col) {
+        foreach (['protocol', 'timeZone', 'weatherCode'] as $col) {
             $this->assertSame(
                 'LowCardinality(Nullable(String))',
                 $this->columnType($col),
@@ -92,12 +89,13 @@ class ClickHouseColumnTypeTest extends TestCase
     }
 
     /**
-     * High-cardinality premium-geo dims must fall through to plain
-     * Nullable(String).
+     * High-cardinality dims — un-normalized request text (accept/acceptLanguage/
+     * queryKeys) and premium-geo — must fall through to plain Nullable(String).
      */
     public function testHighCardinalityRequestAndGeoColumns(): void
     {
         foreach ([
+            'accept', 'acceptLanguage', 'queryKeys',
             'postalCode', 'latitude', 'longitude',
         ] as $col) {
             $this->assertSame(

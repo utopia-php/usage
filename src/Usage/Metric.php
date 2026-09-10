@@ -785,9 +785,10 @@ class Metric extends ArrayObject
 
         $setIndexed = [
             'status', 'method', 'country', 'service', 'clientType', 'osName',
-            // low-cardinality request/geo dims filtered by equality
-            'protocol', 'accept', 'acceptLanguage', 'queryKeys',
-            'timeZone', 'weatherCode',
+            // low-cardinality request/geo dims filtered by equality. accept/
+            // acceptLanguage/queryKeys are unbounded caller input, so they use
+            // bloom_filter (below) instead of an unlimited set(0) index.
+            'protocol', 'timeZone', 'weatherCode',
         ];
 
         // Columns whose full length exceeds the SQL adapter's max index key

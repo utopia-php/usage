@@ -1791,9 +1791,10 @@ class ClickHouse extends SQL
             'clientEngine', 'clientEngineVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
             'hostname', 'ip',
-            // request attributes: exact-match dims with bounded distinct counts
-            // (protocol/accept/acceptLanguage/queryKeys), queried like country.
-            'protocol', 'accept', 'acceptLanguage', 'queryKeys',
+            // request attributes: only protocol is bounded. accept/acceptLanguage/
+            // queryKeys hold raw, un-normalized caller input (unbounded distinct
+            // values), so they stay plain Nullable(String) + bloom_filter.
+            'protocol',
             // premium geo (lower-cardinality only; city/isp/AS org/connection org and
             // postalCode/latitude/longitude are high-cardinality and intentionally fall
             // through to Nullable(String))
@@ -1848,6 +1849,8 @@ class ClickHouse extends SQL
             'autonomousSystemNumber', 'autonomousSystemOrganization',
             'connectionType', 'connectionUsageType', 'connectionOrganization',
             'sdk', 'sdkVersion',
+            // high-entropy, un-normalized request text
+            'accept', 'acceptLanguage', 'queryKeys',
         ];
 
         if (in_array($id, $zstdColumns, true)) {
