@@ -108,6 +108,23 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         $this->assertStringContainsString('`index-hostname` hostname TYPE bloom_filter', $ddl);
         $this->assertStringContainsString('`index-resourceId` resourceId TYPE bloom_filter', $ddl);
         $this->assertStringContainsString('`index-teamId` teamId TYPE bloom_filter', $ddl);
+
+        // request-attribute + premium-geo dims added for firewall/console filtering:
+        // bounded-cardinality equality dims get set(0); un-normalized text and
+        // high-cardinality dims get bloom_filter.
+        $this->assertStringContainsString('`index-protocol` protocol TYPE set(0)', $ddl);
+        $this->assertStringContainsString('`index-ipReputation` ipReputation TYPE set(0)', $ddl);
+        $this->assertStringContainsString('`index-timeZone` timeZone TYPE set(0)', $ddl);
+        $this->assertStringContainsString('`index-weatherCode` weatherCode TYPE set(0)', $ddl);
+
+        $this->assertStringContainsString('`index-accept` accept TYPE bloom_filter', $ddl);
+        $this->assertStringContainsString('`index-acceptLanguage` acceptLanguage TYPE bloom_filter', $ddl);
+        $this->assertStringContainsString('`index-queryKeys` queryKeys TYPE bloom_filter', $ddl);
+        $this->assertStringContainsString('`index-postalCode` postalCode TYPE bloom_filter', $ddl);
+
+        // latitude/longitude are display-only and intentionally NOT indexed.
+        $this->assertStringNotContainsString('`index-latitude`', $ddl);
+        $this->assertStringNotContainsString('`index-longitude`', $ddl);
     }
 
     public function testDailyTableMatchesPrePrSchema(): void
@@ -307,8 +324,10 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
             'clientEngine', 'clientEngineVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
             'hostname', 'ip',
+            'protocol', 'ipReputation',
             'continentCode', 'subdivisions', 'connectionType',
             'connectionUsageType', 'autonomousSystemNumber',
+            'timeZone', 'weatherCode',
             'sdk', 'sdkVersion',
             'ordinal',
         ];
