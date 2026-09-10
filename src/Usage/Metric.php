@@ -56,6 +56,9 @@ class Metric extends ArrayObject
         'country', 'region', 'hostname', 'ip',
         // request attributes (firewall rule matching)
         'protocol', 'accept', 'acceptLanguage', 'queryKeys',
+        // ip reputation (placeholder — populated later; bounded verdict enum:
+        // clean/low/suspicious/block)
+        'ipReputation',
         // premium geo
         'city', 'continentCode', 'subdivisions',
         'postalCode', 'latitude', 'longitude', 'timeZone', 'weatherCode',
@@ -92,6 +95,7 @@ class Metric extends ArrayObject
      * - teamId / teamInternalId: owning team identity
      * - country / region / hostname / ip: geographic + caller origin
      * - protocol / accept / acceptLanguage / queryKeys: request attributes (firewall rule matching)
+     * - ipReputation: IP reputation verdict (placeholder; clean/low/suspicious/block)
      * - city / continentCode / subdivisions: premium geo location fields
      * - postalCode / latitude / longitude / timeZone / weatherCode: premium geo location fields
      * - isp / autonomousSystemNumber / autonomousSystemOrganization: premium network origin
@@ -658,6 +662,8 @@ class Metric extends ArrayObject
             $stringColumn('accept', 1024),
             $stringColumn('acceptLanguage', 256),
             $stringColumn('queryKeys', 1024),
+            // ip reputation (placeholder — bounded verdict enum)
+            $stringColumn('ipReputation', 32),
             // premium geo
             $stringColumn('city', 256),
             $stringColumn('continentCode', 2),
@@ -778,6 +784,8 @@ class Metric extends ArrayObject
             'osName', 'clientType', 'clientName', 'deviceName',
             // request attributes (firewall rule matching, exact-match)
             'protocol', 'accept', 'acceptLanguage', 'queryKeys',
+            // ip reputation (placeholder — bounded verdict enum, exact-match)
+            'ipReputation',
             // premium geo (latitude/longitude are display-only: no exact-match
             // filtering, so intentionally left unindexed)
             'postalCode', 'timeZone', 'weatherCode',
@@ -788,7 +796,7 @@ class Metric extends ArrayObject
             // low-cardinality request/geo dims filtered by equality. accept/
             // acceptLanguage/queryKeys are unbounded caller input, so they use
             // bloom_filter (below) instead of an unlimited set(0) index.
-            'protocol', 'timeZone', 'weatherCode',
+            'protocol', 'ipReputation', 'timeZone', 'weatherCode',
         ];
 
         // Columns whose full length exceeds the SQL adapter's max index key

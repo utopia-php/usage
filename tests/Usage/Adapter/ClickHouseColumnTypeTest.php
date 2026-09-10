@@ -79,7 +79,7 @@ class ClickHouseColumnTypeTest extends TestCase
      */
     public function testLowCardinalityRequestAndGeoColumns(): void
     {
-        foreach (['protocol', 'timeZone', 'weatherCode'] as $col) {
+        foreach (['protocol', 'ipReputation', 'timeZone', 'weatherCode'] as $col) {
             $this->assertSame(
                 'LowCardinality(Nullable(String))',
                 $this->columnType($col),

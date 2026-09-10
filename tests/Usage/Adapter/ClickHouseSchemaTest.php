@@ -105,6 +105,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
         // bounded-cardinality equality dims get set(0); un-normalized text and
         // high-cardinality dims get bloom_filter.
         $this->assertStringContainsString('`index-protocol` protocol TYPE set(0)', $ddl);
+        $this->assertStringContainsString('`index-ipReputation` ipReputation TYPE set(0)', $ddl);
         $this->assertStringContainsString('`index-timeZone` timeZone TYPE set(0)', $ddl);
         $this->assertStringContainsString('`index-weatherCode` weatherCode TYPE set(0)', $ddl);
 
@@ -315,7 +316,7 @@ class ClickHouseSchemaTest extends ClickHouseTestCase
             'clientEngine', 'clientEngineVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
             'hostname', 'ip',
-            'protocol',
+            'protocol', 'ipReputation',
             'continentCode', 'subdivisions', 'connectionType',
             'connectionUsageType', 'autonomousSystemNumber',
             'timeZone', 'weatherCode',

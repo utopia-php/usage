@@ -1795,6 +1795,9 @@ class ClickHouse extends SQL
             // queryKeys hold raw, un-normalized caller input (unbounded distinct
             // values), so they stay plain Nullable(String) + bloom_filter.
             'protocol',
+            // ip reputation verdict (placeholder): bounded enum
+            // (clean/low/suspicious/block)
+            'ipReputation',
             // premium geo (lower-cardinality only; city/isp/AS org/connection org and
             // postalCode/latitude/longitude are high-cardinality and intentionally fall
             // through to Nullable(String))
