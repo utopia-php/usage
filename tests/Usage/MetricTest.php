@@ -104,10 +104,14 @@ class MetricTest extends TestCase
             'country', 'region', 'hostname', 'ip',
             'osName', 'clientType', 'clientName', 'deviceName',
             'protocol', 'accept', 'acceptLanguage', 'queryKeys',
-            'postalCode', 'latitude', 'longitude', 'timeZone', 'weatherCode',
+            'postalCode', 'timeZone', 'weatherCode',
         ] as $col) {
             $this->assertContains($col, $indexed, "Event indexes missing {$col}");
         }
+
+        // latitude/longitude are display-only and intentionally NOT indexed.
+        $this->assertNotContains('latitude', $indexed);
+        $this->assertNotContains('longitude', $indexed);
     }
 
     public function testGaugeIndexesCoverIdColumns(): void

@@ -1791,9 +1791,9 @@ class ClickHouse extends SQL
             'clientEngine', 'clientEngineVersion',
             'deviceName', 'deviceBrand', 'deviceModel',
             'hostname', 'ip',
-            // request attributes (low-cardinality only; accept/acceptLanguage/queryKeys
-            // are high-cardinality and intentionally fall through to Nullable(String))
-            'protocol',
+            // request attributes: exact-match dims with bounded distinct counts
+            // (protocol/accept/acceptLanguage/queryKeys), queried like country.
+            'protocol', 'accept', 'acceptLanguage', 'queryKeys',
             // premium geo (lower-cardinality only; city/isp/AS org/connection org and
             // postalCode/latitude/longitude are high-cardinality and intentionally fall
             // through to Nullable(String))

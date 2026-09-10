@@ -776,16 +776,18 @@ class Metric extends ArrayObject
             'teamId', 'teamInternalId',
             'country', 'region', 'hostname', 'ip',
             'osName', 'clientType', 'clientName', 'deviceName',
-            // request attributes (firewall rule matching)
+            // request attributes (firewall rule matching, exact-match)
             'protocol', 'accept', 'acceptLanguage', 'queryKeys',
-            // premium geo
-            'postalCode', 'latitude', 'longitude', 'timeZone', 'weatherCode',
+            // premium geo (latitude/longitude are display-only: no exact-match
+            // filtering, so intentionally left unindexed)
+            'postalCode', 'timeZone', 'weatherCode',
         ];
 
         $setIndexed = [
             'status', 'method', 'country', 'service', 'clientType', 'osName',
             // low-cardinality request/geo dims filtered by equality
-            'protocol', 'timeZone', 'weatherCode',
+            'protocol', 'accept', 'acceptLanguage', 'queryKeys',
+            'timeZone', 'weatherCode',
         ];
 
         // Columns whose full length exceeds the SQL adapter's max index key
