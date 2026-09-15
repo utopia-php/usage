@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "25a217c352c136f58d569b5d78e464ee",
+    "content-hash": "4f98142bceb2cc79147f42f0e00a0db4",
     "packages": [
         {
             "name": "brick/math",
@@ -2152,16 +2152,16 @@
         },
         {
             "name": "utopia-php/client",
-            "version": "0.3.0",
+            "version": "0.4.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/utopia-php/client.git",
-                "reference": "ee4c3429634f84c175e45f2a0c1836eaf78c2528"
+                "reference": "08d2085a1d21f56fcb9ca3f5c57718bd0e0b14b0"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/utopia-php/client/zipball/ee4c3429634f84c175e45f2a0c1836eaf78c2528",
-                "reference": "ee4c3429634f84c175e45f2a0c1836eaf78c2528",
+                "url": "https://api.github.com/repos/utopia-php/client/zipball/08d2085a1d21f56fcb9ca3f5c57718bd0e0b14b0",
+                "reference": "08d2085a1d21f56fcb9ca3f5c57718bd0e0b14b0",
                 "shasum": ""
             },
             "require": {
@@ -2203,9 +2203,9 @@
             ],
             "support": {
                 "issues": "https://github.com/utopia-php/client/issues",
-                "source": "https://github.com/utopia-php/client/tree/0.3.0"
+                "source": "https://github.com/utopia-php/client/tree/0.4.0"
             },
-            "time": "2026-07-31T08:38:16+00:00"
+            "time": "2026-08-25T11:45:05+00:00"
         },
         {
             "name": "utopia-php/console",
