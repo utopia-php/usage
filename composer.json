@@ -20,7 +20,7 @@
     "require": {
         "php": ">=8.4",
         "psr/http-client": "^1.0",
-        "utopia-php/client": "^0.3",
+        "utopia-php/client": "^0.4",
         "utopia-php/database": "^7.0.0",
         "utopia-php/query": "0.6.*"
     },
