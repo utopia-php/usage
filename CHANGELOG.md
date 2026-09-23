@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.17.0 (unreleased) — utopia-php/database 8
+
+### Breaking
+
+- Requires PHP 8.5 and utopia-php/database 8. The Docker test image builds
+  on `php:8.5.8-cli-alpine`.
+
+### Changed
+
+- The Database adapter creates its collection through the utopia-php/database
+  8 schema API (`Collection`, `Attribute` and `Index` models). The collection
+  is unchanged: the same columns, in the same order, with the same types,
+  sizes, flags and indexes as 0.16 (on MariaDB the table is identical).
+  `setup()` still leaves an existing collection alone, so a collection
+  created by 0.16 is reused as it is.
+- `SQL::getAttributeDocuments()` and `SQL::getIndexDocuments()` return
+  `Utopia\Database\Attribute` and `Utopia\Database\Index` models, which are
+  still `Document`s. The index models no longer carry the ClickHouse-only
+  `indexType` hint; the ClickHouse adapter reads it from
+  `Metric::getEventIndexes()` / `Metric::getGaugeIndexes()` as before.
+- The Database adapter compiles `contains()` through `containsString()`
+  instead of the deprecated `contains()` factory. Matching is unchanged: a
+  substring match on the column.
+
 ## Unreleased — query 0.6.x builder
 
 ### Added
