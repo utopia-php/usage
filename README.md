@@ -455,7 +455,7 @@ coroutines.
 
 ## System Requirements
 
-Utopia Framework requires PHP 8.4 or later. We recommend using the latest PHP version whenever possible.
+Utopia Framework requires PHP 8.5 or later. We recommend using the latest PHP version whenever possible.
 
 ## Copyright and license
 

@@ -2,6 +2,15 @@
 
 ## 0.17.0 (unreleased) — utopia-php/database 8
 
+### Added
+
+- Events carry an `ordinal` dimension: the replica ordinal of a multi-node
+  resource, `0` for the first member. Counters such as dedicated-database
+  inbound, outbound and compute can now tell members apart the way gauges
+  already could. `setup()` adds the column to an existing event table, and the
+  daily materialized view still groups by resource identity, so billing sums
+  every member.
+
 ### Breaking
 
 - Requires PHP 8.5 and utopia-php/database 8. The Docker test image builds
@@ -23,6 +32,16 @@
 - The Database adapter compiles `contains()` through `containsString()`
   instead of the deprecated `contains()` factory. Matching is unchanged: a
   substring match on the column.
+- `utopia-php/database` is required as `8.*`, replacing the temporary
+  `dev-feat-query-lib as 7.0.0` root alias. The branch resolves through its
+  own `8.0.x-dev` branch alias, so `minimum-stability` is `dev` with
+  `prefer-stable: true` until database 8.0.0 is tagged; `stable` is restored
+  with that tag.
+- The `psr/http-client`, `utopia-php/client`, `utopia-php/cache` and
+  `phpstan/phpstan` constraints are written as wildcards (`1.*`, `0.4.*`,
+  `4.*` and `2.*`). The versions they resolve to are unchanged.
+- `extra.branch-alias` maps `dev-feat-query-lib` and `dev-main` to
+  `0.17.x-dev`, so a consumer can require the branch before 0.17.0 is tagged.
 
 ## Unreleased — query 0.6.x builder
 
