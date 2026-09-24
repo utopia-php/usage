@@ -9,7 +9,7 @@ use DateTimeZone;
 use Exception;
 use Psr\Http\Client\ClientInterface;
 use Throwable;
-use Utopia\Client;
+use Utopia\Client\Client;
 use Utopia\Client\Adapter\Curl\Client as CurlAdapter;
 use Utopia\Psr7\Method as HttpMethod;
 use Utopia\Psr7\Request\Factory as RequestFactory;
