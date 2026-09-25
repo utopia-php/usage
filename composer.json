@@ -16,12 +16,13 @@
         "test": "./vendor/bin/phpunit --configuration phpunit.xml --testsuite \"Test Suite\"",
         "bench": "./vendor/bin/phpunit --configuration phpunit.xml --testsuite Benchmark"
     },
-    "minimum-stability": "stable",
+    "minimum-stability": "dev",
+    "prefer-stable": true,
     "require": {
-        "php": ">=8.4",
+        "php": ">=8.5",
         "psr/http-client": "^1.0",
         "utopia-php/client": "^0.5",
-        "utopia-php/database": "^7.0.0",
+        "utopia-php/database": "^8.0",
         "utopia-php/query": "0.6.*"
     },
     "require-dev": {
@@ -47,6 +48,12 @@
         "allow-plugins": {
             "php-http/discovery": false,
             "tbachert/spi": false
+        }
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-feat-query-lib": "0.17.x-dev",
+            "dev-main": "0.17.x-dev"
         }
     }
 }

@@ -383,6 +383,59 @@ class ClickHouseTest extends TestCase
         $this->assertEquals(['0' => 10, '1' => 20], $byOrdinal);
     }
 
+    /**
+     * Per-replica event rows for one resource stay distinct series via the
+     * ordinal dimension. Filtering isolates one node; grouping returns a
+     * sum per node. The daily MV is intentionally unsplit — billing still
+     * sums every member.
+     */
+    public function testEventOrdinalSeparatesReplicaSeries(): void
+    {
+        $this->usage->purge('1', [], Usage::TYPE_EVENT);
+
+        $this->assertTrue($this->usage->addBatch([
+            [
+                'tenant' => '1',
+                'metric' => 'event-ordinal-test',
+                'value' => 512,
+                'tags' => ['resourceType' => 'dedicatedDatabases', 'resourceId' => 'db1', 'ordinal' => '0'],
+            ],
+            [
+                'tenant' => '1',
+                'metric' => 'event-ordinal-test',
+                'value' => 128,
+                'tags' => ['resourceType' => 'dedicatedDatabases', 'resourceId' => 'db1', 'ordinal' => '1'],
+            ],
+        ], Usage::TYPE_EVENT));
+
+        $primary = $this->usage->find('1', [
+            \Utopia\Query\Query::equal('metric', ['event-ordinal-test']),
+            \Utopia\Query\Query::equal('ordinal', ['0']),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(1, $primary);
+        $this->assertEquals(512, $primary[0]->getValue());
+        $this->assertEquals('0', $primary[0]->getOrdinal());
+
+        $perNode = $this->usage->find('1', [
+            \Utopia\Query\Query::equal('metric', ['event-ordinal-test']),
+            UsageQuery::groupBy('ordinal'),
+        ], Usage::TYPE_EVENT);
+
+        $this->assertCount(2, $perNode);
+        $byOrdinal = [];
+        foreach ($perNode as $row) {
+            $ordinal = $row->getOrdinal();
+            $this->assertNotNull($ordinal);
+            $byOrdinal[$ordinal] = (int) $row->getValue();
+        }
+        $this->assertEquals(['0' => 512, '1' => 128], $byOrdinal);
+
+        $this->assertSame(640, $this->usage->sum('1', [
+            \Utopia\Query\Query::equal('metric', ['event-ordinal-test']),
+        ]));
+    }
+
     public function testUnknownTagKeyThrows(): void
     {
         $this->expectException(\Exception::class);
