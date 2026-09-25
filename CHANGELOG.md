@@ -37,9 +37,11 @@
   own `8.0.x-dev` branch alias, so `minimum-stability` is `dev` with
   `prefer-stable: true` until database 8.0.0 is tagged; `stable` is restored
   with that tag.
-- The `psr/http-client`, `utopia-php/client`, `utopia-php/cache` and
-  `phpstan/phpstan` constraints are written as wildcards (`1.*`, `0.4.*`,
-  `4.*` and `2.*`). The versions they resolve to are unchanged.
+- The `psr/http-client`, `utopia-php/cache` and `phpstan/phpstan`
+  constraints are written as wildcards (`1.*`, `4.*` and `2.*`). The
+  versions they resolve to are unchanged.
+- Requires `utopia-php/client` 0.5 (`^0.5`). The ClickHouse adapter imports
+  `Utopia\Client\Client`, where client 0.5 moved the class.
 - `extra.branch-alias` maps `dev-feat-query-lib` and `dev-main` to
   `0.17.x-dev`, so a consumer can require the branch before 0.17.0 is tagged.
 
