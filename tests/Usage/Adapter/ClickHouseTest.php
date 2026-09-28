@@ -578,39 +578,111 @@ class ClickHouseTest extends TestCase
         $this->assertNull($results[0]->getOsName());
     }
 
-    public function testEveryEventDimensionRoundTrips(): void
+    /**
+     * @return array<string, array{0: array<string, string>}>
+     */
+    public static function eventDimensions(): array
+    {
+        return [
+            'request' => [[
+                'path' => '/v1/databases/:databaseId/collections/:collectionId/documents/:documentId',
+                'method' => 'PATCH',
+                'status' => '200',
+                'protocol' => 'https',
+                'hostname' => 'api.example.com',
+                'accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'acceptLanguage' => 'fr-CA,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+                'queryKeys' => 'queries,search',
+            ]],
+            'resource' => [[
+                'service' => 'storage',
+                'resourceType' => 'bucket',
+                'resourceId' => 'photos',
+                'resourceInternalId' => '1042',
+                'ordinal' => '2',
+                'teamId' => 'team-alpha',
+                'teamInternalId' => '77',
+            ]],
+            'network' => [[
+                'ip' => '2001:db8::7334',
+                'ipReputation' => 'clean',
+                'isp' => 'Example Fibre',
+                'autonomousSystemNumber' => '64500',
+                'autonomousSystemOrganization' => 'EXAMPLE-FIBRE-AS',
+                'connectionType' => 'Cable/DSL',
+                'connectionUsageType' => 'residential',
+                'connectionOrganization' => 'Example Fibre Ltd',
+            ]],
+            'location' => [[
+                'country' => 'ca',
+                'region' => 'fra',
+                'continentCode' => 'NA',
+                'subdivisions' => 'Quebec',
+                'city' => 'Montréal',
+                'postalCode' => 'H2X 1Y4',
+                'latitude' => '45.5019',
+                'longitude' => '-73.5674',
+                'timeZone' => 'America/Toronto',
+                'weatherCode' => 'CAXX0301',
+            ]],
+            'client' => [[
+                'osCode' => 'IOS',
+                'osName' => 'iOS',
+                'osVersion' => '17.4.1',
+                'clientType' => 'browser',
+                'clientCode' => 'MF',
+                'clientName' => 'Mobile Safari',
+                'clientVersion' => '17.4',
+                'clientEngine' => 'WebKit',
+                'clientEngineVersion' => '605.1.15',
+                'deviceName' => 'smartphone',
+                'deviceBrand' => 'Apple',
+                'deviceModel' => 'iPhone 15 Pro',
+                'sdk' => 'Web',
+                'sdkVersion' => '16.0.2',
+            ]],
+        ];
+    }
+
+    /**
+     * @dataProvider eventDimensions
+     *
+     * @param array<string, string> $dimensions
+     */
+    public function testEventDimensionsRoundTrip(array $dimensions): void
     {
         $this->usage->purge('1', [], Usage::TYPE_EVENT);
 
-        $tags = [];
-        foreach (Metric::EVENT_COLUMNS as $column) {
-            $tags[$column] = $column . '-value';
-        }
-
         $this->assertTrue($this->usage->addBatch([
-            ['tenant' => '1', 'metric' => 'schema-roundtrip', 'value' => 1, 'tags' => $tags],
-            ['tenant' => '1', 'metric' => 'schema-roundtrip', 'value' => 2, 'tags' => []],
+            ['tenant' => '1', 'metric' => 'dimension-roundtrip', 'value' => 1, 'tags' => $dimensions],
+            ['tenant' => '1', 'metric' => 'dimension-roundtrip', 'value' => 2, 'tags' => []],
         ], Usage::TYPE_EVENT));
 
-        foreach ($tags as $column => $value) {
-            $rows = $this->usage->find('1', [
-                Query::equal('metric', ['schema-roundtrip']),
-                Query::equal($column, [$value]),
-            ], Usage::TYPE_EVENT);
-
-            $this->assertCount(1, $rows, 'Filter on ' . $column . ' should match only the event that carries it');
-            $this->assertSame($value, $rows[0]->getAttribute($column), $column . ' should read back as written');
+        foreach ($dimensions as $dimension => $value) {
+            $this->assertSame(
+                [[1, $value]],
+                $this->readDimension($dimension, Query::equal($dimension, [$value])),
+                'Filtering on ' . $dimension . ' should return only the event that carries it, with the value as written'
+            );
+            $this->assertSame(
+                [[2, null]],
+                $this->readDimension($dimension, Query::isNull($dimension)),
+                $dimension . ' should be null only on the event that omits it'
+            );
         }
+    }
 
-        $untagged = $this->usage->find('1', [
-            Query::equal('metric', ['schema-roundtrip']),
-            Query::equal('value', [2]),
+    /**
+     * @return array<array{0: int|float|null, 1: mixed}>
+     */
+    private function readDimension(string $dimension, Query $filter): array
+    {
+        $events = $this->usage->find('1', [
+            Query::equal('metric', ['dimension-roundtrip']),
+            $filter,
         ], Usage::TYPE_EVENT);
 
-        $this->assertCount(1, $untagged);
-        foreach (Metric::EVENT_COLUMNS as $column) {
-            $this->assertNull($untagged[0]->getAttribute($column), $column . ' should read back null when the event omits it');
-        }
+        return array_map(fn (Metric $event): array => [$event->getValue(), $event->getAttribute($dimension)], $events);
     }
 
     /**
